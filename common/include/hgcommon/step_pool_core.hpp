@@ -29,8 +29,8 @@ namespace common {
 // The slots. Slots below SP_MULTIPLICITY and from SP_DIST_SUM on hold doubles as sp_key_of
 // keys; SP_ARITY, SP_DEGREE and SP_MULTIPLICITY hold integers as themselves.
 enum : uint32_t {
-    SP_INVARIANTS = 0,           // the 42 "Invariants" in reply order, slots 0..41
-    SP_NUM_INVARIANTS = 42,
+    SP_INVARIANTS = 0,           // the 52 "Invariants" in reply order, slots 0..51
+    SP_NUM_INVARIANTS = 52,
     SP_ARITY = SP_NUM_INVARIANTS,        // a hyperedge's arity
     SP_DEGREE = SP_NUM_INVARIANTS + 1,   // a vertex's slot degree
     SP_MULTIPLICITY = SP_NUM_INVARIANTS + 2,  // a class's raw state count, weight 1 per class
@@ -138,6 +138,15 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         put(40, g.charge_max);
     }
     if (g.defined & SG_DIMENSION_GRADIENT) put(41, g.dimension_gradient);
+    if (g.defined & SG_TOPOLOGY) {
+        for (uint32_t k = 0; k < 3; ++k) put(42 + k, g.clique_betti[k]);
+        put(45, g.rips_betti1);
+    }
+    if (g.defined & SG_METRIC_TENSOR) put(46, g.metric_tensor_gap);
+    if (g.defined & SG_HOLONOMY) put(47, g.holonomy_triangle);
+    if (g.defined & SG_HOLONOMY_SQUARE) put(48, g.holonomy_square);
+    if (g.defined & SG_BRANCH_ALIGNMENT)
+        for (uint32_t k = 0; k < 3; ++k) put(49 + k, g.alignment_moment[k]);
 
     const uint32_t* ar = r.arity_runs();
     for (uint32_t i = 0; i < r.num_arity_runs; ++i)

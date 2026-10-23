@@ -2453,7 +2453,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 // rules.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
-    size_t compared = 0, with_growth = 0, ternary = 0;
+    size_t compared = 0, with_growth = 0, ternary = 0, with_gap = 0, with_holonomy = 0, with_alignment = 0;
     for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
@@ -2544,8 +2544,18 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::cycle_curvature_total,
                   &hgcommon::SgGeometry::clustering, &hgcommon::SgGeometry::euler_excess,
                   &hgcommon::SgGeometry::charge, &hgcommon::SgGeometry::charge_max,
-                  &hgcommon::SgGeometry::dimension_gradient})
+                  &hgcommon::SgGeometry::dimension_gradient,
+                  &hgcommon::SgGeometry::rips_betti1, &hgcommon::SgGeometry::metric_tensor_gap,
+                  &hgcommon::SgGeometry::holonomy_triangle,
+                  &hgcommon::SgGeometry::holonomy_square})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < 3; ++k) {
+                EXPECT_TRUE(same(a->g.clique_betti[k], b->g.clique_betti[k])) << w.name;
+                EXPECT_TRUE(same(a->g.alignment_moment[k], b->g.alignment_moment[k])) << w.name;
+            }
+            if (a->g.defined & hgcommon::SG_BRANCH_ALIGNMENT) ++with_alignment;
+            if (a->g.defined & hgcommon::SG_METRIC_TENSOR) ++with_gap;
+            if (a->g.defined & (hgcommon::SG_HOLONOMY | hgcommon::SG_HOLONOMY_SQUARE)) ++with_holonomy;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
@@ -2569,6 +2579,12 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
     EXPECT_GT(compared, 0u);
     EXPECT_GT(with_growth, 0u);
     EXPECT_GT(ternary, 0u);
+    EXPECT_GT(with_gap, 0u);
+    EXPECT_GT(with_holonomy, 0u);
+    EXPECT_GT(with_alignment, 0u);
+    std::printf("[ RecordSet ] %zu classes with a branch alignment\n", with_alignment);
+    std::printf("[ RecordSet ] %zu classes with a metric tensor gap, %zu with a holonomy angle\n",
+                with_gap, with_holonomy);
     std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit, %zu with a hyperedge of "
                 "3 or more vertices under AllPairs\n",
                 compared, with_growth, ternary);

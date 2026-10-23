@@ -397,6 +397,11 @@ list adds the families it names:
 | `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
+| `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
+| `"MetricTensor"` | `MetricTensorGap` | metric tensor |
+| `"Holonomy"` | `HolonomyTriangle`, `HolonomySquare` | holonomy |
+| `"Equilibrium"` | the per-step key `Equilibrium` | equilibrium |
+| `"BranchAlignment"` | `AlignmentMoment1`, `AlignmentMoment2`, `AlignmentMoment3` | branch alignment |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -524,6 +529,58 @@ L_v > 0.
 
 `VertexInvariants` gains `DimensionGradientCurvature`, L_v over G', with 32 bins over [-8, 8).
 It takes O(\|E\|) after the local dimensions.
+
+**`StepStatistics` topology.** The family `"Topology"` adds four `Invariants` entries: Betti numbers over GF(2), the field of two elements. The clique complex of G has a k-simplex for each set of k + 1 vertices of G that are joined in pairs. The Vietoris-Rips complex at scale r is Infrageometry's `BallIntersectionComplex[vertices, r, 2, "Metric" -> G]` (Infrageometry@ffa5fe4:Kernel/InfraTopology/BallIntersectionComplex.wl:29-70): a set of vertices is a simplex when every two of them have balls of radius r with a common vertex. Two vertices at distance d have such balls when d <= 2r, so at r = 1 the complex is the clique complex of G², the graph that joins two vertices of G at distance 1 or 2. With V, E, T and Q the vertices, edges, triangles and tetrahedra of a complex and ∂k its boundary maps over GF(2), b0 = V - rank ∂1, b1 = E - rank ∂1 - rank ∂2 and b2 = T - rank ∂2 - rank ∂3.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `CliqueBetti0` | b0 of the clique complex of G, the number of components of G | G is empty |
+| `CliqueBetti1` | b1 of the clique complex of G | G is empty |
+| `CliqueBetti2` | b2 of the clique complex of G | G is empty |
+| `RipsBetti1` | b1 of the Vietoris-Rips complex at r = 1 | G is empty |
+
+G and G² have the same components, so b0 of the Vietoris-Rips complex is `CliqueBetti0`. The octahedron gives (1, 0, 1), a cycle of 4 or more vertices (1, 1, 0) and a triangulated torus (1, 2, 1). `RipsBetti1` is 0 on the 6-cycle, whose square is the octahedron, and 1 on the 8-cycle.
+
+The computation is Gaussian elimination over GF(2). A breadth-first spanning forest of the complex's graph leaves c = E - V + b0 edges outside it, and a cycle is fixed by its coefficients on those c edges. Each triangle's boundary, as a c-bit row, is reduced against the rows already kept, each kept row pivoting on its highest bit, so rank ∂2 is the number of rows kept and b1 = c - rank ∂2. The tetrahedra's boundaries are reduced the same way as T-bit rows over the triangles. An elimination stops when its rank reaches the dimension of the space (c, or T - rank ∂2), so it keeps at most min(c, T) and min(T - rank ∂2, Q) rows. The cost is at most O(T min(c, T) c / 64 + Q min(T, Q) T / 64) word operations, and the memory min(c, T) c / 8 + min(T, Q) T / 8 bytes. The Vietoris-Rips complex costs the same on G², which has up to V Δ² / 2 edges for the largest degree Δ.
+
+**`StepStatistics` metric tensor.** The family `"MetricTensor"` adds `MetricTensorGap`. Infrageometry's `InfraMetricTensor[G, p, r]` with `"SelectCoordinate" -> Min` (Infrageometry@ffa5fe4:Kernel/RiemannianInfrageometry/InfraMetricTensor.wl:10-27) is a matrix over S_r(p), the vertices at distance r from p. T[v, w] = d(p, u) / r, with u the vertex of the interval I(p, w) = {u : d(p, u) + d(u, w) = r} nearest v, and the least d(p, u) among the nearest. Its entries lie in {0, 1/r, ..., 1}. Infrageometry's tutorial (Infrageometry@ffa5fe4:docs/Tutorials/MetricTensorTutorial.md:211-247) compares the values over all ordered pairs (v, w) with max(cos Θ, 0) for Θ uniform on [0, π], whose distribution function on [0, 1] is F(t) = 1 - arccos(t) / π. The gap of p at r is the integral over [0, 1] of |F_r(t) - F(t)|, with F_r the distribution function of the |S_r(p)|² entries.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `MetricTensorGap` | the mean of the gap of p at r = ⌊R'/2⌋ over the centre vertices p of G', those of eccentricity R' | R' < 2, R' the radius of G' |
+
+The tutorial reads the first vertex of `GraphCenter`, which depends on the vertex numbering. The mean over every centre vertex is the same for isomorphic states. The tutorial integrates by the midpoint rule on 1000 points. Here F_r is constant on each [k/r, (k+1)/r), and each piece is integrated in closed form with G(t) = t - (t arccos t - sqrt(1 - t²) + 1) / π, the integral of F from 0, split at t* = -cos(π c) where F crosses the constant c. On the 5 x 5 grid the centre is the middle vertex, r = 2, T[v, w] = 1 - d(v, w)/4 on the 8 vertices of S_2, and the gap is 0.0935618363. Each centre takes one breadth-first search from p and one from each vertex of S_r(p), then O(|S|² V): O(C (|S| (V + E) + |S|² V)) for C centre vertices.
+
+**`StepStatistics` holonomy.** The family `"Holonomy"` adds `HolonomyTriangle` and `HolonomySquare`, Infrageometry's holonomy angle at scale r = 1 under `Method -> "Arclength"` (Infrageometry@ffa5fe4:Kernel/InfraFiberBundles/Experimental/InfraLeviCivita.wl:36-93 and 124-133). The directions at a vertex p are its neighbours N(p). The angle between two directions is their distance in G with p deleted, or 2V when deleting p separates them. A transport over an edge p-q maps the smaller of N(p) and N(q) into the larger, one to one, with q in N(p) paired with a continuation. A continuation is a vertex of N(q) farthest from p, and among those farthest in angle from p at q. Among these maps the transports are those with the least sum, over pairs of directions, of the squared difference of their angles. A direction of the larger set outside the image is dropped. The holonomy angle of a closed walk is the least, over the composites of one transport per step, of the mean angle between each direction at the base that the composite moves and its image. Dropped directions are left out, and the angle is 0 when no direction moves.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `HolonomyTriangle` | the mean over the triangles of G of the mean holonomy angle of its 6 closed walks (3 base vertices, 2 orientations) | G has no triangle, or a vertex of degree above 6 |
+| `HolonomySquare` | the same over the chordless 4-cycles of G, with 8 closed walks each | G has no chordless 4-cycle, or a vertex of degree above 6 |
+
+Infrageometry's tests give 1 on the octahedron's triangles, 0 on the triangles of the triangular torus and 0 on the squares of the square torus. The degree bound 6 limits a step to 6 · 5! = 720 transports and a closed walk to 13327 distinct composites, the partial one-to-one maps of 6 directions into 6. The angles take one breadth-first search in G minus v from each neighbour of each vertex v, stopped when the other neighbours are found. Each step scores at most 720 maps in 36 operations each.
+
+**`StepStatistics` equilibrium.** The family `"Equilibrium"` adds the per-step key `Equilibrium`: hypergraph_viz's equilibrium detection (hypergraph_viz@0fb63e5:blackhole/src/equilibrium_analysis.cpp:175-260) over three series of step means. x_s is the `Mean` of `WolframHausdorffDimension`, y_s the `Mean` of `DegreeEntropy` and z_s the `Mean` of `VertexCount` in the step's `Invariants`, each 0 when no state of the step has the entry. The window of step s is the steps s - 19 .. s that have a record, consecutive and back to the first step. The stability of a series over the window is 1 / (1 + σ / |μ|), with μ the mean and σ the sample standard deviation (0 for one step), and 1 when |μ| < 10^-10.
+
+| Key | Definition |
+|---|---|
+| `DimensionStability`, `DegreeEntropyStability`, `SizeStability` | the stability of x, y and z over the window |
+| `OverallStability` | the mean of the three |
+| `DimensionTrend`, `SizeTrend` | the least-squares slope of x and of z against the position in the window |
+| `Window` | the number of steps in the window, at most 20 |
+| `Equilibrated` | `True` when the run has at least 50 steps up to and including s and `OverallStability` >= 0.95 |
+
+hypergraph_viz computes the scores once, for the last step, in single precision, and includes the mean branchial sharpness. Here every step has its scores, in double precision, and the sharpness is left out: it needs `"StepStatisticsBranchial"` `"Overlap"`, and hypergraph_viz gives it stability 1 when it is not computed. hypergraph_viz's degree entropy and vertex count are those of the union of the step's states. Here they are the means over the step's states, weighted as `Invariants` is. A step's scores read only the records of the steps before it, so they are computed as each step's record is made (`StepStatisticsJobs::close_equilibrium`): a step whose predecessor has its scores computes its own, then its successor's when that record is made. The cost is O(20) per step.
+
+**`StepStatistics` branch alignment.** The family `"BranchAlignment"` adds `AlignmentMoment1`, `AlignmentMoment2` and `AlignmentMoment3`: hypergraph_viz's curvature-weighted moment of inertia of a spectral embedding (hypergraph_viz@0fb63e5:blackhole/src/branch_alignment.cpp:29-205 and 410-516), as the paclet's former options `"BranchAlignment"` and `"BranchAlignmentMethod" -> "WolframRicci"` computed it. With L = D - A the Laplacian of G' and 0 = μ1 <= μ2 <= ... its eigenvalues, a vertex v of G' sits at x_v = (u2(v), u3(v), u4(v)), u_k the unit eigenvector of μ_k. Its mass is m_v = \|K_v\| + 1/100, K_v the Ricci scalar of v from `VertexInvariants` `WolframRicciCurvatureScalar`. With c = Σ m_v x_v / Σ m_v, the inertia tensor is I = Σ m_v (\|x_v - c\|² 1 - (x_v - c)(x_v - c)^T), and the entries are its eigenvalues σ1 >= σ2 >= σ3 divided by Σ m_v.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `AlignmentMoment1`, `AlignmentMoment2`, `AlignmentMoment3` | σ1, σ2, σ3 over Σ m_v | G' has fewer than 4 or more than 256 vertices, or μ5 - μ4 <= 10^-6 μ5 |
+
+The eigenvectors u2, u3, u4 are fixed up to an orthogonal change of basis of their span when μ4 < μ5. Such a change rotates every x_v, and the eigenvalues of I do not change, so the entries are the same for isomorphic states. When μ4 = μ5 the span is not determined by G', and the entries are undefined. With every K_v = 0 the masses are equal, Σ x_v x_v^T is the identity, and each entry is 2/n' for n' vertices of G'.
+
+hypergraph_viz finds the eigenvectors by 100 steps of power iteration from pseudo-random vectors in single precision. Here L is diagonalised in double precision: Householder reduction to a tridiagonal matrix, then the implicit QL iteration with at most 60 iterations per eigenvalue, then Jacobi rotations on the 3 x 3 tensor. The cost is O(n'³) time and n'² doubles for n' vertices of G', on one thread of the state's record. hypergraph_viz's per-vertex output (the projections on the principal axes, oriented by curvature) is not an entry: an axis of a repeated σ has no fixed direction.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

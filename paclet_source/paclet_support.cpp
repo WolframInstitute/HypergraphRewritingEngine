@@ -24,6 +24,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <stdexcept>
 #include <thread>
@@ -1633,6 +1634,11 @@ uint32_t measure_bits(const std::string& name) {
     if (name == "Combinatorial") return hgcommon::SG_COMBINATORIAL;
     if (name == "Particles") return hgcommon::SG_PARTICLE;
     if (name == "DimensionGradient") return hgcommon::SG_DIMENSION_GRADIENT;
+    if (name == "Topology") return hgcommon::SG_TOPOLOGY;
+    if (name == "MetricTensor") return hgcommon::SG_METRIC_TENSOR;
+    if (name == "Holonomy") return hgcommon::SG_HOLONOMY;
+    if (name == "BranchAlignment") return hgcommon::SG_BRANCH_ALIGNMENT;
+    if (name == "Equilibrium") return kMeasureEquilibrium;
     if (name == "Branchial") return kMeasureBranchial;
     return 0;
 }
@@ -1698,6 +1704,16 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"TopologicalCharge", 0.01, false, hgcommon::SG_PARTICLE},
     {"TopologicalChargeMax", 0.01, false, hgcommon::SG_PARTICLE},
     {"DimensionGradientCurvature", 0.01, false, hgcommon::SG_DIMENSION_GRADIENT},
+    {"CliqueBetti0", 1.0, true, hgcommon::SG_TOPOLOGY},
+    {"CliqueBetti1", 1.0, true, hgcommon::SG_TOPOLOGY},
+    {"CliqueBetti2", 1.0, true, hgcommon::SG_TOPOLOGY},
+    {"RipsBetti1", 1.0, true, hgcommon::SG_TOPOLOGY},
+    {"MetricTensorGap", 0.01, false, hgcommon::SG_METRIC_TENSOR},
+    {"HolonomyTriangle", 0.01, false, hgcommon::SG_HOLONOMY},
+    {"HolonomySquare", 0.01, false, hgcommon::SG_HOLONOMY},
+    {"AlignmentMoment1", 0.01, false, hgcommon::SG_BRANCH_ALIGNMENT},
+    {"AlignmentMoment2", 0.01, false, hgcommon::SG_BRANCH_ALIGNMENT},
+    {"AlignmentMoment3", 0.01, false, hgcommon::SG_BRANCH_ALIGNMENT},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges
@@ -2026,6 +2042,23 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
     return rec;
 }
 
+void StepPoolFinish::equilibrium_series(double* out) const {
+    const State& s = *s_;
+    auto mean = [&](const char* name) {
+        for (uint32_t t = 0; t < hgcommon::SP_NUM_INVARIANTS; ++t) {
+            if (std::strcmp(kInvariantSlots[t].name, name) != 0) continue;
+            std::vector<std::pair<double, uint64_t>> vw;
+            for (const auto& [key, w] : s.slot(t)) vw.emplace_back(hgcommon::sp_value_of(key), w);
+            const Summary m = summarise(vw, 1.0);
+            return m.n ? m.mean : 0.0;
+        }
+        return 0.0;
+    };
+    out[hgcommon::EQ_DIMENSION] = mean("WolframHausdorffDimension");
+    out[hgcommon::EQ_DEGREE_ENTROPY] = mean("DegreeEntropy");
+    out[hgcommon::EQ_SIZE] = mean("VertexCount");
+}
+
 wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes,
                                      uint32_t measures) {
     std::vector<const StepClass*> classes;
@@ -2061,6 +2094,17 @@ struct StepStatisticsJobs::Step {
     wxf::WXFValueAssociation branchial;
     uint32_t matrices_over_limit = 0;
     std::atomic<size_t> remaining{0};
+    // Equilibrium: the step reserved just before this one when it is step - 1, and the one
+    // reserved just after; this step's series, written before `closed`; its scores, final once
+    // `eq_done` is set, and the steps of its chain up to it.
+    Step* prev = nullptr;
+    std::atomic<Step*> next{nullptr};
+    double series[hgcommon::EQ_SERIES] = {0.0, 0.0, 0.0};
+    std::atomic<uint32_t> closed{0};
+    std::atomic<uint32_t> eq_claim{0};
+    std::atomic<uint32_t> eq_done{0};
+    hgcommon::EqScores eq;
+    uint32_t eq_steps = 0;
 };
 
 StepStatisticsJobs::StepStatisticsJobs(bool weight_by_classes, uint32_t which, size_t workers,
@@ -2076,8 +2120,39 @@ StepStatisticsJobs::Step* StepStatisticsJobs::reserve(uint32_t step) {
     auto [it, fresh] = steps_.emplace(step, nullptr);
     if (!fresh) return nullptr;
     it->second = std::make_unique<Step>();
-    it->second->step = step;
-    return it->second.get();
+    Step* s = it->second.get();
+    s->step = step;
+    // Steps are reserved in ascending order by one thread; a step's predecessor in the
+    // equilibrium chain is the step reserved just before it when that is step - 1.
+    if (last_reserved_ && last_reserved_->step + 1 == step) {
+        s->prev = last_reserved_;
+        last_reserved_->next.store(s, std::memory_order_seq_cst);
+    }
+    last_reserved_ = s;
+    return s;
+}
+
+// Each store and load below is sequentially consistent: a step that closes after its
+// predecessor's check of `next` and `closed` sees the predecessor's `eq_done`, and one of the two
+// threads computes the step; `eq_claim` makes it one.
+void StepStatisticsJobs::close_equilibrium(Step* s) {
+    s->closed.store(1, std::memory_order_seq_cst);
+    for (Step* t = s; t;) {
+        if (!t->closed.load(std::memory_order_seq_cst)) return;
+        if (t->prev && !t->prev->eq_done.load(std::memory_order_seq_cst)) return;
+        if (t->eq_claim.exchange(1, std::memory_order_seq_cst)) return;
+        double rows[hgcommon::EQ_WINDOW * hgcommon::EQ_SERIES];
+        uint32_t n = 0;
+        for (Step* u = t; u && n < hgcommon::EQ_WINDOW; u = u->prev) ++n;
+        Step* u = t;
+        for (uint32_t i = n; i-- > 0; u = u->prev)
+            for (uint32_t k = 0; k < hgcommon::EQ_SERIES; ++k)
+                rows[i * hgcommon::EQ_SERIES + k] = u->series[k];
+        t->eq_steps = t->prev ? t->prev->eq_steps + 1 : 1;
+        t->eq = hgcommon::eq_scores(rows, n, t->eq_steps);
+        t->eq_done.store(1, std::memory_order_seq_cst);
+        t = t->next.load(std::memory_order_seq_cst);
+    }
 }
 
 void StepStatisticsJobs::start(Step* s, StepInput in) {
@@ -2131,11 +2206,14 @@ void StepStatisticsJobs::pool(Step* s) {
     if (device) s->parts[chunks] = std::move(*s->in.device_part);
     const size_t tasks = s->parts.size();
     s->pool_remaining.store(tasks, std::memory_order_relaxed);
-    auto finish_task = [s](size_t t) {
+    auto finish_task = [this, s](size_t t) {
         s->finish->run(t);
         if (s->finish_remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            const bool equilibrium = (measures_ & kMeasureEquilibrium) != 0;
+            if (equilibrium) s->finish->equilibrium_series(s->series);
             s->pooled = s->finish->record();
             s->finish.reset();
+            if (equilibrium) close_equilibrium(s);
         }
     };
     auto pool_task = [this, s, chunks, device, finish_task](size_t t) {
@@ -2191,6 +2269,28 @@ wxf::WXFValue StepStatisticsJobs::reply() {
         if (!s->populated) continue;
         wxf::WXFValueAssociation rec = std::move(s->pooled);
         for (auto& kv : s->branchial) rec.push_back(std::move(kv));
+        if (s->eq_done.load(std::memory_order_acquire)) {
+            const hgcommon::EqScores& e = s->eq;
+            wxf::WXFValueAssociation eq;
+            eq.push_back({wxf::WXFValue("DimensionStability"),
+                          wxf::WXFValue(e.stability[hgcommon::EQ_DIMENSION])});
+            eq.push_back({wxf::WXFValue("DegreeEntropyStability"),
+                          wxf::WXFValue(e.stability[hgcommon::EQ_DEGREE_ENTROPY])});
+            eq.push_back({wxf::WXFValue("SizeStability"),
+                          wxf::WXFValue(e.stability[hgcommon::EQ_SIZE])});
+            eq.push_back({wxf::WXFValue("OverallStability"), wxf::WXFValue(e.overall)});
+            eq.push_back({wxf::WXFValue("DimensionTrend"), wxf::WXFValue(e.dimension_trend)});
+            eq.push_back({wxf::WXFValue("SizeTrend"), wxf::WXFValue(e.size_trend)});
+            eq.push_back({wxf::WXFValue("Window"), wxf::WXFValue(static_cast<int64_t>(e.window))});
+            // The symbol True or False as WXF bytes: 's', the name's length, the name.
+            const std::string name = e.equilibrated ? "True" : "False";
+            wxf::Encoded flag;
+            flag.bytes.push_back('s');
+            flag.bytes.push_back(static_cast<uint8_t>(name.size()));
+            flag.bytes.insert(flag.bytes.end(), name.begin(), name.end());
+            eq.push_back({wxf::WXFValue("Equilibrated"), wxf::WXFValue(std::move(flag))});
+            rec.push_back({wxf::WXFValue("Equilibrium"), wxf::WXFValue(std::move(eq))});
+        }
         out.push_back(wxf::WXFValue(std::move(rec)));
     }
     return wxf::WXFValue(std::move(out));

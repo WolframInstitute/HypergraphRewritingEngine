@@ -154,6 +154,71 @@ HG_HD inline double dm_tgamma(double z) {
     return g;
 }
 
+constexpr double kDmPi = 3.14159265358979311600e+00;
+
+// sin x and cos x for |x| <= pi/4 by their Taylor series through x^25 and x^24; the first
+// omitted term is below 2^-80.
+HG_HD inline void dm_sincos_reduced(double x, double& s, double& c) {
+    const double z = dm_mul(x, x);
+    double ps = 1.0 / 15511210043330985984000000.0;   // 1/25!
+    double pc = 1.0 / 620448401733239439360000.0;     // 1/24!
+    // (-1)^k / (2k+1)! and (-1)^k / (2k)! for k = 11 down to 0.
+    const double fs[12] = {-1.0 / 25852016738884976640000.0, 1.0 / 51090942171709440000.0,
+                           -1.0 / 121645100408832000.0,      1.0 / 355687428096000.0,
+                           -1.0 / 1307674368000.0,           1.0 / 6227020800.0,
+                           -1.0 / 39916800.0,                1.0 / 362880.0,
+                           -1.0 / 5040.0,                    1.0 / 120.0,
+                           -1.0 / 6.0,                       1.0};
+    const double fc[12] = {-1.0 / 1124000727777607680000.0, 1.0 / 2432902008176640000.0,
+                           -1.0 / 6402373705728000.0,       1.0 / 20922789888000.0,
+                           -1.0 / 87178291200.0,            1.0 / 479001600.0,
+                           -1.0 / 3628800.0,                1.0 / 40320.0,
+                           -1.0 / 720.0,                    1.0 / 24.0,
+                           -0.5,                            1.0};
+    for (int k = 0; k < 12; ++k) ps = dm_madd(ps, z, fs[k]);
+    for (int k = 0; k < 12; ++k) pc = dm_madd(pc, z, fc[k]);
+    s = dm_mul(ps, x);
+    c = pc;
+}
+
+// sin(pi y) and cos(pi y) for y in [0, 1]. The reductions 1 - y and 1/2 - y are exact.
+HG_HD inline void dm_sincos_pi(double y, double& s, double& c) {
+    double sign_c = 1.0;
+    if (y > 0.5) { y = 1.0 - y; sign_c = -1.0; }
+    if (y > 0.25) {
+        double a = 0.0, b = 0.0;
+        dm_sincos_reduced(dm_mul(kDmPi, 0.5 - y), a, b);
+        s = b;
+        c = sign_c * a;
+    } else {
+        double a = 0.0, b = 0.0;
+        dm_sincos_reduced(dm_mul(kDmPi, y), a, b);
+        s = a;
+        c = sign_c * b;
+    }
+}
+
+// atan x for x in [0, 1]. Above tan(pi/12), atan x = pi/6 + atan((x sqrt 3 - 1) / (x + sqrt 3));
+// the reduced argument is below 0.268 and its series runs through x^41, the first omitted term
+// below 2^-80.
+HG_HD inline double dm_atan01(double x) {
+    const double sqrt3 = 1.73205080756887719318e+00;
+    double base = 0.0;
+    if (x > 0.26794919243112270) {
+        x = (dm_mul(x, sqrt3) - 1.0) / (x + sqrt3);
+        base = kDmPi / 6.0;
+    }
+    const double z = dm_mul(x, x);
+    double p = 1.0 / 41.0;
+    for (int k = 19; k >= 0; --k) p = dm_madd(p, -z, 1.0 / (2.0 * k + 1.0));
+    return base + dm_mul(p, x);
+}
+
+// arccos t for t in [0, 1]: 2 atan(sqrt((1 - t) / (1 + t))). Exactly 0 at t = 1.
+HG_HD inline double dm_acos01(double t) {
+    return 2.0 * dm_atan01(::sqrt((1.0 - t) / (1.0 + t)));
+}
+
 // DOUBLE-DOUBLE ARITHMETIC for the power sums of the per-vertex distributions
 // (state_geometry_core.hpp, sg_dist_add) and the moments pooled from them: a value is hi + lo
 // with |lo| at most half an ulp of hi, about 106 bits. The central moments come from power sums
