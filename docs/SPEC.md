@@ -400,6 +400,7 @@ list adds the families it names:
 | `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
 | `"MetricTensor"` | `MetricTensorGap` | metric tensor |
 | `"Holonomy"` | `HolonomyTriangle`, `HolonomySquare` | holonomy |
+| `"Equilibrium"` | the per-step key `Equilibrium` | equilibrium |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -557,6 +558,18 @@ The tutorial reads the first vertex of `GraphCenter`, which depends on the verte
 | `HolonomySquare` | the same over the chordless 4-cycles of G, with 8 closed walks each | G has no chordless 4-cycle, or a vertex of degree above 6 |
 
 Infrageometry's tests give 1 on the octahedron's triangles, 0 on the triangles of the triangular torus and 0 on the squares of the square torus. The degree bound 6 limits a step to 6 · 5! = 720 transports and a closed walk to 13327 distinct composites, the partial one-to-one maps of 6 directions into 6. The angles take one breadth-first search in G minus v from each neighbour of each vertex v, stopped when the other neighbours are found. Each step scores at most 720 maps in 36 operations each.
+
+**`StepStatistics` equilibrium.** The family `"Equilibrium"` adds the per-step key `Equilibrium`: hypergraph_viz's equilibrium detection (hypergraph_viz@0fb63e5:blackhole/src/equilibrium_analysis.cpp:175-260) over three series of step means. x_s is the `Mean` of `WolframHausdorffDimension`, y_s the `Mean` of `DegreeEntropy` and z_s the `Mean` of `VertexCount` in the step's `Invariants`, each 0 when no state of the step has the entry. The window of step s is the steps s - 19 .. s that have a record, consecutive and back to the first step. The stability of a series over the window is 1 / (1 + σ / |μ|), with μ the mean and σ the sample standard deviation (0 for one step), and 1 when |μ| < 10^-10.
+
+| Key | Definition |
+|---|---|
+| `DimensionStability`, `DegreeEntropyStability`, `SizeStability` | the stability of x, y and z over the window |
+| `OverallStability` | the mean of the three |
+| `DimensionTrend`, `SizeTrend` | the least-squares slope of x and of z against the position in the window |
+| `Window` | the number of steps in the window, at most 20 |
+| `Equilibrated` | `True` when the run has at least 50 steps up to and including s and `OverallStability` >= 0.95 |
+
+hypergraph_viz computes the scores once, for the last step, in single precision, and includes the mean branchial sharpness. Here every step has its scores, in double precision, and the sharpness is left out: it needs `"StepStatisticsBranchial"` `"Overlap"`, and hypergraph_viz gives it stability 1 when it is not computed. hypergraph_viz's degree entropy and vertex count are those of the union of the step's states. Here they are the means over the step's states, weighted as `Invariants` is. A step's scores read only the records of the steps before it, so they are computed as each step's record is made (`StepStatisticsJobs::close_equilibrium`): a step whose predecessor has its scores computes its own, then its successor's when that record is made. The cost is O(20) per step.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

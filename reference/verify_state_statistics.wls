@@ -222,6 +222,25 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
         Union[Flatten[#Edges[[All, 2 ;;]] & /@ Lookup[byStep, 0, {}]]]]], rec]]],
     byStep]];
 
+(* hypergraph_viz's equilibrium detection over the oracle's records (docs/SPEC.md, "StepStatistics
+   equilibrium"): each step's window is the records of the 20 steps up to it. *)
+eqMean[rec_, key_] := With[{v = rec["Invariants"][key]}, If[v["N"] == 0, 0, v["Mean"]]];
+eqStability[x_List] := With[{m = Mean[x]}, If[Abs[m] < 10^-10, 1.,
+  N[1/(1 + If[Length[x] < 2, 0, StandardDeviation[x]]/Abs[m])]]];
+eqSlope[x_List] := If[Length[x] < 2, 0., N[Fit[Transpose[{Range[0, Length[x] - 1], x}], {1, t}, t] /. t -> 1] -
+  N[Fit[Transpose[{Range[0, Length[x] - 1], x}], {1, t}, t] /. t -> 0]];
+withEquilibrium[recs_List] := MapIndexed[Function[{rec, i}, Module[
+    {w = recs[[Max[1, i[[1]] - 19] ;; i[[1]]]], x, y, z, st},
+    x = eqMean[#, "WolframHausdorffDimension"] & /@ w;
+    y = eqMean[#, "DegreeEntropy"] & /@ w;
+    z = eqMean[#, "VertexCount"] & /@ w;
+    st = eqStability /@ {x, y, z};
+    Append[rec, "Equilibrium" -> <|"DimensionStability" -> st[[1]],
+      "DegreeEntropyStability" -> st[[2]], "SizeStability" -> st[[3]],
+      "OverallStability" -> Mean[st], "DimensionTrend" -> eqSlope[x], "SizeTrend" -> eqSlope[z],
+      "Window" -> Length[w], "Equilibrated" -> (i[[1]] >= 50 && Mean[st] >= 0.95)|>]]],
+  recs];
+
 (* === comparison === *)
 
 (* Associations compare key by key after sorting; numbers compare with a relative tolerance, so
@@ -322,10 +341,10 @@ Do[
     raw = HGEvolve[rules, init, steps, {"States", "Events", "BranchialEdges"},
       "CanonicalizeStates" -> None, "IncludeCanonicalHashes" -> True];
     allStates = Join[allStates, #Edges[[All, 2 ;;]] & /@ Values[raw["States"]]];
-    oracle = normal[oracleSteps[raw]];
-    oracleClasses = normal[oracleSteps[raw, True]];
-    oracleBranchial = normal[oracleSteps[raw, False, True]];
-    oracleAllPairs = Block[{sgrStatisticsGraph = "AllPairs"}, normal[oracleSteps[raw]]];
+    oracle = normal[withEquilibrium[oracleSteps[raw]]];
+    oracleClasses = normal[withEquilibrium[oracleSteps[raw, True]]];
+    oracleBranchial = normal[withEquilibrium[oracleSteps[raw, False, True]]];
+    oracleAllPairs = Block[{sgrStatisticsGraph = "AllPairs"}, normal[withEquilibrium[oracleSteps[raw]]]];
     routes = {
       {"quotient", oracle, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]},
@@ -347,6 +366,7 @@ Do[
     Module[{res = HGEvolve[rules, init, steps, "StepStatistics", "CanonicalizeStates" -> None],
         extra},
       extra = Select[res, KeyExistsQ[#, "EdgeInvariants"] || KeyExistsQ[#, "LogGeodesicCount"] ||
+          KeyExistsQ[#, "Equilibrium"] ||
           KeyExistsQ[#["Invariants"], "BallDimension"] ||
           KeyExistsQ[#["Invariants"], "CliqueBetti0"] ||
           KeyExistsQ[#["Invariants"], "MetricTensorGap"] ||
