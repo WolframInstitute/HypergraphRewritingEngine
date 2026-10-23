@@ -1653,13 +1653,21 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"SphereScalarCurvature", 0.01, false},
     {"GeodeticFraction", 0.01, false},
     {"SegmentEntropy", 0.01, false},
+    {"NonLazyOllivierRicciCurvature", 0.01, false},
 };
 
-// The "VertexInvariants" names of the per-vertex distributions, in hgcommon::SG_DIST order.
-const char* const kDistNames[hgcommon::SG_DISTS] = {
-    "LocalDimension",          "OllivierRicciCurvature",        "WolframRicciCurvatureScalar",
-    "BallDimension",           "BallScalarCurvature",           "RiemannianBallDimension",
-    "RiemannianBallScalarCurvature", "SphereDimension",         "SphereScalarCurvature",
+// The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges
+// ("EdgeInvariants") or vertices ("VertexInvariants").
+struct DistName {
+    const char* name;
+    bool edges;
+};
+const DistName kDistNames[hgcommon::SG_DISTS] = {
+    {"LocalDimension", false},          {"OllivierRicciCurvature", false},
+    {"WolframRicciCurvatureScalar", false}, {"BallDimension", false},
+    {"BallScalarCurvature", false},     {"RiemannianBallDimension", false},
+    {"RiemannianBallScalarCurvature", false}, {"SphereDimension", false},
+    {"SphereScalarCurvature", false},   {"NonLazyOllivierRicciCurvature", true},
 };
 
 // The host's sink for hgcommon::sp_add_class: entries appended, totals added.
@@ -1931,10 +1939,12 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
     for (size_t t = 0; t < hgcommon::SP_NUM_INVARIANTS; ++t)
         invs.push_back({wxf::WXFValue(kInvariantSlots[t].name), std::move(s.out[t])});
     rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(std::move(invs))});
-    wxf::WXFValueAssociation vertex_invs;
+    wxf::WXFValueAssociation vertex_invs, edge_invs;
     for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k)
-        vertex_invs.push_back({wxf::WXFValue(kDistNames[k]), std::move(s.out[kTaskDist + k])});
+        (kDistNames[k].edges ? edge_invs : vertex_invs)
+            .push_back({wxf::WXFValue(kDistNames[k].name), std::move(s.out[kTaskDist + k])});
     rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(std::move(vertex_invs))});
+    rec.push_back({wxf::WXFValue("EdgeInvariants"), wxf::WXFValue(std::move(edge_invs))});
     rec.push_back({wxf::WXFValue("ArityHistogram"), std::move(s.out[kTaskArity])});
     rec.push_back({wxf::WXFValue("AritySignatureHistogram"), std::move(s.out[kTaskAritySignatures])});
     rec.push_back({wxf::WXFValue("DegreeHistogram"), std::move(s.out[kTaskDegree])});

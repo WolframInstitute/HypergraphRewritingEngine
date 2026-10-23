@@ -329,3 +329,53 @@ TEST(StateMeasures, NoEdgeHasNoGeodesics) {
     EXPECT_FALSE(m.g.defined & hgcommon::SG_GEODESIC);
     EXPECT_EQ(m.g.geodesic_radii, 0u);
 }
+
+namespace {
+
+// The curvature of each edge of a state's graph, in edge order, with the lazy or the non-lazy walk.
+std::vector<double> edge_curvatures(std::vector<std::vector<uint32_t>> edges, bool lazy) {
+    Edges el{std::move(edges)};
+    size_t slots = 0, pairs = 0;
+    hgcommon::sg_sizes(el, slots, pairs);
+    std::vector<unsigned char> mem(hgcommon::sg_build_bytes(slots, pairs));
+    hgcommon::SgArena arena;
+    arena.base = mem.data();
+    arena.capacity = mem.size();
+    hgcommon::SgGraph g;
+    EXPECT_TRUE(hgcommon::sg_build(el, arena, g));
+    std::vector<uint64_t> scratch(hgcommon::sg_transport_stride(g.max_degree) / 8 + 1);
+    std::vector<double> k;
+    for (uint32_t x = 0; x < g.n; ++x)
+        for (uint32_t e = g.off[x]; e < g.off[x + 1]; ++e)
+            if (g.nbr[e] > x)
+                k.push_back(hgcommon::sg_ollivier_edge(
+                    g, x, g.nbr[e], reinterpret_cast<unsigned char*>(scratch.data()), lazy));
+    return k;
+}
+
+std::vector<std::vector<uint32_t>> complete(uint32_t n) {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t a = 1; a <= n; ++a)
+        for (uint32_t b = a + 1; b <= n; ++b) e.push_back({a, b});
+    return e;
+}
+
+}  // namespace
+
+// OllivierCurvatureTests.wlt "OllivierRicciCurvature-K4", "-P5-zero" and "-C6-zero": with
+// idleness 0 every edge of K4 has curvature 2/3 and every edge of P5 and C6 has 0.
+TEST(StateMeasures, NonLazyOllivierFixtures) {
+    for (double k : edge_curvatures(complete(4), false)) EXPECT_NEAR(k, 2.0 / 3.0, 1e-15);
+    for (double k : edge_curvatures({{1, 2}, {2, 3}, {3, 4}, {4, 5}}, false)) EXPECT_EQ(k, 0.0);
+    for (double k : edge_curvatures(cycle(6), false)) EXPECT_EQ(k, 0.0);
+    const Measured m = measure(complete(4));
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_NONLAZY_OLLIVIER);
+    EXPECT_NEAR(m.g.nonlazy_ollivier, 2.0 / 3.0, 1e-15);
+    // The lazy walk on K4 moves 1/3 of the mass from x to y as well: 2/3 on every edge. On P3
+    // the lazy walk gives 1/2 and the non-lazy walk 0.
+    EXPECT_NEAR(m.g.ollivier_ricci, 2.0 / 3.0, 1e-15);
+    const Measured p3 = measure({{1, 2}, {2, 3}});
+    EXPECT_NEAR(p3.g.ollivier_ricci, 0.5, 1e-15);
+    EXPECT_EQ(p3.g.nonlazy_ollivier, 0.0);
+    EXPECT_FALSE(measure({{1}, {2}}).g.defined & hgcommon::SG_NONLAZY_OLLIVIER);
+}

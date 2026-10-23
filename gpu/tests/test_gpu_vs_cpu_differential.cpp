@@ -2488,7 +2488,8 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::ollivier_moran_i,
                   &hgcommon::SgGeometry::ollivier_degree_correlation,
                   &hgcommon::SgGeometry::geodetic_fraction,
-                  &hgcommon::SgGeometry::segment_entropy})
+                  &hgcommon::SgGeometry::segment_entropy,
+                  &hgcommon::SgGeometry::nonlazy_ollivier})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
