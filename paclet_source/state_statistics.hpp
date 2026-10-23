@@ -154,7 +154,15 @@ enum : uint32_t {
     kBranchialMatrices = kMatrixVertex | kMatrixEdge,
     // The bits that read each state's vertices and edges.
     kBranchialContents = kBranchialOverlap | kBranchialMatrices,
+    // With kBranchialGraph: the volume growth and curvatures of the largest component
+    // ("StepStatisticsMeasures" "Branchial").
+    kBranchialMeasures = 1u << 8,
 };
+
+// "StepStatisticsMeasures": the family of each name as hgcommon::sg_geometry_of `want` bits, and
+// kMeasureBranchial for "Branchial"; 0 for any other name.
+constexpr uint32_t kMeasureBranchial = 1u << 30;
+uint32_t measure_bits(const std::string& name);
 
 // The "StepStatisticsMatrices" names, in kMatrix* bit order from kMatrixStateOverlap.
 constexpr const char* kMatrixNames[6] = {
@@ -293,8 +301,11 @@ void pool_classes(const StepClass* const* classes, size_t n, bool weight_by_clas
 // summarises them in key order, so the record does not depend on how the classes were split.
 class StepPoolFinish {
 public:
+    // `measures`: the requested families (hgcommon::SG_* want bits); a family's keys are in the
+    // record only when requested.
     StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint64_t events,
-                   std::map<int64_t, uint64_t> rule_counts);
+                   std::map<int64_t, uint64_t> rule_counts,
+                   uint32_t measures = hgcommon::SG_MEASURES_BASE);
     ~StepPoolFinish();
     StepPoolFinish(const StepPoolFinish&) = delete;
     StepPoolFinish& operator=(const StepPoolFinish&) = delete;
@@ -308,7 +319,8 @@ private:
 };
 
 // The record of `in` on the calling thread: one part, every task, the record.
-wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes);
+wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes,
+                                     uint32_t measures = hgcommon::SG_MEASURES_BASE);
 
 // THE "StepStatistics" REPLY, built by jobs. submit(step, input) hands a step's record to the
 // caller's job system: the step's classes are pooled by one job per 256 classes (pool_classes),
@@ -344,6 +356,8 @@ public:
     wxf::WXFValue reply();
     // "StepStatisticsMatrixLimit" in bytes, 0 for Automatic; set before the first step starts.
     void set_matrix_limit(uint64_t limit) { matrix_limit_ = limit; }
+    // "StepStatisticsMeasures" as hgcommon::SG_* want bits; set before the first step starts.
+    void set_measures(uint32_t measures) { measures_ = measures; }
     // After reply: (step, states) for each step whose matrices were over the limit.
     std::vector<std::pair<uint32_t, uint32_t>> matrices_over_limit() const;
 
@@ -355,6 +369,7 @@ private:
     DeviceRows device_rows_;
     uint32_t device_min_states_;
     uint64_t matrix_limit_ = 0;
+    uint32_t measures_ = hgcommon::SG_MEASURES_BASE;
     std::vector<uint32_t> initial_;
     bool have_initial_ = false;
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
@@ -372,7 +387,8 @@ wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t
                                       uint32_t device_min_states = 0,
                                       uint64_t matrix_limit = 0,
                                       std::vector<std::pair<uint32_t, uint32_t>>* over_limit =
-                                          nullptr);
+                                          nullptr,
+                                      uint32_t measures = hgcommon::SG_MEASURES_BASE);
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

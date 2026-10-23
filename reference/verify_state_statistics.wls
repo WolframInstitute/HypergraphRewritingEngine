@@ -320,22 +320,30 @@ Do[
     oracleBranchial = normal[oracleSteps[raw, False, True]];
     oracleAllPairs = Block[{sgrStatisticsGraph = "AllPairs"}, normal[oracleSteps[raw]]];
     routes = {
-      {"quotient", oracle, HGEvolve[rules, init, steps, "StepStatistics",
+      {"quotient", oracle, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]},
-      {"full capture", oracle, HGEvolve[rules, init, steps, "StepStatistics",
+      {"full capture", oracle, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> None]},
-      {"classes, quotient", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics",
+      {"classes, quotient", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True,
         "StepStatisticsWeighting" -> "Classes"]},
-      {"classes, full capture", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics",
+      {"classes, full capture", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> None, "StepStatisticsWeighting" -> "Classes"]},
-      {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics",
+      {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]},
-      {"all pairs, quotient", oracleAllPairs, HGEvolve[rules, init, steps, "StepStatistics",
+      {"all pairs, quotient", oracleAllPairs, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True,
         "StatisticsGraph" -> "AllPairs"]},
       {"all pairs, full capture", oracleAllPairs, HGEvolve[rules, init, steps,
-        "StepStatistics", "CanonicalizeStates" -> None, "StatisticsGraph" -> "AllPairs"]}};
+        "StepStatistics", "StepStatisticsMeasures" -> All, "CanonicalizeStates" -> None, "StatisticsGraph" -> "AllPairs"]}};
+    (* Without "StepStatisticsMeasures" a step has the base keys only. *)
+    Module[{res = HGEvolve[rules, init, steps, "StepStatistics", "CanonicalizeStates" -> None],
+        extra},
+      extra = Select[res, KeyExistsQ[#, "EdgeInvariants"] || KeyExistsQ[#, "LogGeodesicCount"] ||
+          KeyExistsQ[#["Invariants"], "BallDimension"] ||
+          KeyExistsQ[#["VertexInvariants"], "CombinatorialCurvature"] &];
+      If[extra === {}, Print["PASS  ", name, " base keys: ", Length[res], " steps"],
+        failures++; Print["FAIL  ", name, " base keys: a step has a family's key"]]];
     (* The overlap and the cosine of a level are a SparseArray when fewer than half of the
        k (k - 1) / 2 pairs share an element; every other matrix is a packed array. *)
     sparseMatrixQ[name_, want_] := Module[{o = want[If[StringContainsQ[name, "Edge"],

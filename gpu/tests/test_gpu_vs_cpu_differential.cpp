@@ -2427,6 +2427,7 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         rs.multiplicities = true;
         rs.state_invariants = true;
         rs.statistics_graph = graph;
+        rs.statistics_measures = hgcommon::SG_MEASURES_ALL;
         hg.set_record_set(rs);
         hypergraph::ParallelEvolutionEngine pe(&hg, 1);
         pe.set_explore_from_canonical_states_only(true);
@@ -2452,6 +2453,7 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         in.record.multiplicities = true;
         in.record.state_invariants = true;
         in.record.statistics_graph = graph;
+        in.record.statistics_measures = hgcommon::SG_MEASURES_ALL;
         const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
         std::map<uint64_t, const hgcommon::StateInvariantRecord*> dev;
         for (const auto& s : r.states)

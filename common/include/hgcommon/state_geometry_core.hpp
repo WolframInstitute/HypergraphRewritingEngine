@@ -458,6 +458,14 @@ enum : uint32_t {
     SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
 };
 
+// "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
+// computed without the option.
+constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
+constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
+constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
+                                     SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
+                                     SG_DIMENSION_GRADIENT;
+
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
     SG_DIST_LOCAL_DIMENSION = 0,         // d_v over G'
@@ -477,6 +485,17 @@ enum : uint32_t {
     SG_DISTS = 14,
 };
 constexpr uint32_t SG_DIST_BINS = 32;
+
+// The number of distributions, in SG_DIST order, a record keeps under `want`: through the last
+// one a requested family writes.
+HG_HD inline uint32_t sg_dists_for(uint32_t want) {
+    if (want & SG_DIMENSION_GRADIENT) return SG_DIST_DIMENSION_GRADIENT + 1;
+    if (want & SG_PARTICLE) return SG_DIST_CHARGE + 1;
+    if (want & SG_COMBINATORIAL) return SG_DIST_CYCLE_CURVATURE + 1;
+    if (want & SG_NONLAZY_OLLIVIER) return SG_DIST_NONLAZY_OLLIVIER + 1;
+    if (want & SG_VOLUME_GROWTH) return SG_DIST_SPHERE_CURVATURE + 1;
+    return SG_DIST_RICCI + 1;
+}
 
 // The volume-growth fits in SG_DIST order from SG_DIST_BALL_DIMENSION: per probe and measure, the
 // dimension then the scalar curvature.

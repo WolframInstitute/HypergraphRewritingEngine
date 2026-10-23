@@ -385,6 +385,24 @@ quantiles are histogram quantiles: the bin holding the fraction q of the weight,
 the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
 edge to its weight.
 
+**`StepStatistics` measure families.** The option `"StepStatisticsMeasures"` adds families of
+keys to the geometry above. `Automatic`, the default, adds none. `All` adds every family, and a
+list adds the families it names:
+
+| Family | Keys | Section |
+|---|---|---|
+| `"VolumeGrowth"` | the six ball and sphere dimensions and scalar curvatures, in `Invariants` and `VertexInvariants` | volume growth |
+| `"Geodesics"` | `GeodeticFraction`, `SegmentEntropy`, `LogGeodesicCount` | geodesic multiplicity |
+| `"EdgeCurvature"` | `NonLazyOllivierRicciCurvature`, `EdgeInvariants` | non-lazy Ollivier-Ricci curvature |
+| `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
+| `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
+| `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
+| `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
+
+A family that is not requested is not computed: each class's record carries the request
+(`hgcommon::RecordSet::statistics_measures`, the `want` bits of `sg_geometry_of`) on both
+devices, and a record keeps the distributions through the last one a requested family writes.
+
 **`StepStatistics` volume growth.** Six more `Invariants` entries and six more `VertexInvariants`
 distributions fit the growth of balls and spheres about each vertex v of G' (the largest
 component above). For r = 0..ecc(v), A(r) = \|S(v, r)\| counts the vertices at distance r,

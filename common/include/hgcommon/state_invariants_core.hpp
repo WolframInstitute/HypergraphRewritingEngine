@@ -387,9 +387,10 @@ struct SiResult {
     const uint32_t* arities = nullptr;
     const uint32_t* degrees = nullptr;
     uint32_t m = 0, n = 0, nball = 0, ngeodesic = 0;
+    uint32_t ndists = SG_DISTS;   // sg_dists_for of the request
     HG_HD uint64_t bytes() const {
         return StateInvariantRecord::bytes(si_runs(arities, m), si_runs(degrees, n), nball,
-                                           SG_DISTS, ngeodesic);
+                                           ndists, ngeodesic);
     }
 };
 
@@ -400,13 +401,16 @@ struct SiResult {
 // first in that order, so the canonical labelling makes every value one value per class. False
 // when the scratch is short, with `needed` set to a size to retry with; every lane returns the
 // same verdict and size. Both run on every lane of the policy; `r` is the leader's. `graph`
-// is the rule that builds the geometry's graph (SG_GRAPH_CONSECUTIVE or SG_GRAPH_ALL_PAIRS).
+// is the rule that builds the geometry's graph (SG_GRAPH_CONSECUTIVE or SG_GRAPH_ALL_PAIRS),
+// `want` the measures (SG_MEASURES_BASE and the requested families); the record keeps
+// sg_dists_for(want) distributions.
 template <class Par = IrSerial>
 HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, uint32_t m,
                                const uint32_t* goff, const uint32_t* gverts, uint32_t gm,
                                unsigned char* scratch, uint64_t capacity, uint64_t& needed,
                                SiResult& r, Par par = Par{},
-                               uint32_t graph = SG_GRAPH_CONSECUTIVE) {
+                               uint32_t graph = SG_GRAPH_CONSECUTIVE,
+                               uint32_t want = SG_MEASURES_ALL) {
     const uint32_t S = off[m];
     const uint64_t siw = si_scratch_words(S, m, par.width());
     uint32_t* words = reinterpret_cast<uint32_t*>(scratch);
@@ -426,7 +430,7 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     uint64_t need = 0;
     size_t geo_need = 0;
     if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
-                           ball, S + 1, geo_need, ~0u, par, largest, largest_n, dists, nullptr,
+                           ball, S + 1, geo_need, want, par, largest, largest_n, dists, nullptr,
                            nullptr, geodesic, S + 1, graph))
         need = fixed + geo_need;
     par.sync();
@@ -444,6 +448,7 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
         r.nball = r.g.ball_radii;
         r.geodesic = geodesic;
         r.ngeodesic = r.g.geodesic_radii;
+        r.ndists = sg_dists_for(want);
     }
     return true;
 }
@@ -458,10 +463,10 @@ HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r)
     rec->num_ball = r.nball;
     rec->num_geodesic = r.ngeodesic;
     rec->reserved = 0;
-    rec->num_distributions = SG_DISTS;
+    rec->num_distributions = r.ndists;
     auto* d = reinterpret_cast<SgDistribution*>(rec + 1);
-    for (uint32_t k = 0; k < SG_DISTS; ++k) d[k] = r.dists[k];
-    double* b = reinterpret_cast<double*>(d + SG_DISTS);
+    for (uint32_t k = 0; k < r.ndists; ++k) d[k] = r.dists[k];
+    double* b = reinterpret_cast<double*>(d + r.ndists);
     for (uint32_t i = 0; i < r.nball; ++i) b[i] = r.ball[i];
     double* gd = b + r.nball;
     for (uint32_t i = 0; i < r.ngeodesic; ++i) gd[i] = r.geodesic[i];

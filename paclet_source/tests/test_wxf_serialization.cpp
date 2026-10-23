@@ -2681,8 +2681,12 @@ TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
                                          put_str_option(o, "CanonicalizeStates", "Full");
                                          put_str_option(o, "IncludeVertexCurvature", "True");
                                          put_str_option(o, "StatisticsGraph", graph);
+                                         put_str_list_option(
+                                             o, "StepStatisticsMeasures",
+                                             {"VolumeGrowth", "Geodesics", "EdgeCurvature",
+                                              "Combinatorial", "Particles", "DimensionGradient"});
                                      },
-                                     4);
+                                     5);
         const auto host = cpu(job);
         const auto device = worker_call(w, job);
         ASSERT_FALSE(host.empty()) << cpu.w.last_error;
@@ -4965,7 +4969,8 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     s.pairs = {{10, 11}, {11, 10}, {12, 12}};
     s.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
     const auto out = branchial_keys(
-        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
+        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap |
+                       hg::stats::kBranchialMeasures);
     ASSERT_EQ(out.size(), 1u);
     const wxf::WXFValue rec(out.at(1));
     ASSERT_NE(assoc_at(rec, "BranchialDegree"), nullptr);
@@ -4997,14 +5002,54 @@ TEST(StateStatistics, BranchialCycleMeasures) {
         s.pairs.push_back({20 + i, 20 + (i + 1) % 8});
         s.vertex_sets.push_back({static_cast<uint32_t>(i)});
     }
-    const auto out = branchial_keys({{1u, s}}, hg::stats::kBranchialGraph);
+    const auto out =
+        branchial_keys({{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialMeasures);
     ASSERT_EQ(out.size(), 1u);
     const wxf::WXFValue rec(out.at(1));
+    // Without kBranchialMeasures the step has the graph keys only.
+    const wxf::WXFValue plain(branchial_keys({{1u, s}}, hg::stats::kBranchialGraph).at(1));
+    EXPECT_NE(assoc_at(plain, "BranchialDimension"), nullptr);
+    EXPECT_EQ(assoc_at(plain, "BranchialSphereDimension"), nullptr);
+    EXPECT_EQ(assoc_at(plain, "BranchialOllivierRicciCurvature"), nullptr);
     EXPECT_NEAR(number_at(rec, "BranchialSphereDimension"), 1.0, 1e-12);
     EXPECT_NEAR(number_at(rec, "BranchialSphereScalarCurvature"), 0.0, 1e-12);
     EXPECT_NE(assoc_at(rec, "BranchialRiemannianBallDimension"), nullptr);
     EXPECT_DOUBLE_EQ(number_at(rec, "BranchialOllivierRicciCurvature"), 0.0);
     EXPECT_DOUBLE_EQ(number_at(rec, "BranchialNonLazyOllivierRicciCurvature"), 0.0);
+}
+
+// "StepStatisticsMeasures": a step's record has a family's keys only when the family is asked
+// for. The record of a state computed with every family gives, under the base set, the 25
+// "Invariants" and 3 "VertexInvariants" of the base set and no "EdgeInvariants" or
+// "LogGeodesicCount"; under "Particles" the 4 particle entries and its 2 distributions more.
+TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
+    std::vector<uint64_t> storage;
+    const hgcommon::StateInvariantRecord* rec =
+        hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 1}}, storage);
+    hg::stats::StepInput in;
+    hg::stats::add_class(in, 7, 1, rec);
+    auto keys = [](const wxf::WXFValue& a) {
+        std::vector<std::string> k;
+        for (const auto& [key, v] : std::get<wxf::WXFValueAssociation>(a.data))
+            k.push_back(std::get<std::string>(key.data));
+        return k;
+    };
+    const wxf::WXFValue base(hg::stats::step_record(1, in, false));
+    EXPECT_EQ(keys(*assoc_at(base, "Invariants")).size(), 25u);
+    EXPECT_EQ(keys(*assoc_at(base, "VertexInvariants")).size(), 3u);
+    EXPECT_EQ(assoc_at(base, "EdgeInvariants"), nullptr);
+    EXPECT_EQ(assoc_at(base, "LogGeodesicCount"), nullptr);
+    const wxf::WXFValue particles(hg::stats::step_record(
+        1, in, false, hgcommon::SG_MEASURES_BASE | hg::stats::measure_bits("Particles")));
+    EXPECT_EQ(keys(*assoc_at(particles, "Invariants")).size(), 29u);
+    EXPECT_EQ(keys(*assoc_at(particles, "VertexInvariants")).size(), 5u);
+    EXPECT_NE(assoc_at(*assoc_at(particles, "Invariants"), "TopologicalCharge"), nullptr);
+    const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 42u);
+    EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
+    EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
+    EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);
+    EXPECT_EQ(hg::stats::measure_bits("Curvature"), 0u);
 }
 
 // The pairwise, initial-state and edge metrics of the same step worked by hand. Step 0 is one
