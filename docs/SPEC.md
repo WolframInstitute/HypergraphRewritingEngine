@@ -399,6 +399,7 @@ list adds the families it names:
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
 | `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
 | `"MetricTensor"` | `MetricTensorGap` | metric tensor |
+| `"Holonomy"` | `HolonomyTriangle`, `HolonomySquare` | holonomy |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -547,6 +548,15 @@ The computation is Gaussian elimination over GF(2). A breadth-first spanning for
 | `MetricTensorGap` | the mean of the gap of p at r = ⌊R'/2⌋ over the centre vertices p of G', those of eccentricity R' | R' < 2, R' the radius of G' |
 
 The tutorial reads the first vertex of `GraphCenter`, which depends on the vertex numbering. The mean over every centre vertex is the same for isomorphic states. The tutorial integrates by the midpoint rule on 1000 points. Here F_r is constant on each [k/r, (k+1)/r), and each piece is integrated in closed form with G(t) = t - (t arccos t - sqrt(1 - t²) + 1) / π, the integral of F from 0, split at t* = -cos(π c) where F crosses the constant c. On the 5 x 5 grid the centre is the middle vertex, r = 2, T[v, w] = 1 - d(v, w)/4 on the 8 vertices of S_2, and the gap is 0.0935618363. Each centre takes one breadth-first search from p and one from each vertex of S_r(p), then O(|S|² V): O(C (|S| (V + E) + |S|² V)) for C centre vertices.
+
+**`StepStatistics` holonomy.** The family `"Holonomy"` adds `HolonomyTriangle` and `HolonomySquare`, Infrageometry's holonomy angle at scale r = 1 under `Method -> "Arclength"` (Infrageometry@ffa5fe4:Kernel/InfraFiberBundles/Experimental/InfraLeviCivita.wl:36-93 and 124-133). The directions at a vertex p are its neighbours N(p). The angle between two directions is their distance in G with p deleted, or 2V when deleting p separates them. A transport over an edge p-q maps the smaller of N(p) and N(q) into the larger, one to one, with q in N(p) paired with a continuation. A continuation is a vertex of N(q) farthest from p, and among those farthest in angle from p at q. Among these maps the transports are those with the least sum, over pairs of directions, of the squared difference of their angles. A direction of the larger set outside the image is dropped. The holonomy angle of a closed walk is the least, over the composites of one transport per step, of the mean angle between each direction at the base that the composite moves and its image. Dropped directions are left out, and the angle is 0 when no direction moves.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `HolonomyTriangle` | the mean over the triangles of G of the mean holonomy angle of its 6 closed walks (3 base vertices, 2 orientations) | G has no triangle, or a vertex of degree above 6 |
+| `HolonomySquare` | the same over the chordless 4-cycles of G, with 8 closed walks each | G has no chordless 4-cycle, or a vertex of degree above 6 |
+
+Infrageometry's tests give 1 on the octahedron's triangles, 0 on the triangles of the triangular torus and 0 on the squares of the square torus. The degree bound 6 limits a step to 6 · 5! = 720 transports and a closed walk to 13327 distinct composites, the partial one-to-one maps of 6 directions into 6. The angles take one breadth-first search in G minus v from each neighbour of each vertex v, stopped when the other neighbours are found. Each step scores at most 720 maps in 36 operations each.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

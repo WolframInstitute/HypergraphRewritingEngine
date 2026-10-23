@@ -121,7 +121,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
   "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
   "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature", "CliqueBetti0",
-  "CliqueBetti1", "CliqueBetti2", "RipsBetti1", "MetricTensorGap"};
+  "CliqueBetti1", "CliqueBetti2", "RipsBetti1", "MetricTensorGap", "HolonomyTriangle",
+  "HolonomySquare"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
@@ -349,6 +350,8 @@ Do[
           KeyExistsQ[#["Invariants"], "BallDimension"] ||
           KeyExistsQ[#["Invariants"], "CliqueBetti0"] ||
           KeyExistsQ[#["Invariants"], "MetricTensorGap"] ||
+          KeyExistsQ[#["Invariants"], "HolonomyTriangle"] ||
+          KeyExistsQ[#["Invariants"], "HolonomySquare"] ||
           KeyExistsQ[#["VertexInvariants"], "CombinatorialCurvature"] &];
       If[extra === {}, Print["PASS  ", name, " base keys: ", Length[res], " steps"],
         failures++; Print["FAIL  ", name, " base keys: a step has a family's key"]]];

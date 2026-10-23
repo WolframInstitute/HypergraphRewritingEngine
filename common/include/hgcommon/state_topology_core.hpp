@@ -1,9 +1,9 @@
 #pragma once
-// TOPOLOGY AND METRIC TENSOR OF A STATE'S GRAPH G, one body for the host and the device.
+// TOPOLOGY, METRIC TENSOR AND HOLONOMY OF A STATE'S GRAPH G, one body for the host and the device.
 // state_geometry_core.hpp includes this file after SgGeometry, and sg_geometry_of calls
 // st_families_of after its eccentricity pass; this file reads SgGraph, SgArena, sg_bfs,
 // sg_bfs_clear, sg_sort, sg_adjacent and sg_short_distance from there. The definitions are in docs/SPEC.md under "StepStatistics
-// topology" and "StepStatistics metric tensor";
+// topology", "StepStatistics metric tensor" and "StepStatistics holonomy";
 // reference/StateGeometryReference.wl computes the same values independently.
 //
 // BETTI NUMBERS over GF(2). For a graph H with c = |E| - |V| + b0 independent cycles, the
@@ -392,6 +392,318 @@ HG_HD bool st_metric_tensor_gap(const SgGraph& g, SgArena& arena, const uint32_t
     return true;
 }
 
+// HOLONOMY AT r = 1 (docs/SPEC.md, "StepStatistics holonomy"): Infrageometry's
+// InfraParallelTransport and InfraHolonomyAngle under Method "Arclength", for states whose
+// largest degree is at most ST_HOLONOMY_DEGREE. A direction at p is a neighbour of p; the angle
+// between two is their distance in G minus p, 2 |V| when that disconnects them.
+//
+// A map from the directions at p to those at q is a key of 3 bits per index of N(p), the index
+// in N(q) or 7 for a direction the map drops. A composite of maps around a loop is a key of 3
+// bits per direction at the base. With degree at most 6 a step has at most 6 * 5! = 720
+// optimal maps and a loop at most 13327 distinct composites (the partial injections of 6 into
+// 6), so each holonomy lane keeps two hash sets of 16384 keys.
+constexpr uint32_t ST_HOLONOMY_DEGREE = 6;
+constexpr uint32_t ST_MAPS = 720;
+constexpr uint32_t ST_SET = 16384;
+constexpr uint32_t ST_SET_EMPTY = 0xFFFFFFFFu;
+constexpr uint32_t ST_D = ST_HOLONOMY_DEGREE;
+
+// Words of one holonomy lane's scratch: the step maps, two sets and two key lists.
+HG_HD inline size_t st_holonomy_lane_words() { return ST_MAPS + 2 * ST_SET + 2 * 13328; }
+
+// Holonomy lanes out of `lanes`: as many as fit in 1 MB of scratch, and at least one.
+HG_HD inline uint32_t st_holonomy_lanes(uint32_t lanes) {
+    const size_t fit = (size_t{1} << 20) / (4 * st_holonomy_lane_words());
+    return fit == 0 ? 1u : (fit < lanes ? static_cast<uint32_t>(fit) : lanes);
+}
+
+HG_HD inline uint32_t st_key_get(uint32_t key, uint32_t i) { return (key >> (3 * i)) & 7u; }
+HG_HD inline uint32_t st_key_set(uint32_t key, uint32_t i, uint32_t x) {
+    return (key & ~(7u << (3 * i))) | (x << (3 * i));
+}
+
+// Inserts `key` into the set (ST_SET slots) and appends its slot to `list`; false when it was
+// already there. A set is all ST_SET_EMPTY between loops: st_loop_holonomy clears the slots
+// its lists name.
+HG_HD inline bool st_set_insert(uint32_t* set, uint32_t* list, uint32_t& size, uint32_t key) {
+    uint32_t h = (key * 2654435761u) >> 18;   // 14 bits
+    for (;;) {
+        if (set[h] == key) return false;
+        if (set[h] == ST_SET_EMPTY) {
+            set[h] = key;
+            list[size++] = h;
+            return true;
+        }
+        h = (h + 1) & (ST_SET - 1);
+    }
+}
+
+// The optimal transports over the step p -> q into `maps`; returns their number.
+// `angle` holds ST_D x ST_D words per vertex: angle[(v ST_D + i) ST_D + j] for the directions
+// i, j of v.
+HG_HD inline uint32_t st_transports(const SgGraph& g, const uint32_t* angle, uint32_t p,
+                                    uint32_t q, uint32_t* maps) {
+    const uint32_t a = g.degree(p), b = g.degree(q);
+    const uint32_t* P = g.nbr + g.off[p];
+    const uint32_t* Q = g.nbr + g.off[q];
+    const uint32_t* Ap = angle + static_cast<size_t>(p) * ST_D * ST_D;
+    const uint32_t* Aq = angle + static_cast<size_t>(q) * ST_D * ST_D;
+    const bool transposed = a > b;
+    const uint32_t s = transposed ? b : a, l = transposed ? a : b;
+    uint32_t iq = 0, ip = 0;
+    while (P[iq] != q) ++iq;
+    while (Q[ip] != p) ++ip;
+    // The continuations of the germ q: the directions at q farthest from p, then farthest in
+    // angle from the backward direction p.
+    uint32_t cont[ST_D];
+    uint32_t nc = 0, best_d = 0, best_a = 0;
+    for (uint32_t j = 0; j < b; ++j) {
+        const uint32_t d = sg_short_distance(g, p, Q[j]);
+        const uint32_t ang = Aq[j * ST_D + ip];
+        if (nc == 0 || d > best_d || (d == best_d && ang > best_a)) {
+            nc = 0;
+            best_d = d;
+            best_a = ang;
+        }
+        if (d == best_d && ang == best_a) cont[nc++] = j;
+    }
+    const uint32_t* As = transposed ? Aq : Ap;   // angles of the smaller sphere
+    const uint32_t* Al = transposed ? Ap : Aq;
+    uint32_t count = 0;
+    uint64_t best = ~uint64_t{0};
+    for (uint32_t c = 0; c < nc; ++c) {
+        // The pinned pair, small index -> large index.
+        const uint32_t ps = transposed ? cont[c] : iq, pl = transposed ? iq : cont[c];
+        uint32_t m[ST_D];
+        uint32_t used = 1u << pl;
+        m[ps] = pl;
+        // Iterative enumeration of the injections of the free small positions into the unused
+        // large values, positions in ascending order.
+        int32_t pos = 0;
+        uint32_t free_pos[ST_D];
+        uint32_t nf = 0;
+        for (uint32_t x = 0; x < s; ++x)
+            if (x != ps) free_pos[nf++] = x;
+        int32_t choice[ST_D];
+        for (uint32_t k = 0; k < ST_D; ++k) choice[k] = -1;
+        for (;;) {
+            if (pos == static_cast<int32_t>(nf)) {
+                uint64_t score = 0;
+                for (uint32_t x = 0; x < s; ++x)
+                    for (uint32_t y = 0; y < s; ++y) {
+                        const int64_t dlt = static_cast<int64_t>(As[x * ST_D + y]) -
+                                            static_cast<int64_t>(Al[m[x] * ST_D + m[y]]);
+                        score += static_cast<uint64_t>(dlt * dlt);
+                    }
+                if (score <= best) {
+                    if (score < best) { best = score; count = 0; }
+                    uint32_t key = 0;
+                    for (uint32_t x = 0; x < a; ++x) key = st_key_set(key, x, 7u);
+                    if (transposed)
+                        for (uint32_t x = 0; x < s; ++x) key = st_key_set(key, m[x], x);
+                    else
+                        for (uint32_t x = 0; x < s; ++x) key = st_key_set(key, x, m[x]);
+                    maps[count++] = key;
+                }
+                --pos;
+                if (pos < 0) break;
+                used &= ~(1u << m[free_pos[pos]]);
+                continue;
+            }
+            // Advance position pos to its next unused value.
+            int32_t v = choice[pos] + 1;
+            while (v < static_cast<int32_t>(l) && (used >> v) & 1u) ++v;
+            if (v >= static_cast<int32_t>(l)) {
+                choice[pos] = -1;
+                --pos;
+                if (pos < 0) break;
+                used &= ~(1u << m[free_pos[pos]]);
+                continue;
+            }
+            choice[pos] = v;
+            m[free_pos[pos]] = static_cast<uint32_t>(v);
+            used |= 1u << v;
+            ++pos;
+        }
+    }
+    return count;
+}
+
+// The holonomy angle of the closed walk loop[0..k], loop[k] = loop[0]: the least, over the
+// composites of the optimal transports of its steps, of the mean angle between each moved
+// direction at the base and its image; 0 for a composite that moves none. Returned as a
+// fraction num / den.
+HG_HD inline void st_loop_holonomy(const SgGraph& g, const uint32_t* angle, const uint32_t* loop,
+                                   uint32_t k, uint32_t* lane, uint64_t& num, uint64_t& den) {
+    uint32_t* maps = lane;
+    uint32_t* set_a = maps + ST_MAPS;
+    uint32_t* set_b = set_a + ST_SET;
+    uint32_t* list_a = set_b + ST_SET;
+    uint32_t* list_b = list_a + 13328;
+    const uint32_t base = loop[0], d0 = g.degree(base);
+    uint32_t na = 0, key = 0;
+    for (uint32_t i = 0; i < d0; ++i) key = st_key_set(key, i, i);
+    st_set_insert(set_a, list_a, na, key);
+    for (uint32_t step = 0; step < k; ++step) {
+        const uint32_t nm = st_transports(g, angle, loop[step], loop[step + 1], maps);
+        uint32_t nb = 0;
+        for (uint32_t c = 0; c < na; ++c)
+            for (uint32_t t = 0; t < nm; ++t) {
+                uint32_t out = 0;
+                for (uint32_t i = 0; i < d0; ++i) {
+                    const uint32_t x = st_key_get(set_a[list_a[c]], i);
+                    out = st_key_set(out, i, x == 7u ? 7u : st_key_get(maps[t], x));
+                }
+                st_set_insert(set_b, list_b, nb, out);
+            }
+        for (uint32_t c = 0; c < na; ++c) set_a[list_a[c]] = ST_SET_EMPTY;
+        uint32_t* ts = set_a; set_a = set_b; set_b = ts;
+        uint32_t* tl = list_a; list_a = list_b; list_b = tl;
+        na = nb;
+    }
+    const uint32_t* A = angle + static_cast<size_t>(base) * ST_D * ST_D;
+    num = 0;
+    den = 1;
+    bool first = true;
+    for (uint32_t c = 0; c < na; ++c) {
+        uint64_t s = 0, moved = 0;
+        for (uint32_t i = 0; i < d0; ++i) {
+            const uint32_t x = st_key_get(set_a[list_a[c]], i);
+            if (x == 7u || x == i) continue;
+            s += A[i * ST_D + x];
+            ++moved;
+        }
+        if (moved == 0) { s = 0; moved = 1; }
+        if (first || s * den < num * moved) { num = s; den = moved; first = false; }
+    }
+    for (uint32_t c = 0; c < na; ++c) set_a[list_a[c]] = ST_SET_EMPTY;
+}
+
+// The mean holonomy angles over the triangles and over the chordless 4-cycles of G, each face
+// the mean over its rooted, oriented loops (6 for a triangle, 8 for a square). Every lane calls
+// it; the leader's outputs are the result. False when the arena is short.
+template <class Par>
+HG_HD bool st_holonomy(const SgGraph& g, SgArena& arena, Par par, double& triangle,
+                       uint32_t& triangle_defined, double& square, uint32_t& square_defined) {
+    const uint32_t n = g.n, L = par.width(), me = par.rank();
+    triangle_defined = 0;
+    square_defined = 0;
+    if (n == 0 || g.max_degree > ST_HOLONOMY_DEGREE) return true;
+    const size_t n1 = size_t{n} + 1;
+    const uint32_t HL = st_holonomy_lanes(L);
+    uint32_t* angle = arena.take<uint32_t>(n1 * ST_D * ST_D);
+    int32_t* dist_all = arena.take<int32_t>(L * n1);
+    uint32_t* queue_all = arena.take<uint32_t>(L * n1);
+    double* face_sum = arena.take<double>(2 * n1);
+    uint32_t* face_count = arena.take<uint32_t>(2 * n1);
+    uint32_t* lane_all = arena.take<uint32_t>(HL * st_holonomy_lane_words());
+    if (arena.failed) return false;
+    for (uint32_t h = me; h < HL; h += L) {
+        uint32_t* lane = lane_all + h * st_holonomy_lane_words() + ST_MAPS;
+        for (uint32_t i = 0; i < 2 * ST_SET; ++i) lane[i] = ST_SET_EMPTY;
+    }
+    // The angles at every vertex: breadth-first search in G minus v from each neighbour.
+    for (uint32_t v = me; v < n; v += L) {
+        int32_t* dist = dist_all + me * n1;
+        uint32_t* queue = queue_all + me * n1;
+        const uint32_t d = g.degree(v);
+        const uint32_t* N = g.nbr + g.off[v];
+        uint32_t* A = angle + static_cast<size_t>(v) * ST_D * ST_D;
+        for (uint32_t i = 0; i < n; ++i) dist[i] = -1;
+        for (uint32_t i = 0; i < d; ++i) {
+            for (uint32_t j = 0; j < d; ++j) A[i * ST_D + j] = 2 * n;
+            A[i * ST_D + i] = 0;
+            uint32_t head = 0, tail = 0, found = 1;
+            queue[tail++] = N[i];
+            dist[N[i]] = 0;
+            dist[v] = -2;   // deleted
+            while (head < tail && found < d) {
+                const uint32_t u = queue[head++];
+                for (uint32_t e = g.off[u]; e < g.off[u + 1]; ++e) {
+                    const uint32_t w = g.nbr[e];
+                    if (dist[w] != -1) continue;
+                    dist[w] = dist[u] + 1;
+                    queue[tail++] = w;
+                    for (uint32_t j = 0; j < d; ++j)
+                        if (N[j] == w) { A[i * ST_D + j] = static_cast<uint32_t>(dist[w]); ++found; }
+                }
+            }
+            for (uint32_t t = 0; t < tail; ++t) dist[queue[t]] = -1;
+            dist[v] = -1;
+        }
+    }
+    par.sync();
+    // The faces whose least vertex is u, u strided over the holonomy lanes.
+    if (me < HL)
+        for (uint32_t u = me; u < n; u += HL) {
+            uint32_t* lane = lane_all + me * st_holonomy_lane_words();
+            double ts = 0.0, ss = 0.0;
+            uint32_t tc = 0, sc = 0;
+            for (uint32_t i = g.off[u]; i < g.off[u + 1]; ++i) {
+                const uint32_t v = g.nbr[i];
+                if (v <= u) continue;
+                for (uint32_t j = i + 1; j < g.off[u + 1]; ++j) {
+                    const uint32_t w = g.nbr[j];
+                    if (sg_adjacent(g, v, w)) {
+                        const uint32_t c[3] = {u, v, w};
+                        double face = 0.0;
+                        for (uint32_t r0 = 0; r0 < 3; ++r0)
+                            for (uint32_t dir = 0; dir < 2; ++dir) {
+                                uint32_t loop[4];
+                                for (uint32_t t = 0; t < 3; ++t)
+                                    loop[t] = c[dir ? (r0 + 3 - t) % 3 : (r0 + t) % 3];
+                                loop[3] = loop[0];
+                                uint64_t num = 0, den = 1;
+                                st_loop_holonomy(g, angle, loop, 3, lane, num, den);
+                                face += static_cast<double>(num) / static_cast<double>(den);
+                            }
+                        ts += face / 6.0;
+                        ++tc;
+                    } else {
+                        // Chordless 4-cycles u-v-x-w-u with u least and v < w.
+                        for (uint32_t e = g.off[v]; e < g.off[v + 1]; ++e) {
+                            const uint32_t x = g.nbr[e];
+                            if (x <= u || x == w || !sg_adjacent(g, w, x) || sg_adjacent(g, u, x))
+                                continue;
+                            const uint32_t c[4] = {u, v, x, w};
+                            double face = 0.0;
+                            for (uint32_t r0 = 0; r0 < 4; ++r0)
+                                for (uint32_t dir = 0; dir < 2; ++dir) {
+                                    uint32_t loop[5];
+                                    for (uint32_t t = 0; t < 4; ++t)
+                                        loop[t] = c[dir ? (r0 + 4 - t) % 4 : (r0 + t) % 4];
+                                    loop[4] = loop[0];
+                                    uint64_t num = 0, den = 1;
+                                    st_loop_holonomy(g, angle, loop, 4, lane, num, den);
+                                    face += static_cast<double>(num) / static_cast<double>(den);
+                                }
+                            ss += face / 8.0;
+                            ++sc;
+                        }
+                    }
+                }
+            }
+            face_sum[u] = ts;
+            face_count[u] = tc;
+            face_sum[n1 + u] = ss;
+            face_count[n1 + u] = sc;
+        }
+    par.sync();
+    if (par.leader()) {
+        double ts = 0.0, ss = 0.0;
+        uint64_t tc = 0, sc = 0;
+        for (uint32_t u = 0; u < n; ++u) {
+            ts += face_sum[u];
+            tc += face_count[u];
+            ss += face_sum[n1 + u];
+            sc += face_count[n1 + u];
+        }
+        if (tc) { triangle = ts / static_cast<double>(tc); triangle_defined = 1; }
+        if (sc) { square = ss / static_cast<double>(sc); square_defined = 1; }
+    }
+    return true;
+}
+
 // Bytes of arena an array of n elements of `size` bytes takes at most, alignment included.
 HG_HD inline size_t st_array(size_t n, size_t size) { return n * size + 8; }
 
@@ -488,10 +800,14 @@ HG_HD inline size_t st_families_bytes(const SgGraph& g, uint32_t want, uint32_t 
                      st_array(size_t{r} + 1, 8);
         }
     }
+    if ((want & SG_HOLONOMY) && g.max_degree <= ST_HOLONOMY_DEGREE)
+        bytes += st_array(n1 * ST_D * ST_D, 4) + 2 * st_array(lanes * n1, 4) +
+                 st_array(2 * n1, 8) + st_array(2 * n1, 4) +
+                 st_array(st_holonomy_lanes(lanes) * st_holonomy_lane_words(), 4);
     return bytes;
 }
 
-// The requested families of `want` (SG_TOPOLOGY, SG_METRIC_TENSOR) into `out`,
+// The requested families of `want` (SG_TOPOLOGY, SG_METRIC_TENSOR, SG_HOLONOMY) into `out`,
 // written by the leader, from sg_geometry_of's eccentricities and G' (`sub`, `ns`). Every lane
 // calls it and gets the same verdict and arena use. False when the arena is short.
 template <class Par>
@@ -552,6 +868,15 @@ HG_HD bool st_families_of(const SgGraph& g, SgArena& arena, SgGeometry& out, uin
         if (par.leader() && defined) {
             out.metric_tensor_gap = gap;
             out.defined |= SG_METRIC_TENSOR;
+        }
+    }
+    if (want & SG_HOLONOMY) {
+        double tri = 0.0, sq = 0.0;
+        uint32_t td = 0, sd = 0;
+        if (!st_holonomy(g, arena, par, tri, td, sq, sd)) return false;
+        if (par.leader()) {
+            if (td) { out.holonomy_triangle = tri; out.defined |= SG_HOLONOMY; }
+            if (sd) { out.holonomy_square = sq; out.defined |= SG_HOLONOMY_SQUARE; }
         }
     }
     par.sync();

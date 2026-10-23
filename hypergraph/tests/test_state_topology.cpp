@@ -1,5 +1,7 @@
-// The topology and metric tensor families of hgcommon/state_topology_core.hpp (docs/SPEC.md,
-// "StepStatistics topology" and "StepStatistics metric tensor") on graphs with known values.
+// The topology, metric tensor and holonomy families of hgcommon/state_topology_core.hpp
+// (docs/SPEC.md, "StepStatistics topology", "StepStatistics metric tensor" and "StepStatistics
+// holonomy") on graphs with known values. The holonomy values are those of Infrageometry's tests
+// at Infrageometry@ffa5fe4:Tests/InfraFiberBundles/Experimental/InfraLeviCivitaTests.wlt:73-145.
 // reference/verify_state_statistics.wls checks the same values, through "StepStatistics",
 // against reference/StateGeometryReference.wl.
 
@@ -23,7 +25,7 @@ struct Edges {
 };
 
 constexpr uint32_t kFamilies =
-    hgcommon::SG_TOPOLOGY | hgcommon::SG_METRIC_TENSOR;
+    hgcommon::SG_TOPOLOGY | hgcommon::SG_METRIC_TENSOR | hgcommon::SG_HOLONOMY;
 
 // The geometry under `want`, from a 16-byte buffer grown to what each call reports. `calls`
 // receives the number of calls.
@@ -152,13 +154,35 @@ TEST(StateTopology, MetricTensorGapOfTheGrid) {
     EXPECT_FALSE(measure(cycle(3)).defined & hgcommon::SG_METRIC_TENSOR);
 }
 
+// Infrageometry's tests: the octahedron's faces turn the directions by 1 arc radian; the faces
+// of the triangular and of the square torus have holonomy 0.
+TEST(StateTopology, HolonomyOfKnownFaces) {
+    const SgGeometry oct = measure(octahedron());
+    ASSERT_TRUE(oct.defined & hgcommon::SG_HOLONOMY);
+    EXPECT_EQ(oct.holonomy_triangle, 1.0);
+    const SgGeometry tri = measure(torus(5, 5, true));
+    ASSERT_TRUE(tri.defined & hgcommon::SG_HOLONOMY);
+    EXPECT_EQ(tri.holonomy_triangle, 0.0);
+    EXPECT_FALSE(tri.defined & hgcommon::SG_HOLONOMY_SQUARE);
+    const SgGeometry sq = measure(torus(6, 6, false));
+    EXPECT_FALSE(sq.defined & hgcommon::SG_HOLONOMY);
+    ASSERT_TRUE(sq.defined & hgcommon::SG_HOLONOMY_SQUARE);
+    EXPECT_EQ(sq.holonomy_square, 0.0);
+    // A vertex of degree 7: undefined.
+    std::vector<std::vector<uint32_t>> star;
+    for (uint32_t i = 2; i <= 8; ++i) star.push_back({1, i});
+    star.push_back({2, 3});
+    EXPECT_FALSE(measure(star).defined & hgcommon::SG_HOLONOMY);
+}
+
 // A family not requested is not computed.
 TEST(StateTopology, OnlyRequestedFamilies) {
     const SgGeometry g = measure(octahedron(), hgcommon::SG_MEASURES_BASE);
-    EXPECT_FALSE(g.defined & (hgcommon::SG_TOPOLOGY | hgcommon::SG_METRIC_TENSOR));
+    EXPECT_FALSE(g.defined & (hgcommon::SG_TOPOLOGY | hgcommon::SG_METRIC_TENSOR |
+                              hgcommon::SG_HOLONOMY | hgcommon::SG_HOLONOMY_SQUARE));
     const SgGeometry t = measure(octahedron(), hgcommon::SG_TOPOLOGY);
     EXPECT_TRUE(t.defined & hgcommon::SG_TOPOLOGY);
-    EXPECT_FALSE(t.defined & hgcommon::SG_METRIC_TENSOR);
+    EXPECT_FALSE(t.defined & hgcommon::SG_HOLONOMY);
 }
 
 // The device grows a record's scratch at most 3 times (record_state_invariants_device): the

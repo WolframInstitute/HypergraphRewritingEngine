@@ -1635,6 +1635,7 @@ uint32_t measure_bits(const std::string& name) {
     if (name == "DimensionGradient") return hgcommon::SG_DIMENSION_GRADIENT;
     if (name == "Topology") return hgcommon::SG_TOPOLOGY;
     if (name == "MetricTensor") return hgcommon::SG_METRIC_TENSOR;
+    if (name == "Holonomy") return hgcommon::SG_HOLONOMY;
     if (name == "Branchial") return kMeasureBranchial;
     return 0;
 }
@@ -1705,6 +1706,8 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"CliqueBetti2", 1.0, true, hgcommon::SG_TOPOLOGY},
     {"RipsBetti1", 1.0, true, hgcommon::SG_TOPOLOGY},
     {"MetricTensorGap", 0.01, false, hgcommon::SG_METRIC_TENSOR},
+    {"HolonomyTriangle", 0.01, false, hgcommon::SG_HOLONOMY},
+    {"HolonomySquare", 0.01, false, hgcommon::SG_HOLONOMY},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges

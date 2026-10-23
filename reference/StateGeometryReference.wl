@@ -35,6 +35,7 @@ sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
 sgrTopology::usage = "sgrTopology[edges] gives CliqueBetti0, CliqueBetti1, CliqueBetti2 (the Betti numbers over GF(2) of the clique complex of the state's graph) and RipsBetti1 (of the clique complex of its square).";
 sgrMetricTensorGap::usage = "sgrMetricTensorGap[edges] gives the mean, over the centre vertices p of the largest component of radius R, of the gap between the values of the metric tensor on the sphere of radius Floor[R/2] about p and max(cos Theta, 0), or Missing[] when R < 2.";
+sgrHolonomy::usage = "sgrHolonomy[edges] gives HolonomyTriangle and HolonomySquare, the mean holonomy angles at r = 1 of the triangles and of the chordless 4-cycles of the state's graph, each Missing[] when there is no such face or a vertex has degree above 6.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -155,7 +156,7 @@ geodesicValues[edges_List, rule_String] := geodesicValues[edges, rule] = Module[
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
 geometryNames = Join[{"CliqueBetti0", "CliqueBetti1", "CliqueBetti2", "RipsBetti1",
-  "MetricTensorGap", "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+  "MetricTensorGap", "HolonomyTriangle", "HolonomySquare", "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -364,6 +365,68 @@ sgrMetricTensorGap[edges_List] := Module[{lc = largestComponentGraph[edges], R, 
   centre = GraphCenter[lc];
   N[Mean[metricTensorGap[metricTensorValues[lc, #, Floor[R/2]]] & /@ centre]]];
 
+(* Holonomy at r = 1 (docs/SPEC.md, "StepStatistics holonomy"): Infrageometry's
+   InfraParallelTransport and InfraHolonomyAngle under Method "Arclength"
+   (Infrageometry@ffa5fe4:Kernel/InfraFiberBundles/Experimental/InfraLeviCivita.wl:36-93 and
+   124-133), copied for r = 1 with the same enumeration of injections by Permutations. *)
+holonomyTransports[g_Graph, dist_, angles_, p_, q_] := Module[
+  {sphereP = AdjacencyList[g, p], sphereQ = AdjacencyList[g, q], anglesP = angles[p],
+   anglesQ = angles[q], transposed, smallerSize, largerSize, backwardCone, continuations,
+   injections, pins, matchings},
+  transposed = Length[sphereP] > Length[sphereQ];
+  smallerSize = Min[Length[sphereP], Length[sphereQ]];
+  largerSize = Max[Length[sphereP], Length[sphereQ]];
+  backwardCone = Select[Range[Length[sphereQ]], dist[p, sphereQ[[#]]] == 0 &];
+  continuations = Function[germP, With[{extensions = MaximalBy[
+      Select[Range[Length[sphereQ]], dist[sphereP[[germP]], sphereQ[[#]]] == 1 &],
+      dist[p, sphereQ[[#]]] &]},
+    MaximalBy[extensions, Total[anglesQ[[#, backwardCone]]] &]]];
+  injections = Function[pinList, Catenate[Map[
+    Function[partial, With[{freePositions = Complement[Range[smallerSize], partial[[All, 1]]]},
+      Lookup[AssociationThread[Join[partial[[All, 1]], freePositions], Join[partial[[All, 2]], #]],
+        Range[smallerSize]] & /@
+        Permutations[Complement[Range[largerSize], partial[[All, 2]]], {Length[freePositions]}]]],
+    Select[Tuples[(pin |-> If[transposed, {#, First[pin]} & /@ Last[pin],
+        {First[pin], #} & /@ Last[pin]]) /@ pinList],
+      DuplicateFreeQ[#[[All, 1]]] && DuplicateFreeQ[#[[All, 2]]] &]]]];
+  pins = DeleteCases[{#, continuations[#]} & /@
+    Select[Range[Length[sphereP]], dist[q, sphereP[[#]]] == 0 &], {_, {}}];
+  matchings = injections[pins];
+  If[transposed, AssociationThread[sphereP[[#]], sphereQ], AssociationThread[sphereP, sphereQ[[#]]]] & /@
+    MinimalBy[matchings, Function[m, Total[Flatten[If[transposed,
+      (anglesQ - anglesP[[m, m]])^2, (anglesP - anglesQ[[m, m]])^2]]]]]];
+
+loopHolonomy[g_Graph, dist_, angles_, loop_List] := Module[{transports, base = First[loop], dirs},
+  dirs = AdjacencyList[g, base];
+  transports = holonomyTransports[g, dist, angles, ##] & @@@ Partition[loop, 2, 1];
+  Min[Map[Function[chain, Module[{images, moved},
+      images = Fold[Lookup[#2, Key /@ #1, Missing[]] &, dirs, chain];
+      moved = Select[Transpose[{dirs, images}], !MissingQ[#[[2]]] && #[[1]] =!= #[[2]] &];
+      If[moved === {}, 0, Mean[Function[pr, angles[base][[
+        Position[dirs, pr[[1]]][[1, 1]], Position[dirs, pr[[2]]][[1, 1]]]]] /@ moved]]]],
+    DeleteDuplicates[Tuples[transports]]]]];
+
+sgrHolonomy[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, dist, angles, n, tris, sqs, face},
+  vs = VertexList[g]; n = Length[vs];
+  If[n == 0 || Max[VertexDegree[g]] > 6,
+    Return[<|"HolonomyTriangle" -> Missing[], "HolonomySquare" -> Missing[]|>]];
+  dm = GraphDistanceMatrix[g];
+  dist[a_, b_] := dm[[VertexIndex[g, a], VertexIndex[g, b]]];
+  (* the direction sphere's angles: the distance in G with the vertex deleted, 2 |V| when it
+     separates them *)
+  angles = AssociationMap[Function[p, With[{punched = VertexDelete[g, p], s = AdjacencyList[g, p]},
+      Outer[If[#1 === #2, 0, GraphDistance[punched, #1, #2] /. Infinity -> 2 n] &, s, s]]], vs];
+  tris = Union[Sort /@ Catenate[Function[e, {e[[1]], e[[2]], #} & /@
+      Intersection[AdjacencyList[g, e[[1]]], AdjacencyList[g, e[[2]]]]] /@ EdgeList[g]]];
+  sqs = Union[Function[c, First[Sort[Join[NestList[RotateLeft, c, 3],
+        NestList[RotateLeft, Reverse[c], 3]]]]] /@
+    Select[FindCycle[g, {4}, All][[All, All, 1]], !EdgeQ[g, #[[1]] \[UndirectedEdge] #[[3]]] &&
+      !EdgeQ[g, #[[2]] \[UndirectedEdge] #[[4]]] &]];
+  face[c_List] := Mean[loopHolonomy[g, dist, angles, Append[#, First[#]]] & /@
+    Join[NestList[RotateLeft, c, Length[c] - 1], NestList[RotateLeft, Reverse[c], Length[c] - 1]]];
+  <|"HolonomyTriangle" -> If[tris === {}, Missing[], N[Mean[face /@ tris]]],
+    "HolonomySquare" -> If[sqs === {}, Missing[], N[Mean[face /@ sqs]]]|>];
+
 sgrStateGeometry[edges_List] := Module[
   {g, n, conn, R, vs, dims, d, ricci, dm, index, ollivier, local, mi, fisher, b2, kE, kv, lc,
    moran, corr},
@@ -425,6 +488,7 @@ sgrStateGeometry[edges_List] := Module[
       If[k === {}, Missing[], N[Mean[k]]]],
     Sequence @@ Normal[sgrTopology[edges]],
     "MetricTensorGap" -> sgrMetricTensorGap[edges],
+    Sequence @@ Normal[sgrHolonomy[edges]],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
