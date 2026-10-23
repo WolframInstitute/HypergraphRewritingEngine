@@ -359,7 +359,7 @@ TEST(CapacityOverflow, TheMatchPoolGrowsAlone) {
     hg_gpu::EngineConfig cfg;
     const hg_gpu::EngineConfig before = cfg;
     ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kMatchPoolFull));
-    EXPECT_EQ(hg_gpu::match_pool_records(cfg), 2 * hg_gpu::match_pool_records(before));
+    EXPECT_EQ(hg_gpu::match_pool_records(cfg), 4 * hg_gpu::match_pool_records(before));
     EXPECT_EQ(cfg.max_states, before.max_states);
     EXPECT_EQ(cfg.max_events, before.max_events);
     EXPECT_EQ(cfg.max_edges, before.max_edges);

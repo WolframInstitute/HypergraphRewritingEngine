@@ -736,16 +736,16 @@ uint32_t match_pool_records(const EngineConfig& cfg) {
     return static_cast<uint32_t>(std::min<uint64_t>(n, 1ull << 31));
 }
 
-// The match pool after `refused` claims failed: at least twice its records, and at least the
-// next power of two above records + refused, at most 2^31. Under MaxStatesPerStep a step's
-// candidates all claim records before the step is selected, so the refused count of the step
-// that overflowed is its shortfall.
+// The match pool after `refused` claims failed: at least four times its records, and at least the
+// next power of two above records + refused, at most 2^31. The refused count of a run understates
+// the need: on grid16 StepStatistics it never raised the pool past twice its records, and the
+// pool doubled four times, each attempt a whole run.
 void grow_match_pool(EngineConfig& cfg, uint32_t refused) {
     const uint64_t have = match_pool_records(cfg);
     uint64_t want = 1;
     while (want < have + refused) want <<= 1;
     cfg.max_matches =
-        static_cast<uint32_t>(std::min<uint64_t>(std::max(2 * have, want), 1ull << 31));
+        static_cast<uint32_t>(std::min<uint64_t>(std::max(4 * have, want), 1ull << 31));
 }
 
 bool grow_config_for(EngineConfig& cfg, ErrorKind kind);
