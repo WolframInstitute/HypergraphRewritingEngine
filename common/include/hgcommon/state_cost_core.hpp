@@ -77,7 +77,7 @@ HG_HD inline bool state_cost_validate(StateCost& c) {
             const double s = c.arg[i];
             if (!(s >= 0.0 && s < static_cast<double>(SP_NUM_INVARIANTS))) return false;
             if (s != static_cast<double>(static_cast<uint32_t>(s))) return false;
-            measures |= sp_invariant_bit(static_cast<uint32_t>(s));
+            measures |= sp_invariant_want(static_cast<uint32_t>(s));
         }
         const int need = op == SC_CONST || op == SC_STAT ? 0 : (sc_stack_delta(op) < 0 ? 2 : 1);
         if (depth < need) return false;

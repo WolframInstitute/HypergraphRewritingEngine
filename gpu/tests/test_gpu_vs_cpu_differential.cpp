@@ -94,6 +94,10 @@ hgcommon::StateCost cost_program(std::initializer_list<std::pair<uint8_t, double
 const hgcommon::StateCost kCostInvariants =
     cost_program({{hgcommon::SC_STAT, 9}, {hgcommon::SC_NEG, 0}, {hgcommon::SC_CONST, 0.01},
                   {hgcommon::SC_STAT, 0}, {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
+// HolonomyTriangle + 0.01 VertexCount (slots 47 and 0).
+const hgcommon::StateCost kCostHolonomy =
+    cost_program({{hgcommon::SC_STAT, 47}, {hgcommon::SC_CONST, 0.01}, {hgcommon::SC_STAT, 0},
+                  {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
 const hgcommon::StateCost kCostGeometry =
     cost_program({{hgcommon::SC_STAT, 25}, {hgcommon::SC_CONST, 2}, {hgcommon::SC_SUB, 0},
                   {hgcommon::SC_ABS, 0}, {hgcommon::SC_CONST, 0.1}, {hgcommon::SC_STAT, 26},
@@ -2079,16 +2083,17 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
     join.initial_states = {{{0u, 0u}, {0u, 0u}}};
     join.num_steps = 4;
 
-    // Variants 3 and 4 are guided by a cost; over the workloads and N each changes some step's
+    // Variants 3, 4 and 5 are guided by a cost (5 reads HolonomyTriangle); over the workloads
+    // and N each changes some step's
     // choice. The ball dimension of the join's small states has no fit, so variant 4 changes
     // nothing there.
     std::map<std::pair<int, uint32_t>, std::multiset<uint64_t>> chosen;
-    bool differs[5] = {};
+    bool differs[6] = {};
     for (Workload w : {one_edge, join}) {
         w.canon_mode = hg_gpu::CanonicalizationMode::Full;
         w.random_seed = 0x5EED;
         chosen.clear();
-        for (int variant = 0; variant < 5; ++variant) {
+        for (int variant = 0; variant < 6; ++variant) {
             for (uint32_t n : {1u, 2u, 3u}) {
                 Workload v = w;
                 v.max_states_per_step = n;
@@ -2096,6 +2101,7 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
                 if (variant == 2) v.explore_from_canonical_states_only = true;
                 if (variant == 3) v.state_cost = kCostInvariants;
                 if (variant == 4) v.state_cost = kCostGeometry;
+                if (variant == 5) v.state_cost = kCostHolonomy;
                 NormalizedResult cpu = run_cpu(v);
                 NormalizedResult gpu = run_gpu(v);
                 chosen[{variant, n}] = gpu.event_keys;
@@ -2109,12 +2115,13 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
                     << v.name << " N=" << n << " variant " << variant << ": different transitions";
             }
         }
-        for (int variant : {3, 4})
+        for (int variant : {3, 4, 5})
             for (uint32_t n : {1u, 2u, 3u})
                 differs[variant] |= chosen[{variant, n}] != chosen[{0, n}];
     }
     EXPECT_TRUE(differs[3]) << "the invariants cost chose what the ranks choose";
     EXPECT_TRUE(differs[4]) << "the geometry cost chose what the ranks choose";
+    EXPECT_TRUE(differs[5]) << "the holonomy cost chose what the ranks choose";
 }
 
 // ExplorationProbability keeps the same states on both engines: the coin is the same function of
@@ -2507,7 +2514,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 // rules.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
-    size_t compared = 0, with_growth = 0, ternary = 0;
+    size_t compared = 0, with_growth = 0, ternary = 0, with_gap = 0, with_holonomy = 0, with_alignment = 0;
     for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
@@ -2598,8 +2605,18 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::cycle_curvature_total,
                   &hgcommon::SgGeometry::clustering, &hgcommon::SgGeometry::euler_excess,
                   &hgcommon::SgGeometry::charge, &hgcommon::SgGeometry::charge_max,
-                  &hgcommon::SgGeometry::dimension_gradient})
+                  &hgcommon::SgGeometry::dimension_gradient,
+                  &hgcommon::SgGeometry::rips_betti1, &hgcommon::SgGeometry::metric_tensor_gap,
+                  &hgcommon::SgGeometry::holonomy_triangle,
+                  &hgcommon::SgGeometry::holonomy_square})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < 3; ++k) {
+                EXPECT_TRUE(same(a->g.clique_betti[k], b->g.clique_betti[k])) << w.name;
+                EXPECT_TRUE(same(a->g.alignment_moment[k], b->g.alignment_moment[k])) << w.name;
+            }
+            if (a->g.defined & hgcommon::SG_BRANCH_ALIGNMENT) ++with_alignment;
+            if (a->g.defined & hgcommon::SG_METRIC_TENSOR) ++with_gap;
+            if (a->g.defined & (hgcommon::SG_HOLONOMY | hgcommon::SG_HOLONOMY_SQUARE)) ++with_holonomy;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
@@ -2623,6 +2640,12 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
     EXPECT_GT(compared, 0u);
     EXPECT_GT(with_growth, 0u);
     EXPECT_GT(ternary, 0u);
+    EXPECT_GT(with_gap, 0u);
+    EXPECT_GT(with_holonomy, 0u);
+    EXPECT_GT(with_alignment, 0u);
+    std::printf("[ RecordSet ] %zu classes with a branch alignment\n", with_alignment);
+    std::printf("[ RecordSet ] %zu classes with a metric tensor gap, %zu with a holonomy angle\n",
+                with_gap, with_holonomy);
     std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit, %zu with a hyperedge of "
                 "3 or more vertices under AllPairs\n",
                 compared, with_growth, ternary);

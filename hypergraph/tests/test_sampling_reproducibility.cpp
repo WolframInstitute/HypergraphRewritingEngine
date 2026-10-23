@@ -1078,6 +1078,8 @@ TEST(StateCost, InterpreterEvaluatesEveryOperation) {
     g.defined = SG_RADIUS;
     g.radius = 3;
     g.mean_eccentricity = 2.0;
+    g.defined |= SG_HOLONOMY;
+    g.holonomy_triangle = 0.25;
     auto prog = [](std::initializer_list<std::pair<uint8_t, double>> ops) {
         StateCost c;
         for (const auto& [op, arg] : ops) {
@@ -1107,6 +1109,9 @@ TEST(StateCost, InterpreterEvaluatesEveryOperation) {
     EXPECT_NEAR(eval(prog({{SC_CONST, 1}, {SC_EXP, 0}})), std::exp(1.0), 1e-15);
     // GraphRadius (slot 11) is defined; WolframHausdorffDimension (slot 13) is not.
     EXPECT_EQ(eval(prog({{SC_STAT, 11}})), 3.0);
+    // HolonomyTriangle (slot 47) is defined; HolonomySquare (slot 48) has its own defined bit.
+    EXPECT_EQ(eval(prog({{SC_STAT, 47}, {SC_CONST, 2}, {SC_MUL, 0}})), 0.5);
+    EXPECT_EQ(eval(prog({{SC_STAT, 48}})), HUGE_VAL);
     EXPECT_EQ(eval(prog({{SC_STAT, 13}, {SC_CONST, 1}, {SC_ADD, 0}})), HUGE_VAL);
     // NaN and the root of a negative number are +Infinity.
     EXPECT_EQ(eval(prog({{SC_CONST, -1}, {SC_SQRT, 0}})), HUGE_VAL);
@@ -1116,12 +1121,16 @@ TEST(StateCost, InterpreterEvaluatesEveryOperation) {
     StateCost m = prog({{SC_STAT, 25}, {SC_STAT, 11}, {SC_ADD, 0}});
     ASSERT_TRUE(state_cost_validate(m));
     EXPECT_EQ(m.measures, SG_VOLUME_GROWTH | SG_RADIUS);
+    // HolonomySquare is computed by SG_HOLONOMY's family.
+    StateCost h = prog({{SC_STAT, 48}, {SC_STAT, 51}, {SC_ADD, 0}});
+    ASSERT_TRUE(state_cost_validate(h));
+    EXPECT_EQ(h.measures, SG_HOLONOMY | SG_BRANCH_ALIGNMENT);
     // Malformed programs.
     StateCost bad = prog({{SC_ADD, 0}});
     EXPECT_FALSE(state_cost_validate(bad));
     bad = prog({{SC_CONST, 1}, {SC_CONST, 2}});
     EXPECT_FALSE(state_cost_validate(bad));
-    bad = prog({{SC_STAT, 42}});
+    bad = prog({{SC_STAT, 52}});
     EXPECT_FALSE(state_cost_validate(bad));
     bad = prog({{SC_STAT, 1.5}});
     EXPECT_FALSE(state_cost_validate(bad));

@@ -5202,8 +5202,12 @@ TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     EXPECT_EQ(keys(*assoc_at(particles, "Invariants")).size(), 29u);
     EXPECT_EQ(keys(*assoc_at(particles, "VertexInvariants")).size(), 5u);
     EXPECT_NE(assoc_at(*assoc_at(particles, "Invariants"), "TopologicalCharge"), nullptr);
+    const wxf::WXFValue topology(hg::stats::step_record(
+        1, in, false, hgcommon::SG_MEASURES_BASE | hg::stats::measure_bits("Topology")));
+    EXPECT_EQ(keys(*assoc_at(topology, "Invariants")).size(), 29u);
+    EXPECT_NE(assoc_at(*assoc_at(topology, "Invariants"), "RipsBetti1"), nullptr);
     const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
-    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 42u);
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 52u);
     EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
     EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
     EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);
@@ -6415,6 +6419,13 @@ TEST(FfiInput, StateCostCompilesNamesAndRefusesTheRest) {
     EXPECT_EQ(c.op[5], hgcommon::SC_POW);
     EXPECT_EQ(c.arg[5], 2.0);
     EXPECT_EQ(c.measures, hgcommon::SG_VOLUME_GROWTH);
+    // Every "Invariants" name compiles, up to the last slot.
+    const hgcommon::StateCost h =
+        hg::stats::compile_state_cost({"HolonomyTriangle", "AlignmentMoment3", "Plus"}, {});
+    ASSERT_EQ(h.n, 3u);
+    EXPECT_EQ(h.arg[0], 47.0);
+    EXPECT_EQ(h.arg[1], 51.0);
+    EXPECT_EQ(h.measures, hgcommon::SG_HOLONOMY | hgcommon::SG_BRANCH_ALIGNMENT);
     EXPECT_EQ(hg::stats::compile_state_cost({}, {}).n, 0u);
     EXPECT_THROW(hg::stats::compile_state_cost({"NoSuchStatistic"}, {}), std::runtime_error);
     EXPECT_THROW(hg::stats::compile_state_cost({"Const"}, {}), std::runtime_error);
@@ -6736,7 +6747,7 @@ TEST(GraphMarshalStream, BytesIndependentOfThreadsAndChunkOrder) {
 
 namespace {
 
-// `n` classes over two steps: random small states (1 to 7 edges of arity 1 to 3 over up to 6
+// `n` classes over `steps` steps (two by default): random small states (1 to 7 edges of arity 1 to 3 over up to 6
 // vertices), their records in one word pool, and random weights up to 50.
 struct PoolFixture {
     std::vector<uint64_t> pool;
@@ -6748,7 +6759,7 @@ struct PoolFixture {
     };
     std::vector<Class> classes;
 
-    explicit PoolFixture(size_t n) {
+    explicit PoolFixture(size_t n, uint32_t steps = 2) {
         std::mt19937_64 rng(20261014);
         std::vector<uint64_t> storage;
         for (size_t i = 0; i < n; ++i) {
@@ -6760,7 +6771,7 @@ struct PoolFixture {
             hg::stats::invariant_record(edges, storage);
             const uint64_t word = pool.size();
             pool.insert(pool.end(), storage.begin(), storage.end());
-            classes.push_back({static_cast<uint32_t>(i % 2), 1000 + i, word, 1 + rng() % 50});
+            classes.push_back({static_cast<uint32_t>(i % steps), 1000 + i, word, 1 + rng() % 50});
         }
     }
     const hgcommon::StateInvariantRecord* record(const Class& c) const {
@@ -6803,6 +6814,37 @@ TEST(StateStatistics, PoolDoesNotDependOnTheClassSplitOrTheThreadCount) {
             system.wait_for_completion();
             EXPECT_EQ(want, value_bytes(jobs.reply())) << threads << " threads, by_class " << by_class;
         }
+    }
+}
+
+// "StepStatisticsMeasures" "Equilibrium": each step's scores are computed as its record is made,
+// in whatever order the jobs finish, and the reply is the bytes of the run on one thread at 1, 2,
+// 8 and 16 workers. Step k's window holds min(k + 1, 20) steps.
+TEST(StateStatistics, EquilibriumDoesNotDependOnTheThreadCount) {
+    const PoolFixture fx(1500, 30);
+    const uint32_t measures = hgcommon::SG_MEASURES_BASE | hg::stats::kMeasureEquilibrium;
+    hg::stats::StepStatisticsJobs inline_jobs(false, 0, 1, [](std::function<void()> f) { f(); });
+    inline_jobs.set_measures(measures);
+    for (auto& [step, in] : fx.inputs()) inline_jobs.submit(step, std::move(in));
+    const wxf::WXFValue serial = inline_jobs.reply();
+    const auto& steps = std::get<wxf::WXFValueList>(serial.data);
+    ASSERT_FALSE(steps.empty());
+    for (size_t k = 0; k < steps.size(); ++k) {
+        const wxf::WXFValue* eq = assoc_at(steps[k], "Equilibrium");
+        ASSERT_NE(eq, nullptr) << k;
+        EXPECT_EQ(number_at(*eq, "Window"), static_cast<double>(std::min<size_t>(k + 1, 20)));
+    }
+    const std::vector<uint8_t> want = value_bytes(serial);
+    for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+        job_system::JobSystem<PoolTestJob> system(threads);
+        system.start();
+        hg::stats::StepStatisticsJobs jobs(false, 0, threads, [&](std::function<void()> f) {
+            system.submit(job_system::make_job<PoolTestJob>(std::move(f), PoolTestJob::Job));
+        });
+        jobs.set_measures(measures);
+        for (auto& [step, in] : fx.inputs()) jobs.submit(step, std::move(in));
+        system.wait_for_completion();
+        EXPECT_EQ(want, value_bytes(jobs.reply())) << threads << " threads";
     }
 }
 

@@ -29,8 +29,8 @@ namespace common {
 // The slots. Slots below SP_MULTIPLICITY and from SP_DIST_SUM on hold doubles as sp_key_of
 // keys; SP_ARITY, SP_DEGREE and SP_MULTIPLICITY hold integers as themselves.
 enum : uint32_t {
-    SP_INVARIANTS = 0,           // the 42 "Invariants" in reply order, slots 0..41
-    SP_NUM_INVARIANTS = 42,
+    SP_INVARIANTS = 0,           // the 52 "Invariants" in reply order, slots 0..51
+    SP_NUM_INVARIANTS = 52,
     SP_ARITY = SP_NUM_INVARIANTS,        // a hyperedge's arity
     SP_DEGREE = SP_NUM_INVARIANTS + 1,   // a vertex's slot degree
     SP_MULTIPLICITY = SP_NUM_INVARIANTS + 2,  // a class's raw state count, weight 1 per class
@@ -76,8 +76,8 @@ struct SpDistTotals {
     uint64_t max_key = 0;
 };
 
-// The geometry bit (SgGeometry::defined, and the `want` bit of state_record) of "Invariants"
-// slot `slot`; 0 for the slots below 11, which every record holds.
+// The SgGeometry::defined bit of "Invariants" slot `slot`; 0 for the slots below 11, which every
+// record holds.
 HG_HD inline uint32_t sp_invariant_bit(uint32_t slot) {
     if (slot < 11) return 0;
     if (slot <= 12) return SG_RADIUS;
@@ -97,7 +97,18 @@ HG_HD inline uint32_t sp_invariant_bit(uint32_t slot) {
     if (slot == 35) return SG_RIM;
     if (slot == 36) return SG_CYCLE_CURVATURE;
     if (slot <= 40) return SG_PARTICLE;
-    return SG_DIMENSION_GRADIENT;
+    if (slot == 41) return SG_DIMENSION_GRADIENT;
+    if (slot <= 45) return SG_TOPOLOGY;
+    if (slot == 46) return SG_METRIC_TENSOR;
+    if (slot == 47) return SG_HOLONOMY;
+    if (slot == 48) return SG_HOLONOMY_SQUARE;
+    return SG_BRANCH_ALIGNMENT;
+}
+
+// The `want` bit of state_record that computes "Invariants" slot `slot`: its defined bit, except
+// HolonomySquare (slot 48), which SG_HOLONOMY computes.
+HG_HD inline uint32_t sp_invariant_want(uint32_t slot) {
+    return slot == 48 ? SG_HOLONOMY : sp_invariant_bit(slot);
 }
 
 // "Invariants" slot `slot` (0..SP_NUM_INVARIANTS) of a state with values `s` and geometry `g`, in
@@ -145,6 +156,12 @@ HG_HD inline bool sp_invariant(const StateInvariantValues& s, const SgGeometry& 
         case 39: out = g.charge; break;
         case 40: out = g.charge_max; break;
         case 41: out = g.dimension_gradient; break;
+        case 42: case 43: case 44: out = g.clique_betti[slot - 42]; break;
+        case 45: out = g.rips_betti1; break;
+        case 46: out = g.metric_tensor_gap; break;
+        case 47: out = g.holonomy_triangle; break;
+        case 48: out = g.holonomy_square; break;
+        case 49: case 50: case 51: out = g.alignment_moment[slot - 49]; break;
         default: return false;
     }
     return true;
