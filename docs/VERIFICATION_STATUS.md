@@ -11,7 +11,8 @@ covers.
 - **GPUMC** is the scoped-RC11 checker for the GPU memory model: threads are grouped into CTAs and
   every access carries a scope, so whether two threads synchronise depends on the scope. RC11 has
   no scopes. GPUMC is a fork of GenMC 0.9 on LLVM 15 and runs from a container (the CAV 2025
-  artifact). Run with `verification/gpumc/run.sh <name>`.
+  artifact, with the fixes in `verification/gpumc/checker/`). Run with
+  `verification/gpumc/run.sh <name>`, or `run.sh cells` for every declared cell.
 - **TLA+** (TLC) checks a model of a protocol at any number of workers. Each spec names the code
   it transcribes. Run with `verification/tla/run.sh [<config>]`.
 
@@ -204,24 +205,76 @@ checker reports the redundant pair.
 
 ## GPUMC
 
-Eight harnesses under `verification/gpumc/`. Each runs a shared `hgcommon` core with the device's
-memory orders and scopes.
+26 harnesses under `verification/gpumc/`, 24 of them on the device's own code: `run.sh` compiles
+a copy of `gpu/` with launch configurations deleted, and `verification/gpumc/device/` maps CUDA's
+atomics, `cuda::atomic_ref`, fences, barriers, warp collectives and thread indices onto GPUMC's
+threads, scopes and work-group barriers. `evolve_ring_termination` and `replay_task_termination`
+run the `hgcommon` ring and termination cores with the kernel's accounting transcribed. Each
+harness declares its cells (`// GPUMC-CELL: name PASS|FAIL|BLOCKED defines -- gpumc args`) and
+`run.sh cells` fails on a verdict that differs; it is the `gpumc_cells` ctest. Every harness has
+a calibration cell that must FAIL: `HG_GPUMC_CALIBRATE_NO_THREADFENCE` (every `__threadfence` a
+no-op), `HG_GPUMC_CALIBRATE_SPLIT_RMW` (atomicAdd, atomicMin, atomicMax, atomicCAS and the
+`atomic_ref` exchanges and fetch_add a load and a separate store), or a harness's own reordering.
+`verification/gpumc/COVERAGE.md` maps the device's 466 concurrency points to 29 protocols: 217
+points are covered.
 
-| harness | core | property | result |
+The checker is the CAV 2025 artifact with six fixes (`verification/gpumc/checker/build.sh`, image
+`gpumc_docker:hg-fixes`): 32-bit compare-exchange, memcpy and memset promotion, races in included
+headers, struct returns, barrier divergence after a pruned spin, and floating point (intrinsics,
+C math, external-call arguments). Each fix has a checker cell.
+
+| harness | engine code | property | clean | calibration |
+|---|---|---|---|---|
+| `step_selection_once` | `persistent.cu` `step_release`, `run_step_selections` | a step's selection runs once after its last unit and keeps the lowest-ranked candidate; a later step's record being written stays for its scan | 112 executions | release_first FAIL, no_threadfence FAIL |
+| `exit_uniform` | `persistent.cu` `k_persistent_match_rewrite` | every lane of a worker block leaves at the same iteration | 10 | lane_read FAIL (barrier divergence) |
+| `termination_no_early_exit` | `TerminationDetector` | no quiescent exit while work is owed | 3,173 | complete_then_push FAIL |
+| `evolve_ring_termination` | `ring_core.hpp`, `termination_core.hpp` | the kernel loop never exits with work in the ring, a record unrewritten or a child owed | 672,126 (1 rule, 2 steps), 2,433,998 (3 rules, 1 step) | done_before_push FAIL |
+| `replay_task_termination` | `term_detect_loop` | no quiescent exit while a replay task is claimed, unrun or owed | 174,129 (1 worker); 272,243,862 (2 workers, long cell) | done_before_run FAIL, record_before_capture FAIL |
+| `ring_exactly_once` | `RingBuffer` | every item popped once, with drain | 26 | split_rmw FAIL |
+| `work_log_exactly_once` | `WorkLogView` | every entry handed out once | 38 | split_rmw FAIL |
+| `match_records_exactly_once` | `persistent.cu` `claim_next_record[s]` | every match record claimed once | 34 | split_rmw FAIL |
+| `counter_claims_disjoint` | `coalesced_add`, `coalesced_bounded_claim`, `DeviceArena::claim` | claims are disjoint and within the limit | 10, 2, 6 | split_rmw FAIL (each) |
+| `bounded_appends_once` | `session_frontier_append`, `DeviceQrCtx::mint_event` | each slot and id handed out once; refusal past the limit is reported | 216 | split_rmw FAIL |
+| `saturating_totals` | `saturating_add` | no update lost; the sum stops at `QM_SATURATED` | 6, 6 | split_rmw FAIL |
+| `hash_insert_elects_one` | `ConcurrentMap::DeviceView` | one inserter elected, its value stored | 9 | split_rmw FAIL |
+| `depth_relax_child_registration` | `persistent.cu` `DeviceExploreCtx` | a child never strands at a stale depth and is logged once | 11 | no_threadfence FAIL |
+| `form_claim_classes` | `state_claim_form` | equal forms share a class, a colliding form takes the next key | 696 | split_rmw FAIL |
+| `content_claim_classes` | `state_claim_content` | equal content shares a class, other content under the same hash takes the next key | 252 | split_rmw FAIL; no_threadfence PASS (the map's exchange publishes the slice) |
+| `keyed_follow_rendezvous` | `keyed_hash_or_follow`, `keyed_close_followers` | a child of an unpublished twin follows once or reads its hash | 23 | no_threadfence FAIL |
+| `keyed_twin_take` | `keyed_take_twin`, `state_claim_form` | twins agree on one class key; a taken twin copies the twin's ranks | 400, 1,600, 200 | duplicate_no_threadfence FAIL |
+| `keyed_intern_once` | `keyed_event_rid` | one rewrite id per rewrite, also when interned on demand | 335 | split_rmw FAIL |
+| `causal_rendezvous_device` | `rewrite.cu` `register_as_producer`/`consumer` | each (producer, consumer, edge) recorded once | 16, 32 (TR) | consumer_first FAIL |
+| `match_drain_block` | `match.cu` `match_state_rule` | the cap and the draw emit the lowest-ranked transition once | 3, 3 | split_rmw FAIL (each) |
+| `branchial_rows_warp` | `k_branchial_rows` | every pair counted once under its key | 1, 1, 8 | three_split_rmw FAIL |
+| `branchial_count_block` | `quotient.cu` `k_qe_count_branchial` | each instance's term summed once | 1 | two_blocks FAIL |
+| `replay_rendezvous_device` | `qe_publish_child`, `qe_drive_match`, `qe_seed_root_instance` | an instance and a match never both miss each other | 42 (warp chain), 4 (root) | no_threadfence FAIL (each) |
+| `replay_claim_once` | `DeviceQrCtx::claim` | one claimant of a pair wins, past the first claim block too | 12, 4 | split_rmw FAIL (each) |
+| `runsig_claim_once` | `qe_claim_runsig` | one key and one win per event class | 146 | split_rmw FAIL |
+| `mass_match_rendezvous` | `qe_capture_multiplicity`, `DeviceQmCtx` | class mass passes across a match exactly once | 51 (one arrival); two arrivals: no verdict in 570 s (long cell) | one_arrival_no_threadfence FAIL |
+
+Four checker cells (`cas_width`, `memcpy_promotion`, `struct_return`, `float_math`) PASS on the
+patched image, `race_in_header` FAILs as it must, and `barrier_divergence` has an `exited` cell
+that FAILs and a `spinning` cell that is BLOCKED.
+
+Device defects these harnesses found, each fixed with the harness that fails before the fix:
+`select_step` read candidate records without acquire and could pass over a later step's record
+still being written (356bce77); worker blocks read the exit flag per lane before a barrier
+(6c19aa10); plain and volatile reads of atomically updated words in the bounded claim, the arena
+cursor, the multiplicity cells and the keyed words (48ef4ee8); the saturating add had two bodies
+(920d27a8); `quotient.cu` did not compile under clang's C++17 (84e54324).
+
+### Device sanitizers
+
+`tools/dev/release_gate.sh sanitizers` runs compute-sanitizer memcheck, initcheck, synccheck and racecheck over hg_gpu_tests, gpu_differential_tests and gpu_ffi_tests. Three tests are left out of every sanitizer leg; the script header gives the reason for each. One run of the gate, split into gtest shards of at most 590 s each:
+
+| tool | hg_gpu_tests | gpu_differential_tests | gpu_ffi_tests |
 |---|---|---|---|
-| `termination_no_early_exit` | `termination_core.hpp` | the detector never takes the quiescent exit while work is owed | 2,265 executions, clean |
-| `ring_exactly_once` | `ring_core.hpp` | no ring item is handed to two consumers, none is invented | 8 complete, 14 blocked, clean |
-| `hash_insert_elects_one` | `hash_insert_core.hpp` | exactly one thread is told `inserted`, and the stored value is that thread's | 4 executions, clean |
-| `replay_rendezvous_meets` | `list_core.hpp` | an instance and a match arriving at once never both miss each other, with the instance pushed by its own lane and (`-DWARP_CHAIN`) by another lane of its warp as a chain | 3 executions each, clean |
-| `mass_match_rendezvous` | `quotient_multiplicity_core.hpp` | class mass passes across each match exactly once | 160 executions, clean |
-| `replay_task_termination` | `term_detect_loop` | no quiescent exit while a replay task is claimed, unrun or owed | 174,129 executions (1 worker), 272,243,862 (2 workers), clean |
-| `depth_relax_child_registration` | `explore_depth_core.hpp` | a child never strands at a stale depth | 9 executions, clean |
-| `evolve_ring_termination` | `ring_core.hpp`, `termination_core.hpp` | the kernel loop composing ring, record pool and detector never exits with work in the ring | 672,126 executions (1 rule, 2 steps), 2,433,998 (3 rules, 1 step), clean |
+| memcheck | 0 errors (108 tests, before the exclusions; the 8 reports were the intended cudaMalloc failures, which the gate no longer reports) | 0 errors (77 tests, 4 shards) | 0 errors (131 tests, 3 shards) |
+| initcheck | 0 errors (106 tests, 2 shards) | 0 errors (77 tests, 3 shards) | 0 errors (131 tests, 2 shards) |
+| synccheck | 0 errors (108 tests) | 0 errors (77 tests, 3 shards) | 0 errors (131 tests, 2 shards) |
+| racecheck | 0 hazards (106 tests, 4 shards) | not run yet | 0 hazards on 14 of 16 shards (114 tests); shards 1 and 10 did not finish in 590 s |
 
-Every GPUMC harness has a calibration arm that the checker reports. The reservation CAS in
-`ring_exactly_once` is modelled weak, as the device writes it. A 32-bit compare-exchange always
-reports failure in the GPUMC build, so the harnesses use 64-bit words where the device uses 32-bit
-ids.
+racecheck sees shared-memory hazards only. Under racecheck one persistent-kernel test of gpu_ffi_tests takes 149 s.
 
 ## TLA+
 
@@ -339,12 +392,11 @@ amber, and 11 of the 1053 cases differ from it.
 - **Worker index reuse.** Under `HG_VERIFICATION` the arena's worker index comes from a counter
   that never releases, and `arena_worker_index_exclusive` holds its indices. Release and
   re-acquire are not checked.
-- **The device kernel body.** `k_persistent_evolve` (`gpu/src/persistent.cu`) is not run under
-  GPUMC from its own source: it is CUDA device code on `cuda::atomic_ref`, `__threadfence`,
-  `__syncthreads` and thread indices. Its decisions are the shared cores in the GPUMC table, and
-  `evolve_ring_termination` runs the loop that composes them. The per-item work between those
-  bookings (matching, rewriting, canonicalisation, the arena) uses storage, monotonic counters,
-  bump allocators and one release/acquire publish flag (`match.hpp`), and is not model-checked.
+- **Device points not covered.** `verification/gpumc/COVERAGE.md` lists 249 of the device's 466
+  concurrency points that no GPUMC harness runs, with the reason for each. The largest groups:
+  `k_persistent_evolve`'s block body (91; `evolve_ring_termination` runs its loop's accounting
+  transcribed), the IR on a warp (54), and the geometry, invariants and curvature code (31), on
+  which GPUMC stops with a segmentation fault in `sg_geometry_of`.
 - **Not reached.** `COVERAGE.md` lists the access points no harness reaches and the reason for each:
   the matcher's early-termination flag and the debug callback pointer, which no engine path sets;
   reads made before workers start or after they finish; single-threaded lifecycle code; and

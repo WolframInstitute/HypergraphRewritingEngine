@@ -242,6 +242,8 @@ TEST(LockFreeList, WarpPushLinksEveryNodeOnceUnderItsKey) {
     cudaMemcpy(d_walk, walk_keys.data(), sizeof(uint32_t) * kKeys, cudaMemcpyHostToDevice);
     uint32_t* d_counts = nullptr; cudaMalloc(&d_counts, sizeof(uint32_t) * kKeys);
     uint32_t* d_flat   = nullptr; cudaMalloc(&d_flat,   sizeof(uint32_t) * kKeys * per_key_cap);
+    // k_collect writes counts[k] entries of each key's row; the copy below reads every row whole.
+    cudaMemset(d_flat, 0, sizeof(uint32_t) * kKeys * per_key_cap);
     k_collect<<<1, kKeys>>>(list.view(), d_walk, d_counts, d_flat, per_key_cap, kKeys);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     std::vector<uint32_t> counts(kKeys);

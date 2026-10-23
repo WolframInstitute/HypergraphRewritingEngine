@@ -26,6 +26,7 @@
 #include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
+#include <cuda/atomic>
 
 #include <cstdint>
 #include <stdexcept>
@@ -49,7 +50,9 @@ public:
         __device__ uint32_t* claim(uint64_t words) {
             const unsigned long long padded = (words + 1ull) & ~1ull;   // keep every claim even
             unsigned long long* cur = reinterpret_cast<unsigned long long*>(cursor);
-            unsigned long long off = *reinterpret_cast<volatile unsigned long long*>(cur);
+            unsigned long long off =
+                cuda::atomic_ref<unsigned long long, cuda::thread_scope_device>(*cur).load(
+                    cuda::memory_order_relaxed);
             for (;;) {
                 if (off > capacity || padded > capacity - off) return nullptr;
                 const unsigned long long seen = atomicCAS(cur, off, off + padded);

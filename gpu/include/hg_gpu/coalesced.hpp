@@ -17,6 +17,7 @@
 
 #include <cooperative_groups.h>
 #include <cooperative_groups/scan.h>
+#include <cuda/atomic>
 
 #include <cstdint>
 
@@ -60,7 +61,9 @@ __device__ __forceinline__ uint32_t coalesced_add(uint32_t* counter, uint32_t n)
 __device__ __forceinline__ uint32_t coalesced_bounded_claim(uint32_t* counter, uint32_t limit) {
     namespace cg = cooperative_groups;
     const auto take_from = [&](uint32_t want, uint32_t& base) {
-        uint32_t cur = *counter;
+        // Atomic: other threads' adds and exchanges change the counter while it is read.
+        uint32_t cur = cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*counter)
+                           .load(cuda::memory_order_relaxed);
         for (;;) {
             const uint32_t take = cur >= limit ? 0u : min(want, limit - cur);
             if (take == 0) return 0u;

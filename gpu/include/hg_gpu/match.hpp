@@ -117,6 +117,12 @@ __device__ __forceinline__ void await_match(const MatchRecord& m) {
     while (ref.load(cuda::memory_order_acquire) == 0u) __nanosleep(64);
 }
 
+// True when record `m` is fully written; its fields may then be read.
+__device__ __forceinline__ bool match_published(const MatchRecord& m) {
+    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> ref(m.published);
+    return ref.load(cuda::memory_order_acquire) != 0u;
+}
+
 // What the successor caps (MaxSuccessorStatesPerParent, MaxStatesPerStep) need to tell a
 // transition's successor state apart (hgcommon::SuccessorIdentity): the run's state mode, and
 // for a Full successor the block's IR arena and slot (successor_exact_hash_device).

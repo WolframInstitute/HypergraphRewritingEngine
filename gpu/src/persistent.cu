@@ -105,11 +105,15 @@ __device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) 
                                       ds.exploration_probability);
 }
 
-// True when this release brings step d's count to zero.
+// True when this release brings step d's count to zero. The fence before the subtraction
+// publishes the released work's effects; the fence after the last one makes the selection's reads
+// see every released unit's candidates (verification/gpumc/step_selection_once.cpp).
 __device__ inline bool step_release(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step == 0u || d >= ds.step_slots) return false;
-    __threadfence();   // the released work's effects before the count that admits the selection
-    return atomicSub(&ds.step_pending[d], n) == n;
+    __threadfence();
+    if (atomicSub(&ds.step_pending[d], n) != n) return false;
+    __threadfence();
+    return true;
 }
 
 // The steps below the first one with work hold tokens nothing would release: their selections
@@ -142,11 +146,20 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     // one starts, so a step's scan covers what was produced since the selection before it.
     __shared__ uint32_t s_next_start;
     const uint32_t start = sel.words[1];
-    const uint32_t n = min(*cand.counter, cand.capacity);
+    // Seeded entries of later steps claim candidate slots while this scan runs.
+    const uint32_t n = min(cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*cand.counter)
+                               .load(cuda::memory_order_relaxed),
+                           cand.capacity);
     if (tid == 0) { sel.words[0] = 0u; s_next_start = n; }
     __syncthreads();
     for (uint32_t i = start + tid; i < n; i += nt) {
         const MatchRecord& r = cand.at(i);
+        // Every unit of step s publishes its records before it releases, so a record still being
+        // written belongs to a later step: the next scan starts at or below it.
+        if (!match_published(r)) {
+            atomicMin(&s_next_start, i);
+            continue;
+        }
         if (r.step != s) {
             if (r.step > s) atomicMin(&s_next_start, i);
             continue;
@@ -402,7 +415,7 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
         claim = state_claim_content(ds, sid, key, map);
         key = claim.key;
     }
-    ds.state_canonical_hash[sid] = key;
+    publish_canonical_hash(ds, sid, key);
 
     // The exact hash is a SECOND quantity, and only in Full mode is it the same one. Computed
     // here only if an event identity or a transition key will read it (run_needs_exact_hash).
@@ -545,6 +558,15 @@ __device__ __forceinline__ uint32_t readable_records(
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cref(*found.counter);
     const uint32_t claimed = cref.load(order);
     return claimed < found.capacity ? claimed : found.capacity;
+}
+
+// Lane 0's reading of the exit flag, on every lane. A worker loop's iterations are separated by
+// __syncthreads, which is defined only when every lane leaves the loop at the same iteration, and
+// lanes reading the flag each for themselves can disagree. The worker blocks are one warp
+// (kMatchBlockThreads) (verification/gpumc/exit_uniform.cpp).
+__device__ __forceinline__ bool block_exit_requested(
+        const typename TerminationDetector::DeviceView& term) {
+    return __shfl_sync(0xFFFFFFFFu, term.exit_requested() ? 1u : 0u, 0) != 0u;
 }
 
 // Spin budgets. Nothing in a correct run reaches them -- the detector fires and the workers
@@ -739,7 +761,7 @@ __global__ void k_persistent_match_rewrite(
         // role may still be producing -- so only the detector decides. Backed off, because a
         // grid of idle blocks re-polling the cursor words in a tight loop starves the blocks
         // holding work of memory bandwidth.
-        if (term.exit_requested()) return;
+        if (block_exit_requested(term)) return;
         if (threadIdx.x == 0) {
             __nanosleep(idle_ns);
             if (idle_ns < 4096u) idle_ns <<= 1;
@@ -887,7 +909,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             }
             // Publish before anything reads it: a transition OUT of this state needs it as an
             // input hash, and that read happens on another block.
-            ds.state_canonical_hash[sid] = h;
+            publish_canonical_hash(ds, sid, h);
 
             if (need_exact) {
                 if (ex_st != ExactHashStatus::kOk) {
@@ -1723,7 +1745,7 @@ __global__ void k_persistent_evolve(
             continue;
         }
 
-        if (term.exit_requested()) { flush_cycles(); return; }
+        if (block_exit_requested(term)) { flush_cycles(); return; }
         // Idle, and the detector has not released us. Counted, because a worker that can
         // neither find work nor be told to stop is the same defect from the other side.
         //

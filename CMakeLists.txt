@@ -747,6 +747,17 @@ set_tests_properties(tla_cells PROPERTIES
                      TIMEOUT 600
                      SKIP_RETURN_CODE 2)
 
+# THE GPUMC CELLS, the device's model checks under scoped-RC11: every harness under
+# verification/gpumc, each cell checked against its declared verdict. SKIPPED (exit 2) where the
+# GPUMC image is absent (verification/gpumc/checker/build.sh builds it), which is every CI runner.
+# The cells take about 15 minutes on this box, most of it evolve_ring_termination's 3.1 million
+# executions.
+add_test(NAME gpumc_cells
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/gpumc/run.sh cells)
+set_tests_properties(gpumc_cells PROPERTIES
+                     TIMEOUT 2400
+                     SKIP_RETURN_CODE 2)
+
 # THE MINGW TEARDOWN CELLS RUN TOO, for the same reason the other two suites do: the decision to
 # build the shipped Windows x86-64 artifacts natively with MSVC rests on mingw-w64 corrupting the
 # heap at worker-thread exit, and until these cells existed the only account of that was a comment
