@@ -121,11 +121,10 @@ sgrPooledDistribution[values_List, name_String] := Module[
   {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
   If[n == 0, Return[<|"N" -> 0|>]];
   {lo, hi} = distributionRange[name]; w = (hi - lo)/32;
-  (* A value within 10^-30 of a bin edge (d_v of 50 digits whose exact value is the edge, as
-     (Log[9] - Log[4])/(Log[3] - Log[2]) = 2) is on the edge and opens the bin above it. *)
-  bin[x_] := Module[{y = (x - lo)/w, k},
-    k = Round[y];
-    Clip[If[Abs[y - k] < 10^-30, k, Floor[y]], {0, 31}]];
+  (* A value less than 10^-9 bin widths below a bin's lower edge counts in that bin: d_v of 50
+     digits whose exact value is the edge, as (Log[9] - Log[4])/(Log[3] - Log[2]) = 2, and a
+     machine fit whose exact value is the edge. *)
+  bin[x_] := Clip[Floor[(x - lo)/w + 10^-9], {0, 31}];
   counts = Counts[bin /@ values];
   mn = Min[values]; mx = Max[values];
   (* The bin holding the fraction q of the values, linear inside it from its lower edge to its

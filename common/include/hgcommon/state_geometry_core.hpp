@@ -409,12 +409,15 @@ struct SgDistribution {
     uint32_t bins[SG_DIST_BINS] = {};
 };
 
+// The bin of x. A value less than 1e-9 bin widths below a bin's lower edge counts in that bin:
+// a value whose exact result is an edge, as the dimension 1 of a profile r, may come out a few
+// units in the last place below it.
 HG_HD inline uint32_t sg_dist_bin(uint32_t which, double x) {
     double lo = 0.0, hi = 0.0;
     sg_dist_range(which, lo, hi);
     if (!(x > lo)) return 0;
     if (x >= hi) return SG_DIST_BINS - 1;
-    const double b = ::floor((x - lo) / ((hi - lo) / SG_DIST_BINS));
+    const double b = ::floor((x - lo) / ((hi - lo) / SG_DIST_BINS) + 1e-9);
     return b >= SG_DIST_BINS - 1 ? SG_DIST_BINS - 1 : static_cast<uint32_t>(b);
 }
 
