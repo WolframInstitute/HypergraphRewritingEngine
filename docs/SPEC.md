@@ -468,6 +468,25 @@ For a closed triangulated surface every link is a cycle, `RimFraction` is 0 and
 [-7, 1). Each vertex's link takes |N(u) ∩ N(v)| for each neighbour u, by merging the two sorted
 neighbour lists, and a walk around the link: O(Σ_v Σ_{u ~ v} (deg u + deg v)) per state.
 
+**`StepStatistics` particle measures.** The measures of hypergraph_viz's particle detection
+(blackhole/src/particle_detection.cpp), per vertex v of G. The clustering coefficient C_v is the
+number of triangles at v over deg v (deg v - 1) / 2, and 0 for a vertex of degree below 2. The
+Euler excess x_v compares the E edges among the V vertices of B(v, 3) with the planar bound
+P = 3V - 6 (V(V - 1)/2 when V < 3): x_v = (E - P) / P when E > P, and 0 otherwise. The
+topological charge is q_v = log2(max(1, deg v)) (1 - C_v) + 10 x_v.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `ClusteringCoefficient` | the mean of C_v over the vertices of G | G is empty |
+| `LocalEulerExcess` | the mean of x_v | G is empty |
+| `TopologicalCharge` | the mean of q_v | G is empty |
+| `TopologicalChargeMax` | the largest q_v | G is empty |
+
+`VertexInvariants` gains `ClusteringCoefficient` (32 bins over [0, 1)) and `TopologicalCharge`
+(32 bins over [0, 16)), over the vertices of G. The triangles come from the links of the
+combinatorial curvature, and B(v, 3) from the breadth-first search of each vertex that the radius
+takes.
+
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
 G, ascending, to k_v. It is computed from the edges the record lists, so under

@@ -477,3 +477,33 @@ TEST(StateMeasures, CurvatureSignsAndRim) {
     EXPECT_FALSE(c5.g.defined & hgcommon::SG_RIM);
     EXPECT_EQ(c5.g.euler_characteristic, 0.0);
 }
+
+// hypergraph_viz particle_detection.cpp: the clustering coefficient C_v, the Euler excess of
+// B(v, 3) over the planar bound 3V - 6, and the charge log2(deg) (1 - C_v) + 10 x_v. K4 has
+// C = 1 and E = 6 = 3V - 6: no excess, charge 0. K6 has E = 15 over the bound 12: excess 1/4,
+// charge 2.5. The star K1,3 has C = 0 and its centre the charge log2 3.
+TEST(StateMeasures, ParticleMeasures) {
+    const Measured k4 = measure(complete(4));
+    ASSERT_TRUE(k4.g.defined & hgcommon::SG_PARTICLE);
+    EXPECT_EQ(k4.g.clustering, 1.0);
+    EXPECT_EQ(k4.g.euler_excess, 0.0);
+    EXPECT_EQ(k4.g.charge, 0.0);
+
+    const Measured k6 = measure(complete(6));
+    EXPECT_EQ(k6.g.euler_excess, 0.25);
+    EXPECT_EQ(k6.g.charge, 2.5);
+    EXPECT_EQ(k6.g.charge_max, 2.5);
+
+    const Measured star = measure({{1, 2}, {1, 3}, {1, 4}});
+    EXPECT_EQ(star.g.clustering, 0.0);
+    EXPECT_EQ(star.g.euler_excess, 0.0);
+    EXPECT_NEAR(star.g.charge_max, std::log2(3.0), 1e-15);
+    EXPECT_NEAR(star.g.charge, std::log2(3.0) / 4, 1e-15);
+    EXPECT_NEAR(star.at(hgcommon::SG_GROWTH_VALUES + 3, 0), std::log2(3.0), 1e-15);
+    EXPECT_EQ(star.at(hgcommon::SG_GROWTH_VALUES + 3, 1), 0.0);
+
+    // A wheel's hub sees k triangles among k(k-1)/2 neighbour pairs.
+    const Measured w5 = measure(wheel(5));
+    EXPECT_NEAR(w5.at(hgcommon::SG_GROWTH_VALUES + 1, 0), 0.5, 1e-15);
+    EXPECT_NEAR(w5.at(hgcommon::SG_GROWTH_VALUES + 1, 1), 2.0 / 3.0, 1e-15);
+}

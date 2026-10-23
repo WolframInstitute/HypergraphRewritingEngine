@@ -31,6 +31,7 @@ sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth valu
 sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
 sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
+sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -103,6 +104,19 @@ sgrCombinatorial[edges_List] := Module[{g = sgrStateGraph[edges], vs, n, ks, cyc
     "CombinatorialCurvatureTotal" -> If[cyc === {}, Missing[], N[Total[1 - cyc/6]]],
     "Curvatures" -> (1 - cyc/6)|>];
 
+(* Particle measures (docs/SPEC.md, "StepStatistics particle measures"). The triangles at v are
+   the edges among v's neighbours; B(v, 3) is VertexOutComponent to depth 3. *)
+sgrParticle[edges_List] := Module[{g = sgrStateGraph[edges], vs},
+  vs = Sort[VertexList[g]];
+  Transpose[Function[v, Module[{d = VertexDegree[g, v], t, c, ball, nV, nE, p, x},
+    t = EdgeCount[Subgraph[g, AdjacencyList[g, v]]];
+    c = If[d < 2, 0, t/(d (d - 1)/2)];
+    ball = VertexOutComponent[g, v, 3];
+    nV = Length[ball]; nE = EdgeCount[Subgraph[g, ball]];
+    p = If[nV < 3, nV (nV - 1)/2, 3 nV - 6];
+    x = If[p > 0 && nE > p, (nE - p)/p, 0];
+    {c, x, Log2[Max[1, d]] (1 - c) + 10 x}]] /@ vs]];
+
 growthNames = {"BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
 
@@ -133,7 +147,8 @@ geodesicValues[edges_List] := geodesicValues[edges] = Module[{pairs = geodesicPa
         {d, Max[pairs[[All, 1]]]}]|>]];
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
-geometryNames = Join[{"EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
+geometryNames = Join[{"ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+  "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
@@ -219,7 +234,9 @@ sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc, growth}
     "OllivierRicciCurvature" -> Values[vertexCurvatureExact[g, edgeCurvatures[g]]],
     "WolframRicciCurvatureScalar" -> If[MissingQ[lc], {}, Values[lc["Ricci"]]]|>,
     AssociationThread[growthNames -> If[growth === {}, ConstantArray[{}, 6], Transpose[growth]]],
-    <|"CombinatorialCurvature" -> sgrCombinatorial[edges]["Curvatures"]|>]];
+    <|"CombinatorialCurvature" -> sgrCombinatorial[edges]["Curvatures"],
+      "ClusteringCoefficient" -> If[VertexCount[g] == 0, {}, sgrParticle[edges][[1]]],
+      "TopologicalCharge" -> If[VertexCount[g] == 0, {}, N[sgrParticle[edges][[3]], 30]]|>]];
 
 (* The per-vertex distributions' fixed ranges [lo, hi), each cut into 32 equal bins; a value
    outside counts in the end bin. *)
@@ -228,7 +245,8 @@ distributionRange = <|"LocalDimension" -> {0, 8}, "OllivierRicciCurvature" -> {-
   "BallScalarCurvature" -> {-24, 8}, "RiemannianBallDimension" -> {0, 8},
   "RiemannianBallScalarCurvature" -> {-24, 8}, "SphereDimension" -> {0, 8},
   "SphereScalarCurvature" -> {-24, 8}, "NonLazyOllivierRicciCurvature" -> {-2, 1},
-  "CombinatorialCurvature" -> {-7, 1}|>;
+  "CombinatorialCurvature" -> {-7, 1}, "ClusteringCoefficient" -> {0, 1},
+  "TopologicalCharge" -> {0, 16}|>;
 
 sgrPooledDistribution[values_List, name_String] := Module[
   {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
@@ -308,6 +326,9 @@ sgrStateGeometry[edges_List] := Module[
       N[Sqrt[Mean[(Values[lc["Dimensions"]] - lc["D"])^2]]]],
     "OllivierMoranI" -> moran,
     "OllivierDegreeCorrelation" -> corr,
+    Sequence @@ With[{pv = sgrParticle[edges]},
+      Thread[{"ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge"} -> N[Mean /@ pv]]],
+    "TopologicalChargeMax" -> N[Max[sgrParticle[edges][[3]]]],
     "EulerCharacteristic" -> sgrCombinatorial[edges]["EulerCharacteristic"],
     "RimFraction" -> sgrCombinatorial[edges]["RimFraction"],
     "CombinatorialCurvatureTotal" -> sgrCombinatorial[edges]["CombinatorialCurvatureTotal"],

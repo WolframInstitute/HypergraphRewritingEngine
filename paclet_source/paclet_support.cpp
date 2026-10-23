@@ -1657,6 +1657,10 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"EulerCharacteristic", 1.0, true},
     {"RimFraction", 0.01, false},
     {"CombinatorialCurvatureTotal", 0.01, false},
+    {"ClusteringCoefficient", 0.01, false},
+    {"LocalEulerExcess", 0.01, false},
+    {"TopologicalCharge", 0.01, false},
+    {"TopologicalChargeMax", 0.01, false},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges
@@ -1671,7 +1675,8 @@ const DistName kDistNames[hgcommon::SG_DISTS] = {
     {"BallScalarCurvature", false},     {"RiemannianBallDimension", false},
     {"RiemannianBallScalarCurvature", false}, {"SphereDimension", false},
     {"SphereScalarCurvature", false},   {"NonLazyOllivierRicciCurvature", true},
-    {"CombinatorialCurvature", false},
+    {"CombinatorialCurvature", false},  {"ClusteringCoefficient", false},
+    {"TopologicalCharge", false},
 };
 
 // The host's sink for hgcommon::sp_add_class: entries appended, totals added.
