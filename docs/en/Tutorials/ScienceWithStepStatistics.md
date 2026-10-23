@@ -5,7 +5,7 @@ Title: Science with Step Statistics
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/tutorial/ScienceWithStepStatistics
-Keywords: [hypergraph, multiway, step statistics, dimension, curvature, Ollivier-Ricci, Moran's I, Brill-Lindquist, torus, branchial, mutual information, matrix, spectral embedding, tutorial]
+Keywords: [hypergraph, multiway, step statistics, dimension, curvature, Ollivier-Ricci, Moran's I, Brill-Lindquist, torus, branchial, mutual information, matrix, spectral embedding, StateCost, beam search, tutorial]
 RelatedGuides: [HypergraphRewriting]
 RelatedTutorials: [GettingStarted, InitialConditions, SamplingAndPruning]
 ---
@@ -384,3 +384,34 @@ With `"StatisticsGraph" -> "Consecutive"`, the default, a hyperedge {a, b, c} gi
 ternary = {{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}};
 Table[{conv, Last[HGEvolve[ternary, {{1, 1, 1}}, 8, "StepStatistics", "StatisticsGraph" -> conv, "StepStatisticsMeasures" -> All]]["Invariants", "BallDimension", "Mean"]}, {conv, {"Consecutive", "AllPairs"}}]
 ```
+
+## Cost-guided evolution
+
+`"StateCost"` gives each state a cost computed from its `"Invariants"` statistics, and with `"MaxStatesPerStep" -> N` each step keeps its N successor states of lowest cost. The evolution is a beam search through the multiway system. Three beams of width 3 follow rule A from the torus for 16 steps. The first minimises the mean `"BallScalarCurvature"` of a state times its number of vertices, a discrete Einstein-Hilbert action. The changes of a statistic summed along a history equal its change from the first state to the last, so ranking the states of a step by curvature ranks their histories by the summed change of curvature. The second keeps the states whose `"BallDimension"` is closest to 2.5. The third has no cost and keeps the lowest-ranked states:
+
+```wl
+beam[cost_] := HGEvolve[ruleA, <|"Type" -> "Torus", "Resolution" -> 9, "Seed" -> 1|>, 16, {"States", "StepStatistics"}, "CanonicalizeStates" -> Full, "MaxStatesPerStep" -> 3, "StateCost" -> cost, "StepStatisticsMeasures" -> {"VolumeGrowth"}, "StepStatisticsWeighting" -> "Classes", "IncludeVertexCurvature" -> True, "RandomSeed" -> 1];
+{action, target, plain} = beam /@ {#BallScalarCurvature #VertexCount &, Abs[#BallDimension - 2.5] &, None};
+Length /@ Lookup[{action, target, plain}, "StepStatistics"]
+```
+
+<!-- => {17, 17, 17} -->
+
+The mean over each step's kept states of the ball scalar curvature, which the first cost reads, and of the ball dimension, which the second cost reads:
+
+```wl
+Row[{ListLinePlot[Table[perStep[r["StepStatistics"], "Invariants", "BallScalarCurvature", "Mean"], {r, {action, target, plain}}], AxesLabel -> {"step", "curvature"}, PlotLegends -> {"total curvature", "dimension 2.5", "no cost"}, ImageSize -> 380], ListLinePlot[Table[perStep[r["StepStatistics"], "Invariants", "BallDimension", "Mean"], {r, {action, target, plain}}], AxesLabel -> {"step", "dimension"}, PlotLegends -> {"total curvature", "dimension 2.5", "no cost"}, ImageSize -> 380]}, Spacer[20]]
+```
+
+![The mean over each step's kept states of the ball scalar curvature, which the first cost reads, and of the ball dimension, which the second cost reads](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-43.png)
+
+At step 16 the mean ball scalar curvature of the kept states is -0.60 under the first cost and -0.24 without a cost, and the mean ball dimension is 1.84 under the second cost and 1.60 without a cost.
+
+A kept state of each guided beam at steps 0, 4, 8, 12 and 16, the beam of the total curvature above and the beam of dimension 2.5 below, each vertex coloured by its Ollivier-Ricci curvature from blue (the state's lowest) to red (its highest):
+
+```wl
+heat[state_] := With[{g = stateGraph[state], k = state["VertexCurvature"]}, Graph[g, VertexStyle -> Thread[VertexList[g] -> (ColorData["TemperatureMap"][Rescale[Lookup[k, #, 0], MinMax[Values[k]]]] & /@ VertexList[g])], VertexSize -> 1.2, EdgeStyle -> GrayLevel[0.6], PlotLabel -> "step " <> ToString[state["Step"]], ImageSize -> 170]];
+Grid[Table[heat[SelectFirst[Values[r["States"]], Function[st, st["Step"] == s]]], {r, {action, target}}, {s, {0, 4, 8, 12, 16}}]]
+```
+
+![A kept state of each guided beam at steps 0, 4, 8, 12 and 16, the beam of the total curvature above and the beam of dimension 2.5 below, each vertex coloured by its Ollivier-Ricci curvature from blue (the state's lowest) to red (its highest)](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-44.png)

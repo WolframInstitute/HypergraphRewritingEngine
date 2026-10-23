@@ -143,6 +143,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"CausalTransitiveReduction"` | `True` | whether to drop a causal pair implied by a longer causal path |
 | `"MaxSuccessorStatesPerParent"` | `0` | the number of successor states kept per state, the lowest-ranked, with every transition into them and ties at the cut kept (`0` for no cap) |
 | `"MaxStatesPerStep"` | `0` | the number of successor states kept per step, the lowest-ranked, with every transition into them and ties at the cut kept (`0` for no cap) |
+| `"StateCost"` | `None` | a pure function of `"Invariants"` names, such as `Abs[#BallDimension - 3] &`; with `"MaxStatesPerStep"`, or `"UniformRandom"` and `"MatchesPerStep"`, each step keeps its successor states of lowest cost |
 | `"ExplorationProbability"` | `1.` | the probability of exploring each state |
 | `"TransitionRate"` | `1.` | the probability of keeping each transition |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order |
@@ -176,6 +177,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, `"MatchesPerStateRule"`, `"TransitionRate"` and `"ExplorationProbability"` choose from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device. A transition a cap does not keep is not taken.
 - Under `"CanonicalizeStates" -> Full`, a transition's identity uses the symmetry class of each matched hyperedge, so transitions related by a symmetry of the state are kept or dropped together.
 - `"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` count successor states as `"CanonicalizeStates"` identifies them: under `None` every transition makes its own state, under `Automatic` transitions that make identical edge lists make one state, and under `Full` transitions that make isomorphic states make one state. A successor state ranks by the lowest rank of the transitions into it, and every transition into a kept successor state is kept. `"MatchesPerStateRule"` and `"MatchesPerStep"` count transitions.
+- `"StateCost"` orders the successor states of `"MaxStatesPerStep"`, or the transitions of `"UniformRandom"` with `"MatchesPerStep"`, by the cost of the state each one makes, the rank ordering states of equal cost. The cost is a pure function of the `"Invariants"` names (`#VertexCount`, `#BallDimension`, ...) built from real numbers, `+`, `-`, `*`, `/`, `Abs`, `Min`, `Max`, `Sqrt`, `Log`, `Exp` and powers with a constant exponent; any other expression returns `$Failed` with the message `HGEvolve::statecost`. A state with no value for a name the cost reads, or whose cost is not a real number, has cost `Infinity`. The cost of a state is the same on both devices, so a cost-guided evolution keeps the same states at any thread count and on either device. Without a step cap the cost has no effect and the reply carries a warning.
 - `"TransitionRate"` keeps a state's lowest-keyed transitions when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
 - Without a `"RandomSeed"` each call draws a new seed, as other random functions do; give `"RandomSeed"` or call `SeedRandom` first to repeat a sampled run.
 - `"Threads"` and `"Tuning"` change how fast an evolution runs and how much memory it takes; the states, events and relations are the same at every setting. `"Tuning"` takes an association of names and integers: `"CausalSetCapacity"` (the first table size, per shard, of the CPU engine's causal relation sets), `"ExpandChunk"` (the matches of one state rewritten per task on the CPU), `"GPUBlocks"` (the blocks of the GPU's persistent kernel), `"GPUBacklog"` (the waiting matches below which a GPU block takes one at a time), `"GPUMemoryLimit"` (the bytes of device memory a GPU evolution may use) and `"GPUL2Persist"` (the bytes of L2 cache the GPU keeps for its state table; `0` keeps none). A name it does not list is skipped with the message `HGEvolve::warn`. The environment variables `HG_TUNE_THREADS`, `HG_TUNE_CAUSAL_SET_CAPACITY`, `HG_TUNE_EXPAND_CHUNK`, `HG_TUNE_GPU_BLOCKS`, `HG_TUNE_GPU_BACKLOG`, `HG_TUNE_GPU_MEMORY_LIMIT` and `HG_TUNE_GPU_L2_PERSIST` set the same values for every evolution of the engine process; an option given to [HGEvolve]() takes precedence.
@@ -1005,6 +1007,42 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "S
 
 <!-- => {{0, 1}, {1, 2}, {2, 6}, {3, 18}} -->
 
+### "StateCost"
+
+With `"MaxStatesPerStep"`, a cost function keeps each step's successor states of lowest cost. The cost here is the negated incidence mean distance, so each step keeps the two states whose vertices and hyperedges are farthest apart. The mean of `"IncidenceMeanDistance"` over the kept states at each step:
+
+```wl
+meanDistance[opts___] := N[Round[Lookup[#["Invariants", "IncidenceMeanDistance"], "Mean"], 1/100]] & /@ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "StepStatistics", "CanonicalizeStates" -> Full, "MaxStatesPerStep" -> 2, "RandomSeed" -> 7, opts];
+meanDistance["StateCost" -> (-#IncidenceMeanDistance &)]
+```
+
+<!-- => {1.33, 1.6, 1.83, 2.18, 2.42, 2.7, 2.97} -->
+
+The same beam ranked without a cost:
+
+```wl
+meanDistance[]
+```
+
+<!-- => {1.33, 1.6, 1.83, 2.18, 2.42, 2.63, 2.81} -->
+
+A cost may read any statistic of `"Invariants"`. This beam of one state per step follows rule A of [Science with Step Statistics](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/ScienceWithStepStatistics) from a torus and keeps the state whose ball dimension is closest to 1.5:
+
+```wl
+ruleA = {{x, y}, {y, z}, {z, w}, {w, v}} -> {{y, u}, {u, v}, {w, x}, {x, u}};
+N[Round[Lookup[#["Invariants", "BallDimension"], "Mean"], 1/1000]] & /@ HGEvolve[ruleA, <|"Type" -> "Torus", "Resolution" -> 6, "Seed" -> 1|>, 6, "StepStatistics", "CanonicalizeStates" -> Full, "MaxStatesPerStep" -> 1, "StateCost" -> (Abs[#BallDimension - 1.5] &), "StepStatisticsMeasures" -> {"VolumeGrowth"}, "RandomSeed" -> 7]
+```
+
+<!-- => {1.364, 1.416, 1.472, 1.5, 1.5, 1.5, 1.501} -->
+
+A function outside the supported operations returns `$Failed`:
+
+```wl
+HGEvolve[loops, {{1, 1}, {1, 1}}, 2, "NumStates", "MaxStatesPerStep" -> 2, "StateCost" -> (Sin[#VertexCount] &)]
+```
+
+<!-- => $Failed; the message HGEvolve::statecost is issued -->
+
 ### "ExplorationProbability"
 
 Below 1, each state is explored with the given probability:
@@ -1077,7 +1115,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "S
 HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "StatesGraphStructure", "TransitionRate" -> 0.01, "RandomSeed" -> 7, AspectRatio -> 1/2]
 ```
 
-![A state whose every draw failed keeps its lowest-keyed transition, so the sample reaches the requested depth at any rate.](../../images/HGEvolve/HGEvolve-97.png)
+![A state whose every draw failed keeps its lowest-keyed transition, so the sample reaches the requested depth at any rate.](../../images/HGEvolve/HGEvolve-101.png)
 
 ### "RuleWeights"
 
@@ -1132,7 +1170,7 @@ HGEvolve[triangle, {{1, 2}, {1, 3}}, 4, "Debug", "CanonicalizeStates" -> Full, "
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True, AspectRatio -> 1/2]
 ```
 
-![The same counts with one state per class expanded.](../../images/HGEvolve/HGEvolve-103.png)
+![The same counts with one state per class expanded.](../../images/HGEvolve/HGEvolve-107.png)
 
 ---
 
@@ -1238,7 +1276,7 @@ Table[EdgeCount[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure", "BranchialStep" -> All]
 ```
 
-![All shows every step](../../images/HGEvolve/HGEvolve-114.png)
+![All shows every step](../../images/HGEvolve/HGEvolve-118.png)
 
 ### "EdgeDeduplication"
 
@@ -1353,7 +1391,7 @@ The genesis event is the first vertex of the causal graph:
 HGEvolve[chain, {{1, 2}}, 2, "CausalGraphStructure", "ShowGenesisEvents" -> True, AspectRatio -> 1/2]
 ```
 
-![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-126.png)
+![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-130.png)
 
 ### "ColorByRule"
 
@@ -1364,7 +1402,7 @@ extend = {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}};
 HGEvolve[extend, {{1, 1}, {1, 1}}, 1, "StatesGraph", "ColorByRule" -> True, ImageSize -> 420]
 ```
 
-![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-127.png)
+![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-131.png)
 
 The result is a [Legended]() graph:
 
@@ -1391,7 +1429,7 @@ EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Fu
 HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged", ImageSize -> 400, AspectRatio -> 1/2]
 ```
 
-!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-130.png)
+!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-134.png)
 
 ```wl
 EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged"]]
@@ -1463,7 +1501,7 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3, ImageSize -> 300]
 ```
 
-![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-137.png)
+![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-141.png)
 
 ```wl
 Options[HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3], AspectRatio]
@@ -1478,7 +1516,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "StatesGraphStructure", VertexLabels -> Automatic, AspectRatio -> 1/2]
 ```
 
-![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-139.png)
+![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-143.png)
 
 ### "GridWidth"
 
@@ -1633,7 +1671,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-154.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-158.png)
 
 Two steps reach 239 states up to isomorphism:
 
@@ -1787,7 +1825,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-170.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-174.png)
 
 ---
 
