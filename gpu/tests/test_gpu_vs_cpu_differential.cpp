@@ -2501,8 +2501,11 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::cycle_curvature_total,
                   &hgcommon::SgGeometry::clustering, &hgcommon::SgGeometry::euler_excess,
                   &hgcommon::SgGeometry::charge, &hgcommon::SgGeometry::charge_max,
-                  &hgcommon::SgGeometry::dimension_gradient})
+                  &hgcommon::SgGeometry::dimension_gradient,
+                  &hgcommon::SgGeometry::rips_betti1})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < 3; ++k)
+                EXPECT_TRUE(same(a->g.clique_betti[k], b->g.clique_betti[k])) << w.name;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;

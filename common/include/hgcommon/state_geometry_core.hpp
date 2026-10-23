@@ -105,6 +105,9 @@ struct SgArena {
     size_t capacity = 0;
     size_t used = 0;
     bool failed = false;
+    // Bytes the stages that size their arrays from the graph take or ask for
+    // (state_topology_core.hpp), beyond sg_metric_bytes; a failed call's `needed` adds them.
+    size_t extra = 0;
 
     template <class T>
     HG_HD T* take(size_t n) {
@@ -456,6 +459,7 @@ enum : uint32_t {
     SG_CYCLE_CURVATURE = 1u << 16,       // cycle_curvature_total: a vertex's link is a cycle
     SG_PARTICLE = 1u << 17,              // clustering, euler_excess, charge, charge_max: n >= 1
     SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
+    SG_TOPOLOGY = 1u << 19,              // clique_betti, rips_betti1: n >= 1
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
@@ -464,7 +468,7 @@ constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
 constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
-                                     SG_DIMENSION_GRADIENT;
+                                     SG_DIMENSION_GRADIENT | SG_TOPOLOGY;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -606,6 +610,10 @@ struct SgGeometry {
     double charge = 0.0;
     double charge_max = 0.0;
     double dimension_gradient = 0.0;     // the mean over G' of L_v, the Laplacian of d_v
+    // b0, b1, b2 of the clique complex of G and b1 of its Vietoris-Rips complex at r = 1, over
+    // GF(2) (state_topology_core.hpp).
+    double clique_betti[3] = {0.0, 0.0, 0.0};
+    double rips_betti1 = 0.0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -651,6 +659,9 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE | SG_PARTICLE))
         bytes += n1 * (4 + 8) + 2 * 8;
     if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
+    // The counting scratch of state_topology_core.hpp's st_families_of: four arrays of n + 1
+    // words.
+    if (want & (SG_TOPOLOGY)) bytes += 4 * (n1 * 4 + 8);
     return bytes;
 }
 
@@ -810,6 +821,14 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
                       out[2 * which + 1]);
     }
 }
+
+}  // namespace common
+}  // namespace HG_NAMESPACE
+
+#include "hgcommon/state_topology_core.hpp"
+
+namespace HG_NAMESPACE {
+namespace common {
 
 // Computes the geometry of G already built in `arena`. `ball_dimension` receives the mean
 // over vertices of the ball-growth term at r = 1..R in entries 0..R-1, up to `ball_capacity`
@@ -1254,6 +1273,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const uint32_t* sub = connected ? nullptr : largest;
     const uint32_t ns = connected ? n : (largest ? largest_n : 0u);
     auto vat = [&](uint32_t i) { return sub ? sub[i] : i; };
+    if ((want & (SG_TOPOLOGY)) &&
+        !st_families_of(g, arena, out, want, par, ecc, sub, ns))
+        return false;
     if (want_growth && par.leader()) {
         // The six fits over the vertices of G' with one, in vertex order.
         uint32_t fitted = 0;
@@ -1472,6 +1494,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                         largest_n, dists, vertex_curvature, vertex_values, log_geodesic,
                         log_geodesic_capacity)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
+        needed += arena.extra;
         return false;
     }
     needed = arena.used;

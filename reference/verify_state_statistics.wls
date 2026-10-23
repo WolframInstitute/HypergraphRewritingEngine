@@ -120,7 +120,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
   "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
   "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
-  "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature"};
+  "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature", "CliqueBetti0",
+  "CliqueBetti1", "CliqueBetti2", "RipsBetti1"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
@@ -199,7 +200,8 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
           "IncidenceDiameter" -> summary[Lookup[ginv, "IncidenceDiameter"]],
           "IncidenceMeanDistance" -> summary[Lookup[ginv, "IncidenceMeanDistance"], 0.01],
           "LargestComponentFraction" -> summary[Lookup[ginv, "LargestComponentFraction"], 0.01]|>,
-          AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[MemberQ[{"GraphRadius", "EulerCharacteristic"}, #], 1, 0.01]] &,
+          AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[MemberQ[{"GraphRadius", "EulerCharacteristic", "CliqueBetti0", "CliqueBetti1",
+              "CliqueBetti2", "RipsBetti1"}, #], 1, 0.01]] &,
             geometryKeys]],
         "VertexInvariants" -> AssociationMap[
           sgrPooledDistribution[Catenate[Lookup[vvals, #]], #] &, vertexDistributions],
@@ -345,6 +347,7 @@ Do[
         extra},
       extra = Select[res, KeyExistsQ[#, "EdgeInvariants"] || KeyExistsQ[#, "LogGeodesicCount"] ||
           KeyExistsQ[#["Invariants"], "BallDimension"] ||
+          KeyExistsQ[#["Invariants"], "CliqueBetti0"] ||
           KeyExistsQ[#["VertexInvariants"], "CombinatorialCurvature"] &];
       If[extra === {}, Print["PASS  ", name, " base keys: ", Length[res], " steps"],
         failures++; Print["FAIL  ", name, " base keys: a step has a family's key"]]];

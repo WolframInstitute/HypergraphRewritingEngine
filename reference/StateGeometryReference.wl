@@ -33,6 +33,7 @@ sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, th
 sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
+sgrTopology::usage = "sgrTopology[edges] gives CliqueBetti0, CliqueBetti1, CliqueBetti2 (the Betti numbers over GF(2) of the clique complex of the state's graph) and RipsBetti1 (of the clique complex of its square).";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -152,7 +153,8 @@ geodesicValues[edges_List, rule_String] := geodesicValues[edges, rule] = Module[
         {d, Max[pairs[[All, 1]]]}]|>]];
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
-geometryNames = Join[{"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+geometryNames = Join[{"CliqueBetti0", "CliqueBetti1", "CliqueBetti2", "RipsBetti1",
+ "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -291,6 +293,40 @@ sgrPooledDistribution[values_List, name_String] := Module[
   out["Histogram"] = Association[N[lo + # w] -> counts[#] & /@ Sort[Keys[counts]]];
   out];
 
+(* Topology (docs/SPEC.md, "StepStatistics topology"): Betti numbers over GF(2) of the clique
+   complex of a graph, from the ranks of the boundary matrices modulo 2 (MatrixRank with
+   Modulus -> 2). The Vietoris-Rips complex at r = 1 is the clique complex of GraphPower[g, 2]. *)
+cliqueSimplices[g_Graph] := Module[{vs = VertexList[g], idx, adj, edges, tris, tets},
+  idx = AssociationThread[vs -> Range[Length[vs]]];
+  adj = Normal[AdjacencyMatrix[g]];
+  edges = Sort[Sort[{idx[#[[1]]], idx[#[[2]]]}] & /@ EdgeList[g]];
+  tris = Sort[Catenate[Function[e, {e[[1]], e[[2]], #} & /@
+      Select[Flatten[Position[adj[[e[[1]]]] adj[[e[[2]]]], 1]], # > e[[2]] &]] /@ edges]];
+  tets = Sort[Catenate[Function[t, Append[t, #] & /@
+      Select[Flatten[Position[adj[[t[[1]]]] adj[[t[[2]]]] adj[[t[[3]]]], 1]], # > t[[3]] &]] /@ tris]];
+  {Length[vs], edges, tris, tets}];
+
+boundaryRank2[faces_List, cells_List] := If[faces === {} || cells === {}, 0,
+  Module[{pos = AssociationThread[faces -> Range[Length[faces]]]},
+    MatrixRank[SparseArray[Catenate[MapIndexed[Function[{c, i},
+        ({pos[#], i[[1]]} -> 1) & /@ Subsets[c, {Length[c] - 1}]], cells]],
+      {Length[faces], Length[cells]}], Modulus -> 2]]];
+
+cliqueBetti[g_Graph] := Module[{n, e, t, q, r1, r2, r3},
+  {n, e, t, q} = cliqueSimplices[g];
+  r1 = boundaryRank2[List /@ Range[n], e];
+  r2 = boundaryRank2[e, t];
+  r3 = boundaryRank2[t, q];
+  {n - r1, Length[e] - r1 - r2, Length[t] - r2 - r3}];
+
+sgrTopology[edges_List] := Module[{g = sgrStateGraph[edges], b, rips},
+  If[VertexCount[g] == 0, Return[<|"CliqueBetti0" -> Missing[], "CliqueBetti1" -> Missing[],
+    "CliqueBetti2" -> Missing[], "RipsBetti1" -> Missing[]|>]];
+  b = cliqueBetti[g];
+  rips = cliqueBetti[GraphPower[g, 2]];
+  <|"CliqueBetti0" -> b[[1]], "CliqueBetti1" -> b[[2]], "CliqueBetti2" -> b[[3]],
+    "RipsBetti1" -> rips[[2]]|>];
+
 sgrStateGeometry[edges_List] := Module[
   {g, n, conn, R, vs, dims, d, ricci, dm, index, ollivier, local, mi, fisher, b2, kE, kv, lc,
    moran, corr},
@@ -350,6 +386,7 @@ sgrStateGeometry[edges_List] := Module[
     "CombinatorialCurvatureTotal" -> sgrCombinatorial[edges]["CombinatorialCurvatureTotal"],
     "NonLazyOllivierRicciCurvature" -> With[{k = nonLazyCurvatures[g]},
       If[k === {}, Missing[], N[Mean[k]]]],
+    Sequence @@ Normal[sgrTopology[edges]],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},

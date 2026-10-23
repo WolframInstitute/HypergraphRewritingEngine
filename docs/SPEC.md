@@ -397,6 +397,7 @@ list adds the families it names:
 | `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
+| `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -524,6 +525,19 @@ L_v > 0.
 
 `VertexInvariants` gains `DimensionGradientCurvature`, L_v over G', with 32 bins over [-8, 8).
 It takes O(\|E\|) after the local dimensions.
+
+**`StepStatistics` topology.** The family `"Topology"` adds four `Invariants` entries: Betti numbers over GF(2), the field of two elements. The clique complex of G has a k-simplex for each set of k + 1 vertices of G that are joined in pairs. The Vietoris-Rips complex at scale r is Infrageometry's `BallIntersectionComplex[vertices, r, 2, "Metric" -> G]` (Infrageometry@ffa5fe4:Kernel/InfraTopology/BallIntersectionComplex.wl:29-70): a set of vertices is a simplex when every two of them have balls of radius r with a common vertex. Two vertices at distance d have such balls when d <= 2r, so at r = 1 the complex is the clique complex of G², the graph that joins two vertices of G at distance 1 or 2. With V, E, T and Q the vertices, edges, triangles and tetrahedra of a complex and ∂k its boundary maps over GF(2), b0 = V - rank ∂1, b1 = E - rank ∂1 - rank ∂2 and b2 = T - rank ∂2 - rank ∂3.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `CliqueBetti0` | b0 of the clique complex of G, the number of components of G | G is empty |
+| `CliqueBetti1` | b1 of the clique complex of G | G is empty |
+| `CliqueBetti2` | b2 of the clique complex of G | G is empty |
+| `RipsBetti1` | b1 of the Vietoris-Rips complex at r = 1 | G is empty |
+
+G and G² have the same components, so b0 of the Vietoris-Rips complex is `CliqueBetti0`. The octahedron gives (1, 0, 1), a cycle of 4 or more vertices (1, 1, 0) and a triangulated torus (1, 2, 1). `RipsBetti1` is 0 on the 6-cycle, whose square is the octahedron, and 1 on the 8-cycle.
+
+The computation is Gaussian elimination over GF(2). A breadth-first spanning forest of the complex's graph leaves c = E - V + b0 edges outside it, and a cycle is fixed by its coefficients on those c edges. Each triangle's boundary, as a c-bit row, is reduced against the rows already kept, each kept row pivoting on its highest bit, so rank ∂2 is the number of rows kept and b1 = c - rank ∂2. The tetrahedra's boundaries are reduced the same way as T-bit rows over the triangles. An elimination stops when its rank reaches the dimension of the space (c, or T - rank ∂2), so it keeps at most min(c, T) and min(T - rank ∂2, Q) rows. The cost is at most O(T min(c, T) c / 64 + Q min(T, Q) T / 64) word operations, and the memory min(c, T) c / 8 + min(T, Q) T / 8 bytes. The Vietoris-Rips complex costs the same on G², which has up to V Δ² / 2 edges for the largest degree Δ.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
