@@ -29,6 +29,7 @@ sgrVertexInvariants::usage = "sgrVertexInvariants[edges] gives the per-vertex va
 sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the summary \"VertexInvariants\" reports for the pooled values of the distribution name: N, Mean, StandardDeviation, Min, Max, Median, Q1, Q3, P10, P90, Skewness, Kurtosis and the 32-bin Histogram.";
 sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth values of vertex v of graph g (BallDimension, BallScalarCurvature, RiemannianBallDimension, RiemannianBallScalarCurvature, SphereDimension, SphereScalarCurvature), or Missing[] when v has no fit.";
 sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
+sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -51,21 +52,36 @@ entropyBits[counts_List] := Module[{p = N[counts/Total[counts]]}, -Total[p Log2[
 
 degreeEntropy[g_Graph, vs_List] := entropyBits[Values[Counts[VertexDegree[g, #] & /@ vs]]];
 
-(* The lazy walk: 1/2 at x, 1/(2 deg x) at each neighbour; the cost is the exact optimum of the
-   transport linear program under the graph distance. *)
-ollivierEdge[g_Graph, dm_, index_, x_, y_] := Module[
-  {ax, by, mu, nu, a, b, cost, eqs, rhs, sol},
-  ax = Prepend[AdjacencyList[g, x], x]; by = Prepend[AdjacencyList[g, y], y];
-  mu = Prepend[ConstantArray[1/(2 Length[ax] - 2), Length[ax] - 1], 1/2];
-  nu = Prepend[ConstantArray[1/(2 Length[by] - 2), Length[by] - 1], 1/2];
-  a = Length[ax]; b = Length[by];
+(* The exact optimum of the transport linear program from masses mu on the vertices ax to
+   masses nu on the vertices by, under the graph distance. *)
+transportCost[dm_, index_, ax_, mu_, by_, nu_] := Module[{a = Length[ax], b = Length[by], cost, eqs},
   cost = Flatten[Table[dm[[index[ax[[i]]], index[by[[j]]]]], {i, a}, {j, b}]];
   eqs = Join[
     Table[Flatten[Table[If[i == k, 1, 0], {i, a}, {j, b}]], {k, a}],
     Table[Flatten[Table[If[j == k, 1, 0], {i, a}, {j, b}]], {k, b}]];
-  rhs = Join[{#, 0} & /@ mu, {#, 0} & /@ nu];
-  sol = LinearProgramming[cost, eqs, rhs];
-  1 - cost . sol];
+  cost . LinearProgramming[cost, eqs, Join[{#, 0} & /@ mu, {#, 0} & /@ nu]]];
+
+(* The lazy walk: 1/2 at x, 1/(2 deg x) at each neighbour. *)
+ollivierEdge[g_Graph, dm_, index_, x_, y_] := Module[{ax, by},
+  ax = Prepend[AdjacencyList[g, x], x]; by = Prepend[AdjacencyList[g, y], y];
+  1 - transportCost[dm, index,
+    ax, Prepend[ConstantArray[1/(2 Length[ax] - 2), Length[ax] - 1], 1/2],
+    by, Prepend[ConstantArray[1/(2 Length[by] - 2), Length[by] - 1], 1/2]]];
+
+(* The non-lazy walk (idleness 0): 1/deg x at each neighbour, none at x. *)
+nonLazyEdge[g_Graph, dm_, index_, x_, y_] := Module[
+  {ax = AdjacencyList[g, x], by = AdjacencyList[g, y]},
+  1 - transportCost[dm, index, ax, ConstantArray[1/Length[ax], Length[ax]],
+    by, ConstantArray[1/Length[by], Length[by]]]];
+
+(* The exact non-lazy curvature of each edge of G. *)
+nonLazyCurvatures[g_Graph] := Module[{vs = VertexList[g], dm, index},
+  If[EdgeCount[g] == 0, Return[{}]];
+  dm = GraphDistanceMatrix[g]; index = AssociationThread[vs -> Range[Length[vs]]];
+  nonLazyEdge[g, dm, index, #[[1]], #[[2]]] & /@ EdgeList[g]];
+
+sgrEdgeInvariants[edges_List] := <|"NonLazyOllivierRicciCurvature" ->
+  nonLazyCurvatures[sgrStateGraph[edges]]|>;
 
 growthNames = {"BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
@@ -97,7 +113,7 @@ geodesicValues[edges_List] := geodesicValues[edges] = Module[{pairs = geodesicPa
         {d, Max[pairs[[All, 1]]]}]|>]];
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
-geometryNames = Join[{"GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
+geometryNames = Join[{"NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
   "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"},
@@ -189,7 +205,7 @@ distributionRange = <|"LocalDimension" -> {0, 8}, "OllivierRicciCurvature" -> {-
   "WolframRicciCurvatureScalar" -> {-24, 8}, "BallDimension" -> {0, 8},
   "BallScalarCurvature" -> {-24, 8}, "RiemannianBallDimension" -> {0, 8},
   "RiemannianBallScalarCurvature" -> {-24, 8}, "SphereDimension" -> {0, 8},
-  "SphereScalarCurvature" -> {-24, 8}|>;
+  "SphereScalarCurvature" -> {-24, 8}, "NonLazyOllivierRicciCurvature" -> {-2, 1}|>;
 
 sgrPooledDistribution[values_List, name_String] := Module[
   {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
@@ -269,6 +285,8 @@ sgrStateGeometry[edges_List] := Module[
       N[Sqrt[Mean[(Values[lc["Dimensions"]] - lc["D"])^2]]]],
     "OllivierMoranI" -> moran,
     "OllivierDegreeCorrelation" -> corr,
+    "NonLazyOllivierRicciCurvature" -> With[{k = nonLazyCurvatures[g]},
+      If[k === {}, Missing[], N[Mean[k]]]],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},

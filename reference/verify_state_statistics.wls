@@ -88,6 +88,8 @@ graphInvariantsOf[vs_List] := graphInvariantsOf[vs] = Module[
 geometry[edges_List] := geometryOf[edges[[All, 2 ;;]]];
 geometryOf[vs_List] := geometryOf[vs] = sgrStateGeometry[vs];
 vertexValues[edges_List] := vertexValuesOf[edges[[All, 2 ;;]]];
+edgeValues[edges_List] := edgeValuesOf[edges[[All, 2 ;;]]];
+edgeValuesOf[vs_List] := edgeValuesOf[vs] = sgrEdgeInvariants[vs];
 vertexValuesOf[vs_List] := vertexValuesOf[vs] = sgrVertexInvariants[vs];
 ballGrowth[edges_List] := ballGrowthOf[edges[[All, 2 ;;]]];
 ballGrowthOf[vs_List] := ballGrowthOf[vs] = sgrBallGrowth[vs];
@@ -108,7 +110,9 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
-  "GeodeticFraction", "SegmentEntropy"};
+  "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature"};
+
+edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
 vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
@@ -152,12 +156,13 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
   pairsByStep = If[branchial,
     GroupBy[{outOf[#From], outOf[#To]} & /@ res["BranchialEdges"], stepOf[First[#]] &], <||>];
   KeyValueMap[Function[{k, sts},
-    Module[{pop, cheap, ginv, geo, vvals, balls, geodesics, mult, classes, evIds, rec},
+    Module[{pop, cheap, ginv, geo, vvals, evals, balls, geodesics, mult, classes, evIds, rec},
       pop = If[byClass, DeleteDuplicatesBy[sts, #CanonicalHash &], sts];
       cheap = cheapInvariants[#Edges] & /@ pop;
       ginv = graphInvariants[#Edges] & /@ pop;
       geo = geometry[#Edges] & /@ pop;
       vvals = vertexValues[#Edges] & /@ pop;
+      evals = edgeValues[#Edges] & /@ pop;
       balls = ballGrowth[#Edges] & /@ pop;
       geodesics = logGeodesic[#Edges] & /@ pop;
       mult = Values[Counts[Lookup[sts, "CanonicalHash"]]]; classes = Length[mult];
@@ -185,6 +190,8 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
             geometryKeys]],
         "VertexInvariants" -> AssociationMap[
           sgrPooledDistribution[Catenate[Lookup[vvals, #]], #] &, vertexDistributions],
+        "EdgeInvariants" -> AssociationMap[
+          sgrPooledDistribution[Catenate[Lookup[evals, #]], #] &, edgeDistributions],
         "ArityHistogram" -> KeySort[Counts[Catenate[Lookup[cheap, "Arities"]]]],
         "AritySignatureHistogram" -> KeySort[Counts[Lookup[cheap, "Arities"]]],
         "DegreeHistogram" -> KeySort[Counts[Catenate[Lookup[cheap, "DegreeSequence"]]]],

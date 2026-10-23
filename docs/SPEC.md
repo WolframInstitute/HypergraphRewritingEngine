@@ -433,6 +433,22 @@ the sum of a(p, u) over the same neighbours u. Σ_w ρ(w) log2 ρ(w) = a(p, q) +
 sum of H over the pairs is the sum over the pairs of log2((d + 1) σ(p, q)) - 2 a(p, q) / ((d +
 1) σ(p, q)), and each term comes from p's search. σ is a double, exact below 2^53.
 
+**`StepStatistics` non-lazy Ollivier-Ricci curvature.** `OllivierRicciCurvature` uses the walk of
+idleness 1/2: m_x puts 1/2 on x. The non-lazy curvature of an edge x-y uses idleness 0: μ_x puts
+1/deg x on each neighbour of x and nothing on x, and κ0(x, y) = 1 - W1(μ_x, μ_y), W1 the
+optimal transport cost under the graph distance. W1 is solved as for `OllivierRicciCurvature`,
+with the masses scaled to integers by deg x deg y. κ0 lies in [-2, 1].
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `NonLazyOllivierRicciCurvature` | the mean of κ0 over the edges of G | G has no edge |
+
+The per-step key `EdgeInvariants` pools the edges of every state at the step, each state weighted
+as in `Invariants`, into the distribution `NonLazyOllivierRicciCurvature` of κ0, with the keys
+and the 32 bins over [-2, 1) of the `VertexInvariants` distributions. These are the definitions
+of the Infrageometry paclet's `OllivierRicciCurvature`, whose tests give 2/3 on every edge of
+K4 and 0 on every edge of P5 and C6.
+
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
 G, ascending, to k_v. It is computed from the edges the record lists, so under

@@ -23,6 +23,7 @@
 //                              d = the state's WolframHausdorffDimension
 //   OllivierRicciCurvature     mean over edges x-y of 1 - W1(m_x, m_y), m_x = 1/2 at x and
 //                              1/(2 deg x) at each neighbour; W1 is the exact transport cost
+//   NonLazyOllivierRicciCurvature  the same with m_x = 1/deg x at each neighbour, none at x
 //   GraphRadius, MeanEccentricity
 //   DegreeEntropy              Shannon entropy in bits of the degree distribution
 //   LocalEntropy               mean over v of the degree entropy over B(v, 2)
@@ -306,14 +307,17 @@ HG_HD inline size_t sg_transport_bytes(size_t k) {
     return 64 + 4 * k * k + 4 * k * k + 4 * 2 * k + 4 * 5 * (nodes + 1);
 }
 
-// The ollivier curvature of edge x-y with the lazy walk (1/2 at the vertex, 1/2 spread over its
-// neighbours): 1 - W1, W1 the exact optimal transport cost under the graph distance. The masses
-// are scaled to integers by L = 2 deg(x) deg(y) and the transport problem is solved by
-// successive shortest paths, so the cost is an exact integer before the one division by L.
+// The Ollivier curvature of edge x-y, 1 - W1, W1 the exact optimal transport cost under the
+// graph distance. With `lazy` the walk has idleness 1/2: 1/2 at the vertex and 1/2 spread over its
+// neighbours, the masses scaled to integers by L = 2 deg(x) deg(y). Without it the walk has
+// idleness 0: 1/deg x on each neighbour of x and nothing on x, scaled by L = deg(x) deg(y). The
+// transport problem is solved by successive shortest paths, so the cost is an exact integer
+// before the one division by L.
 HG_HD inline double sg_ollivier_edge(const SgGraph& g, uint32_t x, uint32_t y,
-                                     unsigned char* scratch) {
+                                     unsigned char* scratch, bool lazy = true) {
     const uint32_t dx = g.degree(x), dy = g.degree(y);
-    const uint32_t a = dx + 1, b = dy + 1;
+    const uint32_t c = lazy ? 1u : 0u;   // 1 when the vertex itself is a point of its support
+    const uint32_t a = dx + c, b = dy + c;
     // Aligned carve of the scratch sized by sg_transport_bytes(max_degree + 1).
     uint32_t* cost = reinterpret_cast<uint32_t*>(scratch);
     uint32_t* flow = cost + static_cast<size_t>(a) * b;
@@ -324,16 +328,16 @@ HG_HD inline double sg_ollivier_edge(const SgGraph& g, uint32_t x, uint32_t y,
     uint32_t* prev = reinterpret_cast<uint32_t*>(dist + nodes);
     uint32_t* inq = prev + nodes;
     uint32_t* queue = inq + nodes;
-    auto pa = [&](uint32_t i) { return i == 0 ? x : g.nbr[g.off[x] + i - 1]; };
-    auto pb = [&](uint32_t j) { return j == 0 ? y : g.nbr[g.off[y] + j - 1]; };
+    auto pa = [&](uint32_t i) { return c && i == 0 ? x : g.nbr[g.off[x] + i - c]; };
+    auto pb = [&](uint32_t j) { return c && j == 0 ? y : g.nbr[g.off[y] + j - c]; };
     for (uint32_t i = 0; i < a; ++i)
         for (uint32_t j = 0; j < b; ++j) {
             cost[i * b + j] = sg_short_distance(g, pa(i), pb(j));
             flow[i * b + j] = 0;
         }
-    for (uint32_t i = 0; i < a; ++i) supply[i] = i == 0 ? dx * dy : dy;
-    for (uint32_t j = 0; j < b; ++j) demand[j] = j == 0 ? dx * dy : dx;
-    const uint64_t total = 2ull * dx * dy;
+    for (uint32_t i = 0; i < a; ++i) supply[i] = c && i == 0 ? dx * dy : dy;
+    for (uint32_t j = 0; j < b; ++j) demand[j] = c && j == 0 ? dx * dy : dx;
+    const uint64_t total = (lazy ? 2ull : 1ull) * dx * dy;
     uint64_t moved = 0, total_cost = 0;
     // Node numbering: 0 source, 1..a the A points, a+1..a+b the B points, a+b+1 the sink.
     const uint32_t src = 0, sink = a + b + 1;
@@ -413,6 +417,7 @@ enum : uint32_t {
     SG_VERTEX_DISTRIBUTIONS = 1u << 10,  // `want` only: write the per-vertex distributions
     SG_VOLUME_GROWTH = 1u << 11,         // the six growth_* means: a vertex of G' has a fit
     SG_GEODESIC = 1u << 12,              // geodetic_fraction, segment_entropy: G has an edge
+    SG_NONLAZY_OLLIVIER = 1u << 13,      // nonlazy_ollivier: G has an edge
 };
 
 // The per-vertex distributions of a state, in this order.
@@ -426,7 +431,8 @@ enum : uint32_t {
     SG_DIST_RIEMANNIAN_CURVATURE = 6,
     SG_DIST_SPHERE_DIMENSION = 7,        //   sphere dimension and scalar curvature
     SG_DIST_SPHERE_CURVATURE = 8,
-    SG_DISTS = 9,
+    SG_DIST_NONLAZY_OLLIVIER = 9,        // kappa0 over the edges of G
+    SG_DISTS = 10,
 };
 constexpr uint32_t SG_DIST_BINS = 32;
 
@@ -440,7 +446,7 @@ HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
     if (which == SG_DIST_LOCAL_DIMENSION || which == SG_DIST_BALL_DIMENSION ||
         which == SG_DIST_RIEMANNIAN_DIMENSION || which == SG_DIST_SPHERE_DIMENSION) {
         lo = 0.0; hi = 8.0;
-    } else if (which == SG_DIST_OLLIVIER) {
+    } else if (which == SG_DIST_OLLIVIER || which == SG_DIST_NONLAZY_OLLIVIER) {
         lo = -2.0; hi = 1.0;
     } else {
         lo = -24.0; hi = 8.0;
@@ -514,6 +520,7 @@ struct SgGeometry {
     double segment_entropy = 0.0;
     uint32_t geodesic_radii = 0;         // D: entries written to the log-geodesic-count output
     uint32_t reserved = 0;
+    double nonlazy_ollivier = 0.0;       // the mean over edges of the idleness-0 curvature
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -539,6 +546,7 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // each). Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8
 // bytes of alignment per array. SG_VOLUME_GROWTH adds per lane and per vertex the shells and the
 // Riemannian counts (4 bytes each) and the fit scratch (56 bytes), and per vertex the six fits.
+// SG_NONLAZY_OLLIVIER adds per edge the idleness-0 curvature (8 bytes).
 // SG_GEODESIC adds per lane and per vertex the path counts, their log sums and the per-distance
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
@@ -552,6 +560,7 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
         bytes += size_t{lanes} * (n1 * 2 * 4 + sg_fit_doubles(n) * 8) +
                  SG_GROWTH_VALUES * n1 * 8 + 4 * 8;
     if (want & SG_GEODESIC) bytes += size_t{lanes} * n1 * 3 * 8 + n1 * (4 + 3 * 8) + 5 * 8;
+    if (want & SG_NONLAZY_OLLIVIER) bytes += 8 * (edges + 1) + 8;
     return bytes;
 }
 
@@ -711,6 +720,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                                  uint32_t log_geodesic_capacity = 0) {
     const bool want_growth = (want & SG_VOLUME_GROWTH) != 0;
     const bool want_geodesic = (want & SG_GEODESIC) != 0;
+    const bool want_nonlazy = (want & SG_NONLAZY_OLLIVIER) != 0;
+    const bool want_lazy = (want & SG_OLLIVIER) != 0;
     const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
     const bool want_dists = dists != nullptr && (want & SG_VERTEX_DISTRIBUTIONS) != 0;
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
@@ -767,6 +778,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* ent_v = want_geodesic ? arena.take<double>(n1) : nullptr;
     double* lnsig_sum = want_geodesic ? arena.take<double>(n1) : nullptr;
     uint64_t* pair_sum = want_geodesic ? arena.take<uint64_t>(n1) : nullptr;
+    double* oll0 = want_nonlazy ? arena.take<double>(size_t{g.edges} + 1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -916,23 +928,38 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             }
         }
     }
-    if (((want & SG_OLLIVIER) || want_vertex_ollivier) && g.edges) {
+    const bool lazy_edges = want_lazy || want_vertex_ollivier;
+    if ((lazy_edges || want_nonlazy) && g.edges) {
         if (me < TL) {
             auto* transport = reinterpret_cast<unsigned char*>(transport_all + me * (tstride / 8));
             uint32_t j = 0;
             for (uint32_t x = 0; x < n; ++x)
                 for (uint32_t k = g.off[x]; k < g.off[x + 1]; ++k) {
                     if (g.nbr[k] <= x) continue;
-                    if (j % TL == me) oll[j] = sg_ollivier_edge(g, x, g.nbr[k], transport);
+                    if (j % TL == me) {
+                        if (lazy_edges) oll[j] = sg_ollivier_edge(g, x, g.nbr[k], transport);
+                        if (want_nonlazy)
+                            oll0[j] = sg_ollivier_edge(g, x, g.nbr[k], transport, false);
+                    }
                     ++j;
                 }
         }
         par.sync();
-        if (par.leader()) {
+        if (par.leader() && lazy_edges) {
             double sum = 0.0;
             for (uint32_t j = 0; j < g.edges; ++j) sum += oll[j];
             out.ollivier_ricci = sum / g.edges;
             out.defined |= SG_OLLIVIER;
+        }
+        if (par.leader() && want_nonlazy) {
+            double sum = 0.0;
+            for (uint32_t j = 0; j < g.edges; ++j) {
+                sum += oll0[j];
+                if (want_dists)
+                    sg_dist_add(dists[SG_DIST_NONLAZY_OLLIVIER], SG_DIST_NONLAZY_OLLIVIER, oll0[j]);
+            }
+            out.nonlazy_ollivier = sum / g.edges;
+            out.defined |= SG_NONLAZY_OLLIVIER;
         }
         if (want_vertex_ollivier && par.leader()) {
             // k_v: each edge's curvature added to both ends in edge order, over the degree.
