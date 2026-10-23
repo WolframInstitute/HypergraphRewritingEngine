@@ -30,11 +30,13 @@ namespace {
 // This file supplies the two device-specific halves: how candidates are enumerated, and the
 // parallelism.
 //
-// PARALLELISM: one BLOCK per (state, rule) pair; threads inside it stride the candidates for
-// pattern edge 0, each running the whole DFS subtree below a different root, with no
-// inter-thread coordination -- outputs go straight to the global match pool. That is what
-// unblocked the one-thread-per-(state x rule) pathology where n=1000, frontier=1, rule=1 put
-// all the work on a single thread (944 ms on n1000_s1) while the rest of the device idled.
+// PARALLELISM: one BLOCK per (state, rule) pair, or per part of one when the pass emits every
+// match as found (match_state_rule_splits): part p of P anchors the p-th of P equal ranges of the
+// state's slice. Threads inside the block stride the part's anchors for pattern edge 0, each
+// running the whole DFS subtree below a different root, with no inter-thread coordination --
+// outputs go straight to the global match pool. A thread's DFS diverges from its warp's other
+// threads, so a block's time grows with the anchors it holds; the persistent scheduler sets the
+// parts (match_parts_of) so that a step's few states spread over the grid.
 //
 //   gridDim.x  = num_state_ids * num_rules
 //   blockDim.x = kMatchBlockThreads (warp-aligned; 32 by default), declared in match.hpp
@@ -44,11 +46,27 @@ namespace {
 // ENUMERATION, in the Ctx's cursor. Pattern edge 0, and an edge with no bound pivot vertex, take
 // their candidates from the state's own CSR slice: O(|state|), each edge exactly once, membership
 // free. An edge with a bound pivot vertex in a state past DeviceState::slice_scan_max_edges walks
-// the pivot's incident list (VertexInvertedIndex), which is degree-bounded; at or below the
-// threshold the slice is cheaper. The threshold also gates lazy index maintenance: below it the
-// index is never read.
+// the pivot's incident list (VertexInvertedIndex), which is degree-bounded, and skips the entries
+// of other states; at or below the threshold the slice is cheaper. The threshold also gates lazy
+// index maintenance: below it the index is never read. A pass without a per-(state, rule) or
+// per-parent cap, whose ranks share the buffer (kMatchSharedWords), copies a state at or
+// below the threshold into the block's shared memory (stage_state_edges) and scans the copy,
+// skipping edges whose arity or pivot vertex cannot bind the pattern edge.
 
 using MatchJoinState = hgcommon::JoinState<kMaxPatternEdges, kMaxVars, EdgeId, VertexId>;
+
+// A state's edges copied into the block's shared memory for one pass (stage_state_edges):
+// the ids in slice order, each edge's arity, and the vertices of each edge at a fixed stride of
+// `stride` words. An edge whose arity exceeds the stride has no vertices copied; no pattern edge
+// of the rule has that arity, so hgcommon::bind_pattern_edge rejects it before reading them.
+// `count` 0 means the state is not staged.
+struct MatchStage {
+    EdgeId*   ids    = nullptr;
+    uint8_t*  arity  = nullptr;
+    VertexId* verts  = nullptr;
+    uint32_t  stride = 0;
+    uint32_t  count  = 0;
+};
 
 // The join's view of this device. hgcommon/join_core.hpp owns the recursion, the
 // edge-injectivity rule, the binding and its unwind, and which pattern position is bound
@@ -64,12 +82,14 @@ struct MatchJoinCtx {
     const EdgeId*     ids;
     StateEdgeSlice    slice;
     uint32_t          scan_max;
+    MatchStage        stage;
 
-    __device__ MatchJoinCtx(const DeviceState& d, const DeviceRule& r, StateId s)
+    __device__ MatchJoinCtx(const DeviceState& d, const DeviceRule& r, StateId s,
+                            const MatchStage& st)
         : ds(d), rule(r), state_id(s), edges(d.edge_pool.data), verts(d.vertex_pool.data),
           ids(d.state_edge_ids),
           slice(s < d.max_states ? d.state_edge_slices[s] : StateEdgeSlice{0, 0}),
-          scan_max(d.slice_scan_max_edges) {}
+          scan_max(d.slice_scan_max_edges), stage(st) {}
 
     __device__ uint8_t num_lhs_edges() const { return rule.num_lhs_edges; }
 
@@ -80,31 +100,43 @@ struct MatchJoinCtx {
     __device__ const uint8_t* pattern_vars(uint8_t p)  const { return rule.lhs[p].vars; }
     __device__ uint8_t        pattern_arity(uint8_t p) const { return rule.lhs[p].arity; }
 
-    // Every enumerator here walks id lists, so a candidate IS an id and there is nothing
-    // already-read to carry along.
-    __device__ EdgeId candidate_of(EdgeId e) const { return e; }
-    __device__ EdgeId candidate_id(EdgeId e) const { return e; }
-
-    __device__ const VertexId* edge_vertices(EdgeId e) const {
-        return verts + edges[e].vertex_offset;
+    // A candidate carries its id, its vertices and its arity, read once by the cursor.
+    struct Cand {
+        EdgeId          id;
+        const VertexId* v;
+        uint8_t         arity;
+    };
+    __device__ Cand from_pool(EdgeId e) const {
+        const Edge& ed = edges[e];
+        return Cand{e, verts + ed.vertex_offset, ed.arity};
     }
-    __device__ uint8_t edge_arity(EdgeId e) const { return edges[e].arity; }
+    __device__ Cand candidate_of(EdgeId e) const { return from_pool(e); }
+    __device__ EdgeId candidate_id(const Cand& c) const { return c.id; }
+    __device__ const VertexId* edge_vertices(const Cand& c) const { return c.v; }
+    __device__ uint8_t edge_arity(const Cand& c) const { return c.arity; }
 
-    __device__ bool usable(EdgeId e) const { return slice_position(ids, slice, e) != UINT32_MAX; }
+    // Every cursor yields edges of this state only: a scan reads the state's own slice, and the
+    // pivot walk skips list entries outside the slice. A seeded anchor comes from the slice.
+    __device__ bool usable(EdgeId) const { return true; }
     __device__ bool aborted() const { return false; }
 
     // The two paths are strictly EITHER/OR per pattern position: running both would enumerate a
     // candidate twice and emit a duplicate match. The pivot vertex's incident list holds each
     // incident edge once (VertexInvertedIndex).
-    using Cand = EdgeId;
     using List = typename LockFreeList<EdgeId>::DeviceView;
-    static constexpr uint8_t kScan = 0, kPivot = 1;
+    static constexpr uint8_t kScan = 0, kPivot = 1, kStaged = 2;
     static constexpr uint32_t kEnd = Pool<typename LockFreeList<EdgeId>::Node>::kInvalid;
     struct Cursor {
-        uint32_t at;     // kScan: the next slice index; kPivot: the next list node or kEnd
+        uint32_t at;     // kScan, kStaged: the next slice index; kPivot: the next list node or kEnd
         uint8_t  mode;
         uint8_t  p;      // the pattern position
+        // kStaged: the pattern edge's arity, and the vertex `pv` its edges hold at position `pk`
+        // (the bound pivot variable's place in the pattern edge), or pk kNoFilter.
+        uint8_t  pa;
+        uint8_t  pk;
+        VertexId pv;
     };
+    static constexpr uint8_t kNoFilter = 0xFF;
 
     // The first node of list[key], as LockFreeList::DeviceView::for_each starts its walk: a
     // relaxed load for an empty list, the acquire only for a list that has a node.
@@ -118,27 +150,99 @@ struct MatchJoinCtx {
     __device__ void cursor_open(uint8_t p, const MatchJoinState& st, Cursor& c) const {
         c.p = p;
         c.at = 0;
-        c.mode = kScan;
+        c.mode = stage.count ? kStaged : kScan;
         const DevicePatternEdge& pe = rule.lhs[p];
+        c.pa = pe.arity;
+        c.pk = kNoFilter;
+        c.pv = 0;
+        if (pe.pivot_var != kNoPivotVar && (st.bound_mask >> pe.pivot_var) & 1u) {
+            for (uint8_t k = 0; k < pe.arity; ++k)
+                if (pe.vars[k] == pe.pivot_var) { c.pk = k; break; }
+            c.pv = st.binding[pe.pivot_var];
+        }
         if (slice.count > scan_max && pe.pivot_var != kNoPivotVar) {
             c.mode = kPivot;
             c.at = list_first(ds.vertex_inverted_index.list, st.binding[pe.pivot_var]);
         }
     }
 
-    __device__ bool cursor_next(Cursor& c, EdgeId& out) const {
+    __device__ bool cursor_next(Cursor& c, Cand& out) const {
+        if (c.mode == kStaged) {
+            // Edges of another arity, or without the pivot vertex at its place, cannot bind the
+            // pattern edge (hgcommon::bind_pattern_edge) and are skipped here.
+            while (c.at < stage.count) {
+                const uint32_t i = c.at++;
+                if (stage.arity[i] != c.pa) continue;
+                const VertexId* v = stage.verts + size_t(i) * stage.stride;
+                if (c.pk != kNoFilter && v[c.pk] != c.pv) continue;
+                out = Cand{stage.ids[i], v, c.pa};
+                return true;
+            }
+            return false;
+        }
         if (c.mode == kScan) {
             if (c.at >= slice.count) return false;
-            out = ids[slice.offset + c.at++];
+            out = from_pool(ids[slice.offset + c.at++]);
             return true;
         }
-        if (c.at == kEnd) return false;
-        const auto& node = ds.vertex_inverted_index.list.pool.at(c.at);
-        out = node.value;
-        c.at = node.next;
-        return true;
+        // The incident list holds the vertex's edges in every state: entries outside this
+        // state's slice are skipped.
+        while (c.at != kEnd) {
+            const auto& node = ds.vertex_inverted_index.list.pool.at(c.at);
+            const EdgeId e = node.value;
+            c.at = node.next;
+            if (slice_position(ids, slice, e) == UINT32_MAX) continue;
+            out = from_pool(e);
+            return true;
+        }
+        return false;
     }
 };
+
+// The widest left-hand edge of `rule`: the vertex stride of a stage.
+__device__ __forceinline__ uint32_t rule_max_lhs_arity(const DeviceRule& rule) {
+    uint32_t a = 0;
+    for (uint8_t p = 0; p < rule.num_lhs_edges; ++p)
+        a = rule.lhs[p].arity > a ? rule.lhs[p].arity : a;
+    return a;
+}
+
+// Copies state `sid`'s edges into `smem` (`bytes` of the block's shared memory) on every thread
+// of the block, when the state is matched by scanning its slice (at most slice_scan_max_edges
+// edges) and its edges fit. Returns the stage, with count 0 when the state is not staged.
+// Every thread of the block calls it; it ends with a barrier.
+__device__ __noinline__ MatchStage stage_state_edges(const DeviceState& ds, const DeviceRule& rule,
+                                                     StateId sid, uint64_t* smem, uint32_t bytes) {
+    MatchStage s{};
+    if (smem == nullptr || sid >= ds.max_states) return s;
+    const StateEdgeSlice sl = ds.state_edge_slices[sid];
+    const uint32_t stride = rule_max_lhs_arity(rule);
+    // Per edge: its id, its arity byte and `stride` vertices.
+    const uint32_t per_edge = 4u + 1u + 4u * stride;
+    if (sl.count == 0 || sl.count > ds.slice_scan_max_edges || sl.count * per_edge > bytes)
+        return s;
+    unsigned char* base = reinterpret_cast<unsigned char*>(smem);
+    s.ids = reinterpret_cast<EdgeId*>(base);
+    s.verts = reinterpret_cast<VertexId*>(base + 4u * sl.count);
+    s.arity = base + 4u * sl.count + 4u * stride * sl.count;
+    s.stride = stride;
+    s.count = sl.count;
+    // The previous pass's threads may still read the buffer.
+    __syncthreads();
+    const Edge* edges = ds.edge_pool.data;
+    const VertexId* verts = ds.vertex_pool.data;
+    for (uint32_t i = threadIdx.x; i < sl.count; i += blockDim.x) {
+        const EdgeId e = ds.state_edge_ids[sl.offset + i];
+        const Edge ed = edges[e];
+        s.ids[i] = e;
+        s.arity[i] = ed.arity;
+        if (ed.arity <= stride)
+            for (uint32_t k = 0; k < ed.arity; ++k)
+                s.verts[i * stride + k] = verts[ed.vertex_offset + k];
+    }
+    __syncthreads();
+    return s;
+}
 
 }  // namespace
 
@@ -259,17 +363,21 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
 
 // ONE PASS OF THE JOIN, compiled ONCE and called up to twice per rule. Not inlined for the
 // same reason as emit_admit: a lambda called twice instantiated the whole DFS twice and ptxas
-// ran out of memory. `ctl` null emits every match. `costs`, when given, receives a CostEntry
-// for each emission, booked on the step ("StateCost").
+// ran out of memory. `ctl` null emits every match. `stage` is the state's edges in shared memory
+// or an empty stage. The pass anchors part `part` of `parts` equal ranges of the state's slice
+// (match_split_root_begin). A non-null `out_rank` receives each emitted record's
+// transition_rank_device at the record's index in `out`. `costs`, when given, receives a
+// CostEntry for each emission, booked on the step (step_cost_one).
 __device__ __noinline__ void match_state_rule_pass(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, const EmitCtl* ctl,
-        WorkLogView<CostEntry>* costs = nullptr) {
+        const MatchStage& stage = MatchStage{}, uint32_t part = 0, uint32_t parts = 1,
+        uint64_t* out_rank = nullptr, WorkLogView<CostEntry>* costs = nullptr) {
     const DeviceRule& rule = rules[rid];
 
     if (rule.num_lhs_edges == 0) return;
 
-    const MatchJoinCtx ctx(ds, rule, state_id);
+    const MatchJoinCtx ctx(ds, rule, state_id, stage);
 
     // A completed match. matched_edges is indexed by PATTERN position, not by depth.
     auto emit = [&] (const MatchJoinState& st) {
@@ -281,13 +389,18 @@ __device__ __noinline__ void match_state_rule_pass(
             ds.errors.record(ErrorKind::kMatchPoolFull);
             return;
         }
+        EdgeId edges[kMaxPatternEdges];
+        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
+        for (uint8_t d = 0; d < st.depth; ++d) edges[st.pattern[d]] = st.matched[d];
+        if (out_rank)
+            out_rank[idx] = transition_rank_device(ds, state_id, rid, edges, st.depth,
+                                                   stage.count ? stage.ids : nullptr, stage.count);
         MatchRecord& m = out.at(idx);
         m.rule_id   = rid;
         m.state_id  = state_id;
         m.step      = step;
         m.num_edges = st.depth;
-        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
-        for (uint8_t d = 0; d < st.depth; ++d) m.matched_edges[st.pattern[d]] = st.matched[d];
+        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) m.matched_edges[i] = edges[i];
         publish_match(m);
         // Booked before the append, inside the match item that still holds the step open; a
         // candidate whose entry finds the log full is costed by the selection.
@@ -306,12 +419,14 @@ __device__ __noinline__ void match_state_rule_pass(
         hgcommon::join_seed(ctx, st, root_cand, rule.order[0], emit);
     };
 
-    // Stride pattern edge 0's candidates -- the state's own edge slice -- across the block's
-    // threads. THIS is the device's part of matching -- the parallelism -- and it is why
-    // match_state_rule exists rather than a call straight into join_core.
+    // Stride pattern edge 0's candidates in this part's range of the state's own edge slice
+    // across the block's threads. THIS is the device's part of matching -- the parallelism --
+    // and it is why match_state_rule exists rather than a call straight into join_core.
     const StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
-    for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x)
-        run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
+    const uint32_t begin = match_split_root_begin(sl0.count, part, parts);
+    const uint32_t end = match_split_root_begin(sl0.count, part + 1u, parts);
+    for (uint32_t i = begin + threadIdx.x; i < end; i += blockDim.x)
+        run_dfs_from_root(stage.count ? stage.ids[i] : ds.state_edge_ids[sl0.offset + i]);
 }
 
 // The block's spill slot holding at least `words`, for every thread of the block: claimed by
@@ -411,13 +526,17 @@ __device__ __forceinline__ void parent_count_pass(
 __device__ __noinline__ void match_state_parent_capped(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
-        uint32_t* s_keep_n, uint64_t* s_ranks, const SuccessorCtx* succ,
+        uint32_t* s_keep_n, uint64_t* s_buf, const SuccessorCtx* succ,
         const SuccessorScratch* scratch) {
     const uint32_t cap_k = ds.matches_per_state_rule;
     const uint32_t parent_k = ds.max_successor_states_per_parent;
-    __shared__ uint16_t s_rules[kDrainCapBuffer];
-    __shared__ uint8_t  s_kept[kDrainCapBuffer];
-    __shared__ uint32_t s_quota[kDrainCapBuffer / 32u];
+    // The candidates' ranks, rules, keep bytes and quota bits, carved from the block's match
+    // buffer (kMatchSharedWords).
+    uint64_t* s_ranks = s_buf;
+    uint16_t* s_rules = reinterpret_cast<uint16_t*>(s_buf + kDrainCapBuffer);
+    uint8_t*  s_kept  = reinterpret_cast<uint8_t*>(s_buf + kDrainCapBuffer + kDrainCapBuffer / 4u);
+    uint32_t* s_quota = reinterpret_cast<uint32_t*>(s_buf + kDrainCapBuffer +
+                                                    kDrainCapBuffer / 4u + kDrainCapBuffer / 8u);
 
     if (!succ || !scratch || blockIdx.x >= scratch->blocks) {
         // No scratch to hold the candidates: the cap cannot choose, so every transition is
@@ -631,13 +750,10 @@ __device__ void match_state_rule(const DeviceState& ds,
                                  uint32_t          step,
                                  typename Pool<MatchRecord>::DeviceView out,
                                  const SuccessorCtx* succ,
-                                 const SuccessorScratch* scratch) {
+                                 const SuccessorScratch* scratch,
+                                 uint32_t part, uint32_t parts, uint64_t* out_rank) {
     const uint32_t cap_k = ds.matches_per_state_rule;
     const uint32_t parent_k = ds.max_successor_states_per_parent;
-    // No draw applies where a cap chooses: under MaxStatesPerStep every transition is a candidate
-    // of its step, as on the host.
-    const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
-                          ds.max_states_per_step == 0u;
     // Under a step cap, each candidate this call emits goes to the cost log, whose entries idle
     // blocks run (step_cost_one) before the step's selection.
     WorkLogView<CostEntry> cost_log =
@@ -646,8 +762,13 @@ __device__ void match_state_rule(const DeviceState& ds,
         ds.max_states_per_step != 0u && succ != nullptr && succ->cand_ready != nullptr
             ? &cost_log
             : nullptr;
-    if (cap_k == 0u && parent_k == 0u && !sampling) {
-        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, costs);
+    // The block's match buffer: the state's staged edges when no cap ranks candidates, the
+    // caps' ranks and candidate arrays otherwise.
+    __shared__ uint64_t s_buf[kMatchSharedWords];
+    if (match_state_rule_splits(ds)) {
+        const MatchStage stage = stage_state_edges(ds, rules[rid], state_id, s_buf, sizeof(s_buf));
+        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, stage, part, parts,
+                              out_rank, costs);
         return;
     }
 
@@ -658,12 +779,12 @@ __device__ void match_state_rule(const DeviceState& ds,
     __shared__ uint64_t s_threshold;
     __shared__ uint32_t s_cut_all;
     __shared__ unsigned long long s_min_rank;
-    __shared__ uint64_t s_ranks[kDrainCapBuffer];
+    uint64_t* s_ranks = s_buf;
 
     if (parent_k != 0u) {
         if (rid == 0u)
             match_state_parent_capped(ds, rules, state_id, step, out, &s_seen, &s_overflow,
-                                      &s_keep_n, s_ranks, succ, scratch);
+                                      &s_keep_n, s_buf, succ, scratch);
         return;
     }
 
@@ -674,13 +795,15 @@ __device__ void match_state_rule(const DeviceState& ds,
         const EmitCtl draw{EmitMode::kDraw, 0u, 0u, nullptr, nullptr, nullptr, &s_min_rank,
                            &s_survived};
         for (uint32_t r = 0; r < ds.num_rules; ++r)
-            match_state_rule_pass(ds, rules, state_id, r, step, out, &draw);
+            match_state_rule_pass(ds, rules, state_id, r, step, out, &draw,
+                                  stage_state_edges(ds, rules[r], state_id, s_buf, sizeof(s_buf)));
         __syncthreads();
         if (s_survived != 0u || s_min_rank == ~0ULL) return;
         const EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, nullptr,
                             nullptr, nullptr};
         for (uint32_t r = 0; r < ds.num_rules; ++r)
-            match_state_rule_pass(ds, rules, state_id, r, step, out, &spine);
+            match_state_rule_pass(ds, rules, state_id, r, step, out, &spine,
+                                  stage_state_edges(ds, rules[r], state_id, s_buf, sizeof(s_buf)));
         return;
     }
 
@@ -731,7 +854,8 @@ __device__ void match_state_rule(const DeviceState& ds,
 
     const EmitCtl keep{EmitMode::kCapEmit, s_cut_all, s_threshold, &s_seen, &s_overflow,
                        s_ranks, nullptr, nullptr};
-    match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep, costs);
+    match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep, MatchStage{}, 0u, 1u,
+                          nullptr, costs);
 }
 
 namespace {

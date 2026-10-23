@@ -1044,13 +1044,15 @@ wxf::WXFValue build_graph_data(const Source& src,
             for (const auto& [eff, raw] : state_verts)
                 if (send_vertex(eff, src.state_step(raw))) add_state_vertex(End{0, eff}, raw);
             // Every pair is an edge (multiplicity is meaning, see above): its index is the
-            // number of earlier pairs between the same two states in the same order, which a
-            // session's cursor sees unchanged as the pair list grows.
+            // number of earlier pairs between the same two states, which a session's cursor sees
+            // unchanged as the pair list grows. The lower state id is the edge's first end: the
+            // order of a pair's two events follows the engine and the thread schedule.
             std::map<std::pair<int64_t, int64_t>, uint32_t> occurrence;
             for (const auto& [e1, e2] : pairs) {
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
-                const int64_t s1 = src.effective_state_id(src.event_output_state(e1));
-                const int64_t s2 = src.effective_state_id(src.event_output_state(e2));
+                int64_t s1 = src.effective_state_id(src.event_output_state(e1));
+                int64_t s2 = src.effective_state_id(src.event_output_state(e2));
+                if (s2 < s1) std::swap(s1, s2);
                 if (!send_unique_edge(s1, s2, kEdgeBranchialState, occurrence[{s1, s2}]++))
                     continue;
                 Edge e;

@@ -40,10 +40,13 @@ namespace gpu {
 // `step` rides on the ITEM. That is what makes a step budget a predicate rather than a loop
 // bound, and it is already how the host carries depth (ExpandChunk::step): with no phases there
 // is nothing else that could hold it.
+// A (state, rule) pair, or part `part` of `parts` of it (match_state_rule).
 struct MatchWorkItem {
     StateId  state_id = INVALID_ID;
     uint32_t rule_id  = 0;
     uint32_t step     = 0;
+    uint16_t part     = 0;
+    uint16_t parts    = 1;
 };
 
 // Match every (state, rule) pair through persistent workers rather than one block per pair.
