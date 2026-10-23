@@ -3793,6 +3793,72 @@ TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
     worker_stop(w);
 }
 
+// "StateCost" keeps the same states on both devices: a cost over the incidence mean distance and
+// one over the ball dimension, under each state identity, with "MaxStatesPerStep" 2 and with
+// "UniformRandom" and "MatchesPerStep" 2. Counts of states, events, causal and branchial pairs
+// equal the host's.
+TEST(GpuBinaryGate, StateCostKeepsTheSameStatesOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    HostBridge host;
+    const StateList seed = {{{1, 2}, {1, 3}, {2, 3}}};
+    const EdgeList lhs = {{1, 2}, {1, 3}};
+    const EdgeList rhs = {{1, 2}, {1, 4}, {2, 4}, {3, 4}};
+    struct Cost { std::vector<std::string> code; std::vector<double> k; const char* measures; };
+    const Cost costs[] = {{{"IncidenceMeanDistance", "Minus"}, {}, nullptr},
+                          {{"BallDimension", "Const", "Plus", "Abs"}, {-2.0}, "VolumeGrowth"}};
+    for (const char* mode : {"None", "Automatic", "Full"}) {
+        for (bool matches : {false, true}) {
+            for (const Cost& c : costs) {
+                auto job = [&](uint64_t seed_value) {
+                    return build_input(seed, lhs, rhs, 4, [&](wxf::Writer& ww) {
+                        put_str_list_option(ww, "RequestedData",
+                                            {"NumStates", "NumEvents", "NumCausalEdges",
+                                             "NumBranchialEdges"});
+                        put_str_option(ww, "CanonicalizeStates", mode);
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string(matches ? "MatchesPerStep" : "MaxStatesPerStep"));
+                        ww.write(int64_t{2});
+                        put_str_option(ww, "UniformRandom", matches ? "True" : "False");
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("RandomSeed"));
+                        ww.write(static_cast<int64_t>(seed_value));
+                        put_str_list_option(ww, "StepStatisticsMeasures",
+                                            c.measures ? std::vector<std::string>{c.measures}
+                                                       : std::vector<std::string>{});
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("StateCost"));
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                        ww.write_varint(2);
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("Code"));
+                        ww.write(c.code);
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("Constants"));
+                        ww.write(c.k);
+                    }, 7);
+                };
+                const auto cpu = run_rewriting_core(job(5), host);
+                const auto gpu = worker_call(w, job(5));
+                ASSERT_FALSE(gpu.empty()) << mode;
+                for (const char* key :
+                     {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"})
+                    EXPECT_EQ(read_int_key(gpu, key), read_int_key(cpu, key))
+                        << mode << (matches ? " matches " : " states ") << c.code[0] << " " << key;
+            }
+        }
+    }
+    worker_stop(w);
+}
+
+
 // The worker's fd 1 is stderr once it serves: the CUDA runtime writes device printf (the
 // persistent kernel's progress and stall lines) to the process's standard output, and the
 // replies go through a duplicate of the fd the parent gave, so those lines cannot enter a frame.

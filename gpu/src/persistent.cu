@@ -91,11 +91,18 @@ struct StepSelectScratch {
     uint64_t* srank = nullptr;
     uint32_t* order = nullptr;
     uint8_t*  lead = nullptr;
+    // "StateCost": each candidate's successor cost key. With it, srank and order are allocated
+    // whatever the cap counts.
+    uint64_t* cost = nullptr;
+    // "StateCost": SuccessorCtx::cand_cost, cand_id, cand_ready and cost_log.
+    uint64_t*                    cand_cost = nullptr;
+    hgcommon::SuccessorIdentity* cand_id = nullptr;
+    uint32_t*                    cand_ready = nullptr;
+    WorkLogView<CostEntry>       cost_log{};
+    // The cycles of every selection on its block, summed (PersistentEvolveStats::cycles_select).
+    unsigned long long*          cycles = nullptr;
 };
 
-__device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
-    if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
-}
 // Under quotient exploration the ExplorationProbability coin is drawn when a class is claimed for
 // expansion, keyed on its canonical hash, whichever path claims it: the host's
 // claim_canonical_for_expansion. A refused class stays claimed and is not expanded.
@@ -125,17 +132,20 @@ __global__ void k_step_release_empty(const __grid_constant__ DeviceState ds) {
 
 // Selection of step s on the calling block: rank the step's candidates; when the cap counts
 // successor states, replace each rank by its successor's (the smallest rank into it,
-// hgcommon::successor_ranks); find the N-th smallest rank over one entry per successor (each
-// candidate its own under MatchesPerStep) by radix selection, and append every candidate ranked
-// at or below it to `found`: the transitions into the N lowest successors and every successor
-// tied with the N-th (hgcommon::rank_cut_keeps; the host's keep_lowest_successors). The selected
-// rewrites are booked on step s + 1 before any of them is visible.
+// hgcommon::successor_ranks); under "StateCost" each candidate also carries its successor's
+// cost (computed by the cost log's entries, step_cost_one, or here when an entry did not run);
+// find the N-th smallest (cost, rank) over one entry per successor (each candidate its own under
+// MatchesPerStep) by radix selection, and append every candidate at or below it to `found`: the
+// transitions into the N lowest successors and every successor tied with the N-th
+// (hgcommon::cost_cut_keeps; the host's keep_lowest_successors). The selected rewrites are booked
+// on step s + 1 before any of them is visible.
 __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
                                          typename Pool<MatchRecord>::DeviceView cand,
                                          typename Pool<MatchRecord>::DeviceView found,
                                          StepSelectScratch sel, const DeviceRule* rules,
                                          const SuccessorCtx* succ) {
     const uint32_t tid = threadIdx.x, nt = blockDim.x;
+    const unsigned long long t_select = tid == 0 ? clock64() : 0;
     __shared__ uint32_t s_cnt;
     __shared__ uint32_t s_remaining;
     __shared__ uint64_t s_prefix;
@@ -180,60 +190,115 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     // Successor states, on the whole warp (a Full successor's hash runs on it).
     const bool by_succ = !ds.step_cap_counts_matches && sel.id != nullptr && succ != nullptr &&
                          succ->mode != CanonicalizationMode::None;
+    const bool costed = ds.state_cost != nullptr && sel.cost != nullptr && succ != nullptr;
+    // "StateCost": the identities and costs the emitting warps computed (step_cost_emitted); a
+    // candidate without them is computed here.
+    const uint32_t* ready = costed ? succ->cand_ready : nullptr;
     __shared__ uint32_t s_groups;
     if (by_succ) {
         for (uint32_t j = 0; j < m; ++j) {
-            const MatchRecord& r = cand.at(sel.idx[j]);
+            const uint32_t ci = sel.idx[j];
+            const MatchRecord& r = cand.at(ci);
             hgcommon::SuccessorIdentity sid{0, 1};
-            if (!successor_identity_device(ds, rules[r.rule_id], r.state_id, r.matched_edges,
-                                           *succ, sid))
+            if (ready && ready[ci])
+                sid = succ->cand_id[ci];
+            else if (!successor_identity_device(ds, rules[r.rule_id], r.state_id,
+                                                r.matched_edges, *succ, sid))
                 sid = hgcommon::SuccessorIdentity{0, 1};
             if (tid == 0) sel.id[j] = sid;
         }
         __syncthreads();
+        if (tid == 0) hgcommon::successor_ranks(sel.rank, sel.id, m, sel.order, sel.srank, sel.lead);
+        __syncthreads();
+        if (costed) {
+            // One cost per successor, at its lead candidate, then spread to the others.
+            for (uint32_t j = 0; j < m; ++j) {
+                if (!sel.lead[j]) continue;
+                const uint32_t ci = sel.idx[j];
+                const MatchRecord& r = cand.at(ci);
+                uint64_t key = 0;
+                if (ready && ready[ci])
+                    key = succ->cand_cost[ci];
+                else
+                    successor_cost_device(ds, rules[r.rule_id], r.state_id, r.matched_edges,
+                                          *succ, key);
+                if (tid == 0) sel.cost[j] = key;
+            }
+            __syncthreads();
+        }
         if (tid == 0) {
-            hgcommon::successor_ranks(sel.rank, sel.id, m, sel.order, sel.srank, sel.lead);
             uint32_t g = 0;
             for (uint32_t j = 0; j < m; ++j) {
                 sel.rank[j] = sel.srank[j];
                 g += sel.lead[j];
             }
+            if (costed) hgcommon::successor_spread(sel.id, sel.order, sel.lead, m, sel.cost);
             s_groups = g;
         }
+    } else if (costed) {
+        // Every candidate is its own successor.
+        for (uint32_t j = 0; j < m; ++j) {
+            const uint32_t ci = sel.idx[j];
+            const MatchRecord& r = cand.at(ci);
+            uint64_t key = 0;
+            if (ready && ready[ci])
+                key = succ->cand_cost[ci];
+            else
+                successor_cost_device(ds, rules[r.rule_id], r.state_id, r.matched_edges, *succ,
+                                      key);
+            if (tid == 0) sel.cost[j] = key;
+        }
+        __syncthreads();
+        if (tid == 0) s_groups = m;
     } else if (tid == 0) {
         s_groups = m;
     }
     __syncthreads();
     const uint32_t groups = s_groups;
-    hgcommon::RankCut cut{~0ULL, true};
+    // The key is (cost, rank) under "StateCost" and (0, rank) without it, compared in the cost
+    // order (hgcommon::cost_before): a radix selection over its 128 bits, or its low 64.
+    auto cost_at = [&](uint32_t i) -> uint64_t { return costed ? sel.cost[i] : 0u; };
+    hgcommon::CostCut cut{0u, ~0ULL, true};
     uint32_t take = m;
     if (groups > cap_n) {
-        if (tid == 0) { s_prefix = 0; s_remaining = cap_n; }
-        uint64_t mask = 0;
-        for (int bit = 63; bit >= 0; --bit) {
-            const uint64_t b = 1ULL << bit;
+        __shared__ uint64_t s_prefix_cost;
+        if (tid == 0) { s_prefix = 0; s_prefix_cost = 0; s_remaining = cap_n; }
+        uint64_t mask = 0, mask_cost = 0;
+        for (int bit = costed ? 127 : 63; bit >= 0; --bit) {
+            const bool high = bit >= 64;
+            const uint64_t b = 1ULL << (bit & 63);
             if (tid == 0) s_cnt = 0;
             __syncthreads();
-            const uint64_t prefix = s_prefix;
+            const uint64_t prefix = s_prefix, prefix_cost = s_prefix_cost;
             uint32_t local = 0;
             for (uint32_t i = tid; i < m; i += nt) {
                 if (by_succ && !sel.lead[i]) continue;   // one entry per successor
-                const uint64_t r = sel.rank[i];
-                if ((r & mask) == prefix && !(r & b)) ++local;
+                const uint64_t c = cost_at(i);
+                if (high) {
+                    if ((c & mask_cost) == prefix_cost && !(c & b)) ++local;
+                } else {
+                    const uint64_t r = sel.rank[i];
+                    if (c == prefix_cost && (r & mask) == prefix && !(r & b)) ++local;
+                }
             }
             atomicAdd(&s_cnt, local);
             __syncthreads();
-            if (tid == 0 && s_remaining > s_cnt) { s_remaining -= s_cnt; s_prefix |= b; }
-            mask |= b;
+            if (tid == 0 && s_remaining > s_cnt) {
+                s_remaining -= s_cnt;
+                if (high) s_prefix_cost |= b;
+                else s_prefix |= b;
+            }
+            if (high) mask_cost |= b;
+            else mask |= b;
             __syncthreads();
         }
-        cut = hgcommon::RankCut{s_prefix, false};   // the N-th smallest rank
+        cut = hgcommon::CostCut{s_prefix_cost, s_prefix, false};   // the N-th smallest key
         // The candidates kept, the N lowest and the ties with the N-th, counted for the booking.
         if (tid == 0) s_cnt = 0;
         __syncthreads();
         uint32_t local = 0;
         for (uint32_t i = tid; i < m; i += nt)
-            if (hgcommon::rank_cut_keeps(cut, sel.rank[i])) ++local;
+            if (hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i])) ++local;
         atomicAdd(&s_cnt, local);
         __syncthreads();
         take = s_cnt;
@@ -241,7 +306,7 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     if (tid == 0) step_book(ds, s + 1u, take);
     __syncthreads();
     for (uint32_t i = tid; i < m; i += nt) {
-        if (!hgcommon::rank_cut_keeps(cut, sel.rank[i])) continue;
+        if (!hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i])) continue;
         const uint32_t k = found.claim();
         if (k == Pool<MatchRecord>::kInvalid) {
             ds.errors.record(ErrorKind::kMatchPoolFull);
@@ -258,6 +323,7 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
         publish_match(dst);
     }
     __syncthreads();
+    if (tid == 0 && sel.cycles) atomicAdd(sel.cycles, clock64() - t_select);
 }
 
 // Step s's selection on the calling block, then each step whose count its token release brings
@@ -1116,6 +1182,7 @@ __global__ void k_persistent_evolve(
             const WorkLogView<QeTask>*                tasks;
             const WorkLogView<ExpandEntry>*           expands;
             const WorkLogView<RecordEntry>*           records;
+            const WorkLogView<CostEntry>*             costs;   // null without "StateCost"
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
@@ -1127,6 +1194,7 @@ __global__ void k_persistent_evolve(
             HG_DEV uint32_t produced() const {
                 uint32_t n = readable_records(found) + expands->readable() + records->readable();
                 if (tasks) n += tasks->readable();
+                if (costs) n += costs->readable();
                 return n;
             }
             HG_DEV uint32_t consumed() const {
@@ -1134,6 +1202,7 @@ __global__ void k_persistent_evolve(
                 uint32_t n = r.load(cuda::memory_order_acquire) + expands->done_count() +
                              records->done_count();
                 if (tasks) n += tasks->done_count();
+                if (costs) n += costs->done_count();
                 return n;
             }
             // The replay's raw events: the work a block does inline with no role booking it.
@@ -1215,7 +1284,8 @@ __global__ void k_persistent_evolve(
             }
         } dctx{term, found, rewrites_done, ds, phase_cycles,
                qe.enabled ? qe.next_raw_event : nullptr,
-               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records};
+               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records,
+               step_sel.cand_ready ? &step_sel.cost_log : nullptr};
 
         hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
         return;
@@ -1303,8 +1373,11 @@ __global__ void k_persistent_evolve(
     __syncthreads();
     // The successor caps' hashes run on the block's IR slot, between the block's other uses of
     // it.
-    const SuccessorCtx succ_ctx{state_mode, arena, &ir_slot, &ir_slot_words, &spill_slot,
-                                &spill_slot_words};
+    const SuccessorCtx succ_ctx{state_mode,          arena,
+                                &ir_slot,            &ir_slot_words,
+                                &spill_slot,         &spill_slot_words,
+                                step_sel.cand_cost,  step_sel.cand_id,
+                                step_sel.cand_ready, step_sel.cost_log};
 
     // The warp canonicalises the child in the child_* shared words (its kept edges copied) and
     // registers it: the class-frame capture on every lane, identity and depth on thread 0.
@@ -1717,6 +1790,50 @@ __global__ void k_persistent_evolve(
             }
         }
 
+        // "StateCost" (StepSelectScratch::cost_log): one candidate's successor identity and cost
+        // per block (step_cost_one). Each entry is booked on its step, and the release that brings
+        // the step to zero runs the step's selection on this block.
+        if (step_sel.cand_ready) {
+            __shared__ uint32_t cost_count;
+            __shared__ uint32_t cost_cand;
+            __shared__ uint32_t cost_step;
+            if (threadIdx.x == 0) {
+                uint32_t base = 0;
+                cost_count = step_sel.cost_log.claim(1u, base);
+                if (cost_count) {
+                    const CostEntry& e = step_sel.cost_log.await(base);
+                    cost_cand = e.cand;
+                    cost_step = e.step;
+                }
+            }
+            __syncthreads();
+            if (cost_count) {
+                const unsigned long long tC = (threadIdx.x == 0) ? clock64() : 0;
+                if (threadIdx.x == 0) {
+                    ir_slot = regions + size_t(blockIdx.x) * region_words;
+                    ir_slot_words = region_words;
+                }
+                __syncthreads();
+                step_cost_one(ds, rules, cand, succ_ctx, cost_cand);
+                __syncthreads();
+                __shared__ uint32_t s_cost_sel;
+                if (threadIdx.x == 0) s_cost_sel = step_release(ds, cost_step, 1u);
+                __syncthreads();
+                if (s_cost_sel)
+                    run_step_selections(ds, cost_step, cand, found, step_sel, rules, &succ_ctx);
+                if (threadIdx.x == 0) {
+                    __threadfence();
+                    step_sel.cost_log.book(1u);
+                    idle_ns = 64;
+                    busy_streak += busy_streak < 255u ? 1u : 0u;
+                    idle_spins = 0;
+                    acc_canon += clock64() - tC;
+                }
+                __syncthreads();
+                continue;
+            }
+        }
+
         // STATE RECORDS (ExploreView::records), one per block, after every other kind of work:
         // only the reply reads a record. Booked after the record is written and fenced.
         if (threadIdx.x == 0) {
@@ -1977,6 +2094,14 @@ struct EngineState::PersistentScratch {
     uint64_t* step_srank = nullptr;
     uint32_t* step_order = nullptr;
     uint8_t*  step_lead = nullptr;
+    uint64_t* step_cost = nullptr;   // "StateCost": StepSelectScratch::cost
+    // "StateCost": StepSelectScratch::cand_cost, cand_id and cand_ready, step_succ_cap each,
+    // and the cost log (its entries, then its cursor and done words).
+    uint64_t*                    cand_cost = nullptr;
+    hgcommon::SuccessorIdentity* cand_id = nullptr;
+    uint32_t*                    cand_ready = nullptr;
+    std::unique_ptr<Pool<CostEntry>> cost_entries;
+    uint32_t*                    cost_words = nullptr;
     uint32_t  step_succ_cap = 0;
     // MaxSuccessorStatesPerParent: SuccessorScratch for succ_blocks blocks.
     EdgeId*                      succ_edges = nullptr;
@@ -1987,9 +2112,15 @@ struct EngineState::PersistentScratch {
     uint32_t                     succ_blocks = 0;
     void free_step_succ() {
         for (void* q : {static_cast<void*>(step_id), static_cast<void*>(step_srank),
-                        static_cast<void*>(step_order), static_cast<void*>(step_lead)})
+                        static_cast<void*>(step_order), static_cast<void*>(step_lead),
+                        static_cast<void*>(step_cost), static_cast<void*>(cand_cost),
+                        static_cast<void*>(cand_id), static_cast<void*>(cand_ready),
+                        static_cast<void*>(cost_words)})
             if (q) cudaFree(q);
         step_id = nullptr; step_srank = nullptr; step_order = nullptr; step_lead = nullptr;
+        step_cost = nullptr; cand_cost = nullptr; cand_id = nullptr; cand_ready = nullptr;
+        cost_words = nullptr;
+        cost_entries.reset();
         step_succ_cap = 0;
     }
     void free_succ() {
@@ -2370,7 +2501,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     // 5 top-level phases + apply_one_match's 6 sub-stretches (see rewrite.hpp).
     unsigned long long* d_phase_cycles = sc.phase_cycles;
-    clears.add(d_phase_cycles, sizeof(unsigned long long) * 16, 0);
+    clears.add(d_phase_cycles, sizeof(unsigned long long) * 17, 0);
 
     TerminationDetector& term = reuse_term(engine, 1, &clears);
 
@@ -2423,7 +2554,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         clears.flush();
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
-        if (!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) {
+        const bool costed = dsk.state_cost != nullptr;
+        if ((!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) ||
+            costed) {
             if (ps.step_succ_cap != cap) {
                 ps.free_step_succ();
                 HG_CUDA_CHECK(cudaMalloc(&ps.step_id, sizeof(hgcommon::SuccessorIdentity) * cap),
@@ -2436,11 +2569,39 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                               "step successor leads");
                 ps.step_succ_cap = cap;
             }
+            if (costed && !ps.step_cost) {
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_cost, sizeof(uint64_t) * cap),
+                              "step successor costs");
+                HG_CUDA_CHECK(cudaMalloc(&ps.cand_cost, sizeof(uint64_t) * cap),
+                              "candidate costs");
+                HG_CUDA_CHECK(cudaMalloc(&ps.cand_id, sizeof(hgcommon::SuccessorIdentity) * cap),
+                              "candidate successor identities");
+                HG_CUDA_CHECK(cudaMalloc(&ps.cand_ready, sizeof(uint32_t) * cap),
+                              "candidate cost flags");
+                ps.cost_entries = std::make_unique<Pool<CostEntry>>(cap);
+                HG_CUDA_CHECK(cudaMalloc(&ps.cost_words, sizeof(uint32_t) * 2u), "cost log words");
+            }
             step_sel.id = ps.step_id;
             step_sel.srank = ps.step_srank;
             step_sel.order = ps.step_order;
             step_sel.lead = ps.step_lead;
+            if (costed) {
+                step_sel.cost = ps.step_cost;
+                step_sel.cand_cost = ps.cand_cost;
+                step_sel.cand_id = ps.cand_id;
+                step_sel.cand_ready = ps.cand_ready;
+                // The candidate pool and the cost log restart at index 0 every run.
+                HG_CUDA_CHECK(cudaMemset(ps.cand_ready, 0, sizeof(uint32_t) * cap),
+                              "candidate cost flags clear");
+                ps.cost_entries->reset_and_clear(&clears);
+                clears.add(ps.cost_words, sizeof(uint32_t) * 2u, 0);
+                clears.flush();
+                step_sel.cost_log.items = ps.cost_entries->view();
+                step_sel.cost_log.cursor = ps.cost_words;
+                step_sel.cost_log.done = ps.cost_words + 1;
+            }
         }
+        step_sel.cycles = d_phase_cycles + 16;
         std::vector<uint32_t> tokens(dsk.step_slots, 1u);
         tokens[0] = 0u;
         HG_CUDA_CHECK(cudaMemcpy(dsk.step_pending, tokens.data(), sizeof(uint32_t) * tokens.size(),
@@ -2580,7 +2741,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.arena_words_used = uint64_t(region_words) * grid + arena.used_words_host();
     stats.canonical_events = ctr.canonical_ev;
 
-    unsigned long long phase[16] = {};
+    unsigned long long phase[17] = {};
     HG_CUDA_CHECK(cudaMemcpy(phase, d_phase_cycles, sizeof(phase), cudaMemcpyDeviceToHost),
           "phase cycles read");
     stats.cycles_match   = phase[0];
@@ -2590,6 +2751,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.cycles_wait    = phase[4];
     for (int i = 0; i < 6; ++i) stats.cycles_rw_sub[i] = phase[5 + i];
     for (int i = 0; i < 5; ++i) stats.cycles_canon_sub[i] = phase[11 + i];
+    stats.cycles_select = phase[16];
     if (keyed)
         HG_CUDA_CHECK(cudaMemcpy(&stats.keyed_twins, dsk.keyed.words + 3, sizeof(uint32_t),
                                  cudaMemcpyDeviceToHost),

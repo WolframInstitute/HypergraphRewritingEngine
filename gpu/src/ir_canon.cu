@@ -4,6 +4,7 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hgcommon/ir_core.hpp" // the canonical hash itself, shared with the host
 #include "hgcommon/state_invariants_core.hpp"
+#include "hgcommon/state_cost_core.hpp"
 #include "hgcommon/rewrite_core.hpp"  // SuccessorCursor
 #include "hg_gpu/content_hash.hpp"     // DeviceContentCursor
 #include "hg_gpu/match.hpp"            // DeviceRhsEdge
@@ -383,7 +384,7 @@ __device__ ExactHashStatus successor_exact_hash_device(
         const DeviceState& ds, StateId parent, const EdgeId* consumed, uint32_t num_consumed,
         const Rhs* rhs, uint32_t num_rhs, uint32_t new_var_mask, const VertexId* binding,
         DeviceArena::View arena, uint32_t*& slot, uint64_t& slot_words, uint64_t& out_hash,
-        Par par) {
+        uint32_t** out_form, uint32_t* out_form_words, Par par) {
     // Fresh vertices numbered past every vertex id the device hands out; the canonical hash
     // does not read which numbers they are.
     const hgcommon::SuccessorCursor<DeviceContentCursor, Rhs> c(
@@ -392,7 +393,41 @@ __device__ ExactHashStatus successor_exact_hash_device(
     ExactHashSpans spans;
     return exact_hash_from(CursorSource<hgcommon::SuccessorCursor<DeviceContentCursor, Rhs>>{c},
                            ds.ir_depth, ds.ir_generators, arena, slot, slot_words, out_hash,
-                           false, false, nullptr, nullptr, spans, par);
+                           false, false, out_form, out_form_words, spans, par);
+}
+
+template <class Par>
+__device__ bool state_cost_of_form_device(const DeviceState& ds, const uint32_t* form,
+                                          uint32_t form_words, DeviceArena::View arena,
+                                          uint32_t*& slot, uint64_t& slot_words,
+                                          const hgcommon::StateCost& cost, uint64_t& out_key,
+                                          Par par) {
+    uint64_t bytes = hgcommon::si_form_csr_bytes(form_words) +
+                     hgcommon::si_record_bytes_hint(form_words, form_words, par.width());
+    hgcommon::SiResult r;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const bool form_in_slot = form && slot && form >= slot && form < slot + slot_words;
+        uint64_t base = form_in_slot ? ((static_cast<uint64_t>(form - slot) + form_words + 1) &
+                                        ~uint64_t{1})
+                                     : 0;
+        const uint64_t need = base + (bytes + 7) / 4;
+        if (need > slot_words) {
+            if (!grow_ir_slot(arena, slot, slot_words, need, par)) return false;
+            base = 0;
+        }
+        uint64_t needed = 0;
+        if (hgcommon::state_record_of_form(form, form_words,
+                                           reinterpret_cast<unsigned char*>(slot + base), bytes,
+                                           needed, r, par, ds.statistics_graph, cost.measures)) {
+            uint64_t key = 0;
+            if (par.leader())
+                key = hgcommon::state_cost_key(hgcommon::state_cost_eval(cost, r.v, r.g));
+            out_key = par.bcast64(key);
+            return true;
+        }
+        bytes = needed > bytes ? needed : 2 * bytes;
+    }
+    return false;
 }
 
 // The callers' policies, instantiated here so the template body stays in this translation
@@ -406,7 +441,12 @@ template __device__ ExactHashStatus state_exact_hash_device<IrTile>(
     uint32_t**, uint32_t*, IrTile);
 template __device__ ExactHashStatus successor_exact_hash_device<DeviceRhsEdge, IrTile>(
     const DeviceState&, StateId, const EdgeId*, uint32_t, const DeviceRhsEdge*, uint32_t, uint32_t,
-    const VertexId*, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, IrTile);
+    const VertexId*, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, uint32_t**, uint32_t*,
+    IrTile);
+template __device__ bool state_cost_of_form_device<IrTile>(const DeviceState&, const uint32_t*,
+                                                           uint32_t, DeviceArena::View, uint32_t*&,
+                                                           uint64_t&, const hgcommon::StateCost&,
+                                                           uint64_t&, IrTile);
 
 // "StepStatistics": state `sid`'s record (hgcommon::state_record) into ds.invariant_pool. The
 // invariants read the state's own CSR slice; the geometry reads `form` (form_words words), the

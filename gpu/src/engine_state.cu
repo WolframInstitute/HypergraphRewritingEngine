@@ -132,7 +132,8 @@ void ClearBatch::flush() {
     X(state_edge_rank_) X(tr_scratch_) X(tr_scratch_busy_) X(survivor_scratch_)                \
     X(state_edge_orbit_) X(state_num_orbits_) X(state_invariant_at_) X(invariant_pool_)        \
     X(invariant_pool_used_) X(keyed_token_sum_) X(keyed_first_new_edge_)                      \
-    X(keyed_follow_head_) X(keyed_follow_next_) X(edge_producer_) X(event_consumed_)
+    X(keyed_follow_head_) X(keyed_follow_next_) X(edge_producer_) X(event_consumed_)          \
+    X(state_cost_dev_)
 
 
 // The block exists before any pool member's constructor runs -- block_ is declared first --
@@ -391,6 +392,17 @@ void EngineState::set_sampling(double transition_rate, const double* weights, ui
         }
     }
 
+void EngineState::set_state_cost(const hgcommon::StateCost& cost) {
+    state_cost_on_ = hgcommon::state_cost_active(cost);
+    if (!state_cost_on_) return;
+    if (!state_cost_dev_)
+        HG_CUDA_CHECK(cudaMalloc(&state_cost_dev_, sizeof(hgcommon::StateCost)),
+                      "EngineState state_cost alloc");
+    HG_CUDA_CHECK(cudaMemcpy(state_cost_dev_, &cost, sizeof(hgcommon::StateCost),
+                             cudaMemcpyHostToDevice),
+                  "EngineState state_cost h2d");
+}
+
 DeviceState EngineState::device() const {
         DeviceState d;
         d.vertex_pool             = vertex_pool_.view();
@@ -417,6 +429,7 @@ DeviceState EngineState::device() const {
         d.exploration_probability          = exploration_probability_;
         d.max_states_per_step              = max_states_per_step_;
         d.step_cap_counts_matches          = step_cap_counts_matches_ ? 1u : 0u;
+        d.state_cost                       = state_cost_on_ ? state_cost_dev_ : nullptr;
         d.step_pending                     = states_per_step_;
         d.step_slots                       = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;
@@ -704,7 +717,7 @@ EngineState::LaunchScratch& EngineState::launch_scratch(uint32_t num_rules,
         }
         if (!s.cursor) {
             HG_CUDA_CHECK(cudaMalloc(&s.cursor, sizeof(uint32_t) * 2), "launch scratch cursor");
-            HG_CUDA_CHECK(cudaMalloc(&s.phase_cycles, sizeof(unsigned long long) * 16),
+            HG_CUDA_CHECK(cudaMalloc(&s.phase_cycles, sizeof(unsigned long long) * 17),
                   "launch scratch phases");
         }
         return s;

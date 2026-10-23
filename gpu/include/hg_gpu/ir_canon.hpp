@@ -80,13 +80,26 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
 // The exact hash of the state a rewrite of `parent` makes, before the rewrite runs: the parent's
 // edges less `consumed`, then the right-hand side's under `binding` (hgcommon::SuccessorCursor).
 // MaxSuccessorStatesPerParent and MaxStatesPerStep tell successor states apart by it under Full
-// states (hgcommon::SuccessorIdentity). No ranks, orbits or form. Instantiated for DeviceRhsEdge
-// and IrTile.
+// states (hgcommon::SuccessorIdentity). No ranks or orbits; the form as state_exact_hash_device
+// gives it when `out_form` is non-null. Instantiated for DeviceRhsEdge and IrTile.
 template <class Rhs, class Par>
 __device__ ExactHashStatus successor_exact_hash_device(
     const DeviceState& ds, StateId parent, const EdgeId* consumed, uint32_t num_consumed,
     const Rhs* rhs, uint32_t num_rhs, uint32_t new_var_mask, const VertexId* binding,
-    DeviceArena::View arena, uint32_t*& slot, uint64_t& slot_words, uint64_t& out_hash, Par par);
+    DeviceArena::View arena, uint32_t*& slot, uint64_t& slot_words, uint64_t& out_hash,
+    uint32_t** out_form, uint32_t* out_form_words, Par par);
+
+// "StateCost": the cost key (hgcommon::state_cost_key) of the state with IR canonical form `form`
+// (`form_words` words; null and 0 for the empty state) under `cost`, from its record
+// (hgcommon::state_record_of_form) over the measures the program reads, laid out in the slot
+// after the form. False when the arena cannot grow the slot. Every lane of the policy calls it
+// with the same arguments and receives the key. Instantiated for IrTile.
+template <class Par>
+__device__ bool state_cost_of_form_device(const DeviceState& ds, const uint32_t* form,
+                                          uint32_t form_words, DeviceArena::View arena,
+                                          uint32_t*& slot, uint64_t& slot_words,
+                                          const hgcommon::StateCost& cost, uint64_t& out_key,
+                                          Par par);
 
 // "StepStatistics": state `sid`'s invariants and geometry (hgcommon::state_record) as a record in
 // DeviceState::invariant_pool, its offset in DeviceState::state_invariant_at[sid]. `form` is the

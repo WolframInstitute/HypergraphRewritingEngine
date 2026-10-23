@@ -259,10 +259,12 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
 
 // ONE PASS OF THE JOIN, compiled ONCE and called up to twice per rule. Not inlined for the
 // same reason as emit_admit: a lambda called twice instantiated the whole DFS twice and ptxas
-// ran out of memory. `ctl` null emits every match.
+// ran out of memory. `ctl` null emits every match. `costs`, when given, receives a CostEntry
+// for each emission, booked on the step ("StateCost").
 __device__ __noinline__ void match_state_rule_pass(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
-        typename Pool<MatchRecord>::DeviceView out, const EmitCtl* ctl) {
+        typename Pool<MatchRecord>::DeviceView out, const EmitCtl* ctl,
+        WorkLogView<CostEntry>* costs = nullptr) {
     const DeviceRule& rule = rules[rid];
 
     if (rule.num_lhs_edges == 0) return;
@@ -287,6 +289,13 @@ __device__ __noinline__ void match_state_rule_pass(
         for (uint8_t i = 0; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
         for (uint8_t d = 0; d < st.depth; ++d) m.matched_edges[st.pattern[d]] = st.matched[d];
         publish_match(m);
+        // Booked before the append, inside the match item that still holds the step open; a
+        // candidate whose entry finds the log full is costed by the selection.
+        if (costs) {
+            step_book(ds, step, 1u);
+            if (!costs->append(CostEntry{idx, step, 0u}) && step < ds.step_slots)
+                atomicSub(&ds.step_pending[step], 1u);
+        }
     };
 
     // One thread, one depth-0 candidate, one whole DFS subtree: the join anchored at the
@@ -539,12 +548,64 @@ __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRul
     uint64_t h = 0;
     const ExactHashStatus st = successor_exact_hash_device(
         ds, parent, consumed, nc, rule.rhs, rule.num_rhs_edges, rule.new_var_mask, binding,
-        ctx.arena, *ctx.slot, *ctx.slot_words, h, IrWarpAll{});
+        ctx.arena, *ctx.slot, *ctx.slot_words, h, nullptr, nullptr, IrWarpAll{});
     if (st != ExactHashStatus::kOk) {
         if ((threadIdx.x & 31u) == 0) ds.errors.record(error_kind_for(st));
         return false;
     }
     out = hgcommon::SuccessorIdentity{h, 0};
+    return true;
+}
+
+__device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
+                              typename Pool<MatchRecord>::DeviceView out, const SuccessorCtx& ctx,
+                              uint32_t i) {
+    // Under Full states counting successors, the cost's canonical form gives the identity.
+    const bool by_succ = !ds.step_cap_counts_matches && ctx.mode != CanonicalizationMode::None;
+    const bool full_id = by_succ && ctx.mode == CanonicalizationMode::Full;
+    const MatchRecord& m = out.at(i);
+    const DeviceRule& rule = rules[m.rule_id];
+    hgcommon::SuccessorIdentity id{0, 1};
+    uint64_t key = 0;
+    bool ok = successor_cost_device(ds, rule, m.state_id, m.matched_edges, ctx, key,
+                                    full_id ? &id : nullptr);
+    if (ok && by_succ && !full_id)
+        ok = successor_identity_device(ds, rule, m.state_id, m.matched_edges, ctx, id);
+    if (ok && (threadIdx.x & 31u) == 0) {
+        ctx.cand_cost[i] = key;
+        ctx.cand_id[i] = id;
+        ctx.cand_ready[i] = 1u;
+    }
+}
+
+__device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& rule,
+                                      StateId parent, const EdgeId* matched,
+                                      const SuccessorCtx& ctx, uint64_t& out,
+                                      hgcommon::SuccessorIdentity* full_id) {
+    out = hgcommon::state_cost_key(HUGE_VAL);
+    VertexId binding[kMaxVars];
+    bind_matched_vertices(ds, rule, matched, binding);
+    EdgeId consumed[kMaxPatternEdges];
+    uint32_t nc = 0;
+    for (uint8_t p = 0; p < rule.num_lhs_edges; ++p)
+        if (matched[p] != INVALID_ID) consumed[nc++] = matched[p];
+    uint64_t h = 0;
+    uint32_t* form = nullptr;
+    uint32_t words = 0;
+    const ExactHashStatus st = successor_exact_hash_device(
+        ds, parent, consumed, nc, rule.rhs, rule.num_rhs_edges, rule.new_var_mask, binding,
+        ctx.arena, *ctx.slot, *ctx.slot_words, h, &form, &words, IrWarpAll{});
+    if (st != ExactHashStatus::kOk) {
+        if ((threadIdx.x & 31u) == 0) ds.errors.record(error_kind_for(st));
+        return false;
+    }
+    if (full_id) *full_id = hgcommon::SuccessorIdentity{h, 0};
+    if (!state_cost_of_form_device(ds, form, words, ctx.arena, *ctx.slot, *ctx.slot_words,
+                                   *ds.state_cost, out, IrWarpAll{})) {
+        if ((threadIdx.x & 31u) == 0) ds.errors.record(ErrorKind::kIRArenaExhausted);
+        out = hgcommon::state_cost_key(HUGE_VAL);
+        return false;
+    }
     return true;
 }
 
@@ -574,8 +635,16 @@ __device__ void match_state_rule(const DeviceState& ds,
     // of its step, as on the host.
     const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
                           ds.max_states_per_step == 0u;
+    // "StateCost": each candidate this call emits goes to the cost log, whose entries idle
+    // blocks run (step_cost_one) before the step's selection.
+    WorkLogView<CostEntry> cost_log =
+        succ != nullptr ? succ->cost_log : WorkLogView<CostEntry>{};
+    WorkLogView<CostEntry>* costs = ds.state_cost != nullptr && ds.max_states_per_step != 0u &&
+                                            succ != nullptr && succ->cand_ready != nullptr
+                                        ? &cost_log
+                                        : nullptr;
     if (cap_k == 0u && parent_k == 0u && !sampling) {
-        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr);
+        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, costs);
         return;
     }
 
@@ -659,7 +728,7 @@ __device__ void match_state_rule(const DeviceState& ds,
 
     const EmitCtl keep{EmitMode::kCapEmit, s_cut_all, s_threshold, &s_seen, &s_overflow,
                        s_ranks, nullptr, nullptr};
-    match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep);
+    match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep, costs);
 }
 
 namespace {

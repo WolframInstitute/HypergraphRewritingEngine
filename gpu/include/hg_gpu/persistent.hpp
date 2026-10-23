@@ -236,6 +236,9 @@ struct PersistentEvolveStats {
     uint64_t cycles_canon_sub[5] = {0, 0, 0, 0, 0};
     // States that took a twin's canonical results (keyed.hpp); 0 when the run was not keyed.
     uint32_t keyed_twins = 0;
+    // Under a step cap: the cycles of every step selection on its block, summed. A selection runs
+    // on one block while the next step waits for it.
+    uint64_t cycles_select = 0;
     // The run's per-state explore depth (ExploreView::depth), on the device; valid until the
     // next run on the same engine or session.
     const uint32_t* explore_depth = nullptr;

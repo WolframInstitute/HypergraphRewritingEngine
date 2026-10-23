@@ -70,8 +70,33 @@ struct Workload {
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
     double   exploration_probability = 1.0;
+    // "StateCost": the step cap keeps the lowest-cost successors (n == 0: none).
+    hgcommon::StateCost state_cost;
     // Collapse isomorphic initial states under quotient exploration (default off).
 };
+
+// A "StateCost" program from (operation, argument) pairs (hgcommon/state_cost_core.hpp).
+hgcommon::StateCost cost_program(std::initializer_list<std::pair<uint8_t, double>> ops) {
+    hgcommon::StateCost c;
+    for (const auto& [op, arg] : ops) {
+        c.op[c.n] = op;
+        c.arg[c.n] = arg;
+        ++c.n;
+    }
+    hgcommon::state_cost_validate(c);
+    return c;
+}
+
+// -IncidenceMeanDistance + 0.01 VertexCount (slots 9 and 0), and
+// |BallDimension - 2| + 0.1 BallScalarCurvature + 0.01 MeanEccentricity (slots 25, 26, 12).
+const hgcommon::StateCost kCostInvariants =
+    cost_program({{hgcommon::SC_STAT, 9}, {hgcommon::SC_NEG, 0}, {hgcommon::SC_CONST, 0.01},
+                  {hgcommon::SC_STAT, 0}, {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
+const hgcommon::StateCost kCostGeometry =
+    cost_program({{hgcommon::SC_STAT, 25}, {hgcommon::SC_CONST, 2}, {hgcommon::SC_SUB, 0},
+                  {hgcommon::SC_ABS, 0}, {hgcommon::SC_CONST, 0.1}, {hgcommon::SC_STAT, 26},
+                  {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}, {hgcommon::SC_CONST, 0.01},
+                  {hgcommon::SC_STAT, 12}, {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
 
 // Result normalized for cross-engine comparison. States compare by
 // isomorphism key (IR canonical hash on raw edges). Events are normalised
@@ -226,6 +251,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_max_successor_states_per_parent(w.max_successor_states_per_parent);
     engine.set_matches_per_state_rule(w.matches_per_state_rule);
     engine.set_exploration_probability(w.exploration_probability);
+    engine.set_state_cost(w.state_cost);
 
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
@@ -387,6 +413,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.exploration_seed = w.random_seed;
     in.max_states_per_step = w.max_states_per_step;
     in.step_cap_counts_matches = w.step_cap_counts_matches;
+    in.state_cost = w.state_cost;
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     in.matches_per_state_rule = w.matches_per_state_rule;
     in.exploration_probability = w.exploration_probability;
@@ -1791,6 +1818,15 @@ TEST(Sampling, CapTiesAreKeptWholeOnBothEngines) {
         if (cap == 2) v.max_states_per_step = 3;
         cases.push_back(v);
     }
+    // "StateCost": the step cap of each mode guided by a cost with many ties.
+    for (auto mode : {hg_gpu::CanonicalizationMode::None, hg_gpu::CanonicalizationMode::Full}) {
+        Workload v = step;
+        v.name = "step-cap-cost-ties";
+        v.canon_mode = mode;
+        v.max_states_per_step = 3;
+        v.state_cost = kCostInvariants;
+        cases.push_back(v);
+    }
     for (const Workload& w : cases) {
         const NormalizedResult cpu = run_cpu(w);
         std::set<std::tuple<std::set<uint64_t>, size_t, size_t, std::multiset<uint64_t>>> seen;
@@ -1833,9 +1869,12 @@ TEST(Sampling, SuccessorCapsAreTheSameOnBothEngines) {
         {"grow-join", {rule({{0, 1}}, {{0, 1}, {1, 2}}), rule({{0, 1}, {1, 2}}, {{0, 2}})},
          {{0u, 1u}, {0u, 2u}, {1u, 2u}}, 3},
     };
-    struct Cap { uint32_t per_parent, per_step; bool matches; };
-    const Cap caps[] = {{1, 0, false}, {2, 0, false}, {0, 1, false}, {0, 2, false},
-                        {2, 2, false}, {0, 2, true}};
+    struct Cap { uint32_t per_parent, per_step; bool matches; const hgcommon::StateCost* cost; };
+    const Cap caps[] = {{1, 0, false, nullptr},          {2, 0, false, nullptr},
+                        {0, 1, false, nullptr},          {0, 2, false, nullptr},
+                        {2, 2, false, nullptr},          {0, 2, true, nullptr},
+                        {0, 1, false, &kCostInvariants}, {0, 2, false, &kCostGeometry},
+                        {2, 2, false, &kCostGeometry},   {0, 2, true, &kCostInvariants}};
     for (const auto& c : cases) {
         for (auto mode : {hg_gpu::CanonicalizationMode::None,
                           hg_gpu::CanonicalizationMode::Automatic,
@@ -1846,7 +1885,7 @@ TEST(Sampling, SuccessorCapsAreTheSameOnBothEngines) {
                     w.name = std::string(c.name) + " mode " + std::to_string(int(mode)) +
                              " per_parent " + std::to_string(cap.per_parent) + " per_step " +
                              std::to_string(cap.per_step) + (cap.matches ? " matches" : "") +
-                             " seed " + std::to_string(seed);
+                             (cap.cost ? " cost" : "") + " seed " + std::to_string(seed);
                     w.rules = c.rules;
                     w.initial_states = {c.init};
                     w.num_steps = c.steps;
@@ -1855,6 +1894,7 @@ TEST(Sampling, SuccessorCapsAreTheSameOnBothEngines) {
                     w.max_successor_states_per_parent = cap.per_parent;
                     w.max_states_per_step = cap.per_step;
                     w.step_cap_counts_matches = cap.matches;
+                    if (cap.cost) w.state_cost = *cap.cost;
                     const NormalizedResult cpu = run_cpu(w);
                     const NormalizedResult gpu = run_gpu(w);
                     EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
@@ -1996,17 +2036,26 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
     join.initial_states = {{{0u, 0u}, {0u, 0u}}};
     join.num_steps = 4;
 
+    // Variants 3 and 4 are guided by a cost; over the workloads and N each changes some step's
+    // choice. The ball dimension of the join's small states has no fit, so variant 4 changes
+    // nothing there.
+    std::map<std::pair<int, uint32_t>, std::multiset<uint64_t>> chosen;
+    bool differs[5] = {};
     for (Workload w : {one_edge, join}) {
         w.canon_mode = hg_gpu::CanonicalizationMode::Full;
         w.random_seed = 0x5EED;
-        for (int variant = 0; variant < 3; ++variant) {
+        chosen.clear();
+        for (int variant = 0; variant < 5; ++variant) {
             for (uint32_t n : {1u, 2u, 3u}) {
                 Workload v = w;
                 v.max_states_per_step = n;
                 if (variant == 1) v.max_successor_states_per_parent = 1;
                 if (variant == 2) v.explore_from_canonical_states_only = true;
+                if (variant == 3) v.state_cost = kCostInvariants;
+                if (variant == 4) v.state_cost = kCostGeometry;
                 NormalizedResult cpu = run_cpu(v);
                 NormalizedResult gpu = run_gpu(v);
+                chosen[{variant, n}] = gpu.event_keys;
                 // A run that faulted returns nothing; a step's lowest-ranked transition can map a
                 // state to itself, so the check is on events, not states.
                 EXPECT_GT(gpu.event_keys.size(), 0u)
@@ -2017,7 +2066,12 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
                     << v.name << " N=" << n << " variant " << variant << ": different transitions";
             }
         }
+        for (int variant : {3, 4})
+            for (uint32_t n : {1u, 2u, 3u})
+                differs[variant] |= chosen[{variant, n}] != chosen[{0, n}];
     }
+    EXPECT_TRUE(differs[3]) << "the invariants cost chose what the ranks choose";
+    EXPECT_TRUE(differs[4]) << "the geometry cost chose what the ranks choose";
 }
 
 // ExplorationProbability keeps the same states on both engines: the coin is the same function of
