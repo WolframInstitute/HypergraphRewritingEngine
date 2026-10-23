@@ -333,7 +333,10 @@ a state, computed by `common/include/hgcommon/state_geometry_core.hpp`. A state'
 the undirected simple graph on the state's vertices with an edge between the consecutive
 vertices of each hyperedge ({a, b, c} gives a-b and b-c); self-loops are dropped and a
 repeated pair is one edge. B(v, r) is the set of vertices at distance at most r from v, so
-|B(v, 0)| = 1, and R is the graph radius of G. A state for which a value is undefined is left
+|B(v, 0)| = 1, and R is the graph radius of G. For a hyperedge of three or more vertices G differs
+from the graph of the Infrageometry paclet's InfraSubstrate, which joins every two vertices of a
+hyperedge (ResourceFunction["HypergraphToGraph"], from SetReplace's HypergraphToGraph.m). A
+binary state has the same graph in both. A state for which a value is undefined is left
 out of that entry's summary, so its `N` counts the states where it is defined.
 
 | Entry | Definition | Undefined when |
