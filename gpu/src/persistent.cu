@@ -1973,9 +1973,12 @@ RingBuffer<MatchWorkItem>& reuse_ring(const EngineState& engine, uint32_t capaci
     return reuse_ring(engine.persistent_scratch().ring, capacity, batch);
 }
 
+// A map is reused when it is the map ConcurrentMap(capacity) builds: the constructor rounds the
+// capacity up to a power of two, which is the one power of two in [capacity, 2 * capacity).
 DedupMap& reuse_map(std::unique_ptr<DedupMap>& slot, uint32_t capacity,
                     ClearBatch* batch = nullptr) {
-    if (slot && slot->capacity() == capacity) slot->clear(batch);
+    if (slot && slot->capacity() >= capacity && slot->capacity() / 2u < capacity)
+        slot->clear(batch);
     else { slot.reset(); slot = std::make_unique<DedupMap>(capacity); }
     return *slot;
 }
