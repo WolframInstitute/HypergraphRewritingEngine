@@ -120,7 +120,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
   "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
   "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature",
-  "GeodesicProperTime", "GeodesicProperTimeVariance", "GeodesicBundleSpread", "GeodesicCurvature"};
+  "GeodesicProperTime", "GeodesicProperTimeVariance", "GeodesicBundleSpread", "GeodesicCurvature",
+  "LensingDeflection", "LensingImpactParameter", "LensingDeflectionRatio"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 

@@ -31,6 +31,7 @@ sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the su
 sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth values of vertex v of graph g (BallDimension, BallScalarCurvature, RiemannianBallDimension, RiemannianBallScalarCurvature, SphereDimension, SphereScalarCurvature), or Missing[] when v has no fit.";
 sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
 sgrGeodesicBundle::usage = "sgrGeodesicBundle[edges] gives the GeodesicProperTime, GeodesicProperTimeVariance, GeodesicBundleSpread and GeodesicCurvature of a state, each Missing[] for a state with no edge.";
+sgrLensing::usage = "sgrLensing[edges] gives the LensingDeflection, LensingImpactParameter and LensingDeflectionRatio of a state, each Missing[] when no pair of the largest component passes near the centre.";
 sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
@@ -173,7 +174,32 @@ sgrGeodesicBundle[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, nb, p
     "GeodesicBundleSpread" -> N[Mean[pairs[[All, 2]]], 20],
     "GeodesicCurvature" -> N[Mean[pairs[[All, 3]]], 20]|>];
 
-geometryNames = Join[geodesicBundleNames, {"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+(* Lensing (docs/SPEC.md, "StepStatistics geodesic analysis") on G' with the 50-digit d_v of
+   largestComponentGeometry: C the vertices within 10^-9 of the largest d_v, and over the ordered
+   pairs at distance >= 2 the least d(w, C) over the shortest paths' vertices w and the excess of
+   the shortest walk through C. *)
+lensingNames = {"LensingDeflection", "LensingImpactParameter", "LensingDeflectionRatio"};
+sgrLensing[edges_List] := Module[{g = sgrStateGraph[edges], lc, gp, top, cs, dm, idx, dc, near,
+    pairs},
+  lc = largestComponentGeometry[edges];
+  If[MissingQ[lc], Return[AssociationMap[Missing[] &, lensingNames]]];
+  gp = Keys[lc["Dimensions"]]; top = Max[Values[lc["Dimensions"]]];
+  cs = Select[gp, lc["Dimensions"][#] >= top - 10^-9 &];
+  dm = GraphDistanceMatrix[g]; idx = AssociationThread[VertexList[g] -> Range[VertexCount[g]]];
+  dc = AssociationMap[Function[u, Min[dm[[idx[u], idx[#]]] & /@ cs]], gp];
+  near = Max[2, Max[dm[[idx[#], idx[#2]]] & @@@ Tuples[gp, 2]]/5];
+  pairs = Catenate[Table[Module[{d = dm[[idx[s], idx[t]]], b},
+      If[d < 2, Nothing,
+        b = Min[dc /@ Select[gp, dm[[idx[s], idx[#]]] + dm[[idx[#], idx[t]]] == d &]];
+        If[b < near,
+          {b, (Min[dm[[idx[s], idx[#]]] + dm[[idx[#], idx[t]]] & /@ cs] - d)/d}, Nothing]]],
+    {s, gp}, {t, gp}]];
+  If[pairs === {} || top <= 0, AssociationMap[Missing[] &, lensingNames],
+    <|"LensingDeflection" -> N[Mean[pairs[[All, 2]]], 20],
+      "LensingImpactParameter" -> N[Mean[pairs[[All, 1]]], 20],
+      "LensingDeflectionRatio" -> N[Mean[pairs[[All, 2]] (pairs[[All, 1]] + 1)/top], 20]|>]];
+
+geometryNames = Join[geodesicBundleNames, lensingNames, {"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -374,6 +400,7 @@ sgrStateGeometry[edges_List] := Module[
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ Normal[N[sgrGeodesicBundle[edges]]],
+    Sequence @@ Normal[N[sgrLensing[edges]]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
       Thread[growthNames -> If[growth === {}, ConstantArray[Missing[], 6], Mean[growth]]]]|>];
 

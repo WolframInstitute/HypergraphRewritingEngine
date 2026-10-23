@@ -5047,7 +5047,7 @@ TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     EXPECT_EQ(keys(*assoc_at(particles, "VertexInvariants")).size(), 5u);
     EXPECT_NE(assoc_at(*assoc_at(particles, "Invariants"), "TopologicalCharge"), nullptr);
     const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
-    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 46u);
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 49u);
     EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
     EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
     EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);

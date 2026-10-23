@@ -29,8 +29,8 @@ namespace common {
 // The slots. Slots below SP_MULTIPLICITY and from SP_DIST_SUM on hold doubles as sp_key_of
 // keys; SP_ARITY, SP_DEGREE and SP_MULTIPLICITY hold integers as themselves.
 enum : uint32_t {
-    SP_INVARIANTS = 0,           // the 46 "Invariants" in reply order, slots 0..45
-    SP_NUM_INVARIANTS = 46,
+    SP_INVARIANTS = 0,           // the 49 "Invariants" in reply order, slots 0..48
+    SP_NUM_INVARIANTS = 49,
     SP_ARITY = SP_NUM_INVARIANTS,        // a hyperedge's arity
     SP_DEGREE = SP_NUM_INVARIANTS + 1,   // a vertex's slot degree
     SP_MULTIPLICITY = SP_NUM_INVARIANTS + 2,  // a class's raw state count, weight 1 per class
@@ -143,6 +143,11 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         put(43, g.proper_time_variance);
         put(44, g.bundle_spread);
         put(45, g.geodesic_curvature);
+    }
+    if (g.defined & SG_LENSING) {
+        put(46, g.lensing_deflection);
+        put(47, g.lensing_impact);
+        put(48, g.lensing_ratio);
     }
 
     const uint32_t* ar = r.arity_runs();

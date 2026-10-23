@@ -397,7 +397,7 @@ list adds the families it names:
 | `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
-| `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature` | geodesic analysis |
+| `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature`, `LensingDeflection`, `LensingImpactParameter`, `LensingDeflectionRatio` | geodesic analysis |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -558,6 +558,40 @@ distance between the walks' end points
 (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:408`), which is 0 for every
 shortest path. The definitions above take every neighbour of v, every pair and every
 geodesic, so each value is an isomorphism invariant of the state.
+
+The lensing entries read the local dimensions d_v of `LargestComponentDimension` on G'. The
+centre C is the set of vertices of G' whose d_v is within 10^-9 of the largest, M is the
+largest d_v, and d(u, C) is the distance from u to the nearest vertex of C. D' is the diameter
+of G'. For an ordered pair (s, t) of vertices of G' with d(s, t) >= 2, the impact parameter
+b(s, t) is the least d(w, C) over the vertices w of the shortest paths from s to t. The
+deflection is δ(s, t) = (d_C(s, t) - d(s, t)) / d(s, t), with d_C(s, t) the least
+d(s, c) + d(c, t) over the vertices c of C. A pair passes near the centre when
+b(s, t) < max(2, D'/5).
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `LensingDeflection` | the mean of δ over the pairs that pass near the centre | no pair passes near the centre, or M <= 0 |
+| `LensingImpactParameter` | the mean of b over the same pairs | as `LensingDeflection` |
+| `LensingDeflectionRatio` | the mean over the same pairs of δ (b + 1) / M, the deflection over hypergraph_viz's prediction M / (b + 1) | as `LensingDeflection` |
+
+On P5 the centre is the middle vertex and every pair at distance 2 or more passes through it, so
+all three entries are 0. A search from every vertex of C gives d(u, C). The search from each
+source s gives b(s, .) in the same pass as d(s, .), and a second search started from the
+vertices of C at d(s, c) gives d_C(s, .), so the lensing entries take O(\|V'\| \|E'\|).
+
+hypergraph_viz measures the deflection of a traced path as
+(d(start, mid) + d(mid, end) - d(start, end)) / d(start, end) with mid the path's middle vertex,
+or the excess of its length over d(start, end) when that is larger
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:724`). Both are 0 for a shortest
+path. The deflection above puts the centre in place of the middle vertex. hypergraph_viz takes
+the centre as the first vertex of greatest dimension in the vertex list
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:642`), the threshold from a
+diameter estimated over the first ten vertices
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:827`), and averages only the
+paths with a deflection above 0 (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:667`).
+Here C holds every vertex of greatest dimension, D' is the diameter of G', and every near pair
+counts. The prediction M / (b + 1) is hypergraph_viz's
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:774`).
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

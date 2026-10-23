@@ -610,3 +610,49 @@ TEST(StateMeasures, GeodesicBundlesWithoutPairs) {
     EXPECT_EQ(two.g.geodesic_curvature, -1.0);
     EXPECT_EQ(two.g.bundle_spread, 0.0);
 }
+
+// Lensing on P5. The middle vertex 3 has balls 3, 5 and the local dimension
+// (log 3 / log 2 + (log 5 - log 3) / (log 3 - log 2)) / 2, the largest, so C = {3}. Every pair
+// at distance 2 or more has its one shortest path through 3: b = 0 and d_C = d, so the 12
+// ordered pairs pass near the centre with deflection 0.
+TEST(StateMeasures, PathOfFiveLensing) {
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
+    EXPECT_EQ(m.g.lensing_deflection, 0.0);
+    EXPECT_EQ(m.g.lensing_impact, 0.0);
+    EXPECT_EQ(m.g.lensing_ratio, 0.0);
+}
+
+// C6 with the leaves 7, 8, 9 on vertex 1. The local dimensions over r = 1..3 put 3 and 5 highest
+// (balls 3, 5, 9), so C = {3, 5}, d(., C) is 1 at 2, 4 and 6, 2 at 1 and 3 at the leaves, and
+// D' = 4 makes the threshold 2. From s = 1 to t = 4 (d = 3) the shortest paths are 1-2-3-4 and
+// 1-6-5-4: b = 0 and d_C = 3. From the leaf 7 to the leaf 8 (d = 2) the path 7-1-8 has b = 2:
+// not near. From 2 to 6 (d = 2) the path 2-1-6 has b = 1 and d_C = d(2, 3) + d(3, 6) = 1 + 3 = 4:
+// deflection 1. Over the 48 near pairs the deflections and the impact parameters both sum to 14
+// (enumerated by the pair; M = 1.6293316413002572).
+TEST(StateMeasures, LensingAroundTwoCentres) {
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 1}, {1, 7}, {1, 8},
+                                {1, 9}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
+    EXPECT_NEAR(m.g.lensing_deflection, 7.0 / 24.0, 1e-15);
+    EXPECT_NEAR(m.g.lensing_impact, 7.0 / 24.0, 1e-15);
+    EXPECT_NEAR(m.g.lensing_ratio, 0.3580200117318138, 1e-12);
+    // A cycle has every d_v equal, so C is every vertex and every deflection is 0.
+    const Measured c = measure(cycle(7));
+    ASSERT_TRUE(c.g.defined & hgcommon::SG_LENSING);
+    EXPECT_EQ(c.g.lensing_deflection, 0.0);
+    EXPECT_EQ(c.g.lensing_impact, 0.0);
+    // A single edge has no pair at distance 2.
+    EXPECT_FALSE(measure({{1, 2}}).g.defined & hgcommon::SG_LENSING);
+}
+
+// A WPP state at step 3 whose two adjacent vertices 2 and 3 tie for the largest local dimension
+// (1.5), so C = {2, 3}. From a source equidistant from both, the search through the centre
+// reaches 3 from 2 one step later than its own start d(s, 3): the start holds. Every one of the
+// 14 near pairs has a shortest path through C, so every deflection is 0.
+TEST(StateMeasures, LensingWithAdjacentTiedCentres) {
+    const Measured m = measure({{2, 3}, {1, 3}, {2, 8}, {3, 8}, {0, 8}, {0, 12}, {8, 12},
+                                {2, 12}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
+    EXPECT_EQ(m.g.lensing_deflection, 0.0);
+}

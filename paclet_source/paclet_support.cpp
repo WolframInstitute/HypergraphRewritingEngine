@@ -1703,6 +1703,9 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"GeodesicProperTimeVariance", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
     {"GeodesicBundleSpread", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
     {"GeodesicCurvature", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"LensingDeflection", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"LensingImpactParameter", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"LensingDeflectionRatio", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges

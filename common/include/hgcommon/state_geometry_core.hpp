@@ -458,13 +458,14 @@ enum : uint32_t {
     SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
     SG_GEODESIC_BUNDLE = 1u << 19,       // proper_time, proper_time_variance, bundle_spread,
                                          // geodesic_curvature: G has an edge
+    SG_LENSING = 1u << 20,               // lensing_*: a pair of G' passes near the centre, M > 0
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
 // computed without the option.
 constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
 constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
-constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE;
+constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE | SG_LENSING;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
                                      SG_DIMENSION_GRADIENT | SG_GEODESIC_ANALYSIS;
@@ -617,6 +618,11 @@ struct SgGeometry {
     double proper_time_variance = 0.0;
     double bundle_spread = 0.0;
     double geodesic_curvature = 0.0;
+    // Over the ordered pairs (s, t) of G' with d(s, t) >= 2 that pass near the centre C: the
+    // means of the deflection, of the impact parameter and of the deflection times (b + 1) / M.
+    double lensing_deflection = 0.0;
+    double lensing_impact = 0.0;
+    double lensing_ratio = 0.0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -649,7 +655,11 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
 // SG_GEODESIC_BUNDLE adds per vertex the target count (4 bytes) and the sums of d, d^2, the
-// bundle curvature and the bundle spread over its targets (8 bytes each).
+// bundle curvature and the bundle spread over its targets (8 bytes each). SG_LENSING adds the
+// centre's largest dimension and the diameter of G' (8 bytes each), per vertex the distance to
+// the centre and the centre search's queue (4 bytes each), per lane and per vertex the impact
+// parameters, the distances through the centre, a queue and the centre's vertices (4 bytes each),
+// and per vertex the near-pair count (4 bytes) and the sums of b, δ and the ratio (8 bytes each).
 HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes,
                                     uint32_t want = ~0u) {
     const size_t n1 = n + 1;
@@ -665,6 +675,8 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
         bytes += n1 * (4 + 8) + 2 * 8;
     if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
     if (want & SG_GEODESIC_BUNDLE) bytes += n1 * (4 + 4 * 8) + 5 * 8;
+    if (want & SG_LENSING)
+        bytes += 2 * 8 + n1 * (2 * 4) + size_t{lanes} * n1 * (4 * 4) + n1 * (4 + 3 * 8) + 8 * 8;
     return bytes;
 }
 
@@ -873,7 +885,10 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
                                       (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
     const bool want_gradient = (want & SG_DIMENSION_GRADIENT) != 0;
-    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient;
+    const bool want_lensing = (want & SG_LENSING) != 0;
+    const bool want_centre = want_lensing;
+    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient ||
+                          want_centre;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
     if (par.leader()) {
@@ -944,6 +959,21 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     uint64_t* bundle_d2 = want_bundle ? arena.take<uint64_t>(n1) : nullptr;
     double* bundle_curv = want_bundle ? arena.take<double>(n1) : nullptr;
     double* bundle_spread = want_bundle ? arena.take<double>(n1) : nullptr;
+    // Lensing: the centre's largest dimension and the diameter of G', each vertex's distance to
+    // the centre and the centre search's queue; per lane the impact parameters, the distances
+    // through the centre, a queue and the centre's vertices in search order; per source the
+    // near-pair count and the sums of b, the deflection and the ratio.
+    double* centre_info = want_centre ? arena.take<double>(2) : nullptr;
+    int32_t* centre_d = want_centre ? arena.take<int32_t>(n1) : nullptr;
+    uint32_t* centre_q = want_centre ? arena.take<uint32_t>(n1) : nullptr;
+    uint32_t* lens_b_all = want_lensing ? arena.take<uint32_t>(L * n1) : nullptr;
+    int32_t* lens_dc_all = want_lensing ? arena.take<int32_t>(L * n1) : nullptr;
+    uint32_t* lens_q_all = want_lensing ? arena.take<uint32_t>(L * n1) : nullptr;
+    uint32_t* lens_s_all = want_lensing ? arena.take<uint32_t>(L * n1) : nullptr;
+    uint32_t* lens_count = want_lensing ? arena.take<uint32_t>(n1) : nullptr;
+    uint64_t* lens_bsum = want_lensing ? arena.take<uint64_t>(n1) : nullptr;
+    double* lens_dsum = want_lensing ? arena.take<double>(n1) : nullptr;
+    double* lens_rsum = want_lensing ? arena.take<double>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -1442,6 +1472,131 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 ric_p[r] = dm_pow(rr, mean);
             }
             ric_a[0] = c;
+        }
+    }
+
+    // GEODESIC LENSING (docs/SPEC.md, "StepStatistics geodesic analysis"). The leader finds the
+    // centre C, the vertices of G' with d_v within 1e-9 of the largest, and d(u, C) for each
+    // vertex of G' by one search from every vertex of C.
+    if (part && want_centre) {
+        par.sync();
+        if (par.leader()) {
+            double top = dimv[vat(0)];
+            uint32_t diam = 0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                if (dimv[vat(i)] > top) top = dimv[vat(i)];
+                if (ecc[vat(i)] > diam) diam = ecc[vat(i)];
+            }
+            centre_info[0] = top;
+            centre_info[1] = static_cast<double>(diam);
+            for (uint32_t u = 0; u < n; ++u) centre_d[u] = -1;
+            uint32_t tail = 0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const uint32_t u = vat(i);
+                if (dimv[u] >= top - 1e-9) { centre_d[u] = 0; centre_q[tail++] = u; }
+            }
+            for (uint32_t head = 0; head < tail; ++head) {
+                const uint32_t u = centre_q[head];
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (centre_d[w] < 0) { centre_d[w] = centre_d[u] + 1; centre_q[tail++] = w; }
+                }
+            }
+        }
+        par.sync();
+    }
+    // From each source s of G', strided over the lanes, one search gives d(s, .) and b(s, .):
+    // b(s, s) = d(s, C), and b(s, w) is the least of d(w, C) and b(s, u) over the neighbours u
+    // of w one step closer to s. A second search gives d_C(s, .): it starts each vertex c of C
+    // at d(s, c), in the order of the first search, and relaxes edges in the order of
+    // increasing distance.
+    if (part && want_lensing) {
+        const double top = centre_info[0];
+        const double near_bound = centre_info[1] / 5.0 > 2.0 ? centre_info[1] / 5.0 : 2.0;
+        uint32_t* bmin = lens_b_all + me * n1;
+        int32_t* dcs = lens_dc_all + me * n1;
+        uint32_t* q2 = lens_q_all + me * n1;
+        uint32_t* seeds = lens_s_all + me * n1;
+        for (uint32_t i = me; i < ns; i += L) {
+            const uint32_t s = vat(i);
+            uint32_t head = 0, tail = 0;
+            queue[tail++] = s;
+            dist[s] = 0;
+            bmin[s] = static_cast<uint32_t>(centre_d[s]);
+            while (head < tail) {
+                const uint32_t u = queue[head++];
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (dist[w] < 0) {
+                        dist[w] = dist[u] + 1;
+                        queue[tail++] = w;
+                        const uint32_t cw = static_cast<uint32_t>(centre_d[w]);
+                        bmin[w] = bmin[u] < cw ? bmin[u] : cw;
+                    } else if (dist[w] == dist[u] + 1 && bmin[u] < bmin[w]) {
+                        bmin[w] = bmin[u];
+                    }
+                }
+            }
+            const uint32_t reached = tail;
+            uint32_t nseeds = 0;
+            for (uint32_t j = 0; j < reached; ++j) {
+                dcs[queue[j]] = -1;
+                if (centre_d[queue[j]] == 0) seeds[nseeds++] = queue[j];
+            }
+            uint32_t p = 0, h2 = 0, t2 = 0;
+            while (p < nseeds || h2 < t2) {
+                uint32_t u;
+                if (p < nseeds && (h2 == t2 || dist[seeds[p]] <= dcs[q2[h2]])) {
+                    // A vertex of C reached from another vertex of C at the same distance from s
+                    // holds d(s, c) + 1 from that edge: its own start d(s, c) replaces it.
+                    u = seeds[p++];
+                    if (dcs[u] >= 0 && dcs[u] <= dist[u]) continue;
+                    dcs[u] = dist[u];
+                } else {
+                    u = q2[h2++];
+                }
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (dcs[w] < 0) { dcs[w] = dcs[u] + 1; q2[t2++] = w; }
+                }
+            }
+            uint32_t count = 0;
+            uint64_t bsum = 0;
+            double dsum = 0.0, rsum = 0.0;
+            for (uint32_t j = 1; j < reached; ++j) {
+                const uint32_t t = queue[j];
+                const int32_t d = dist[t];
+                if (d < 2 || !(static_cast<double>(bmin[t]) < near_bound)) continue;
+                const double delta = static_cast<double>(dcs[t] - d) / static_cast<double>(d);
+                ++count;
+                bsum += bmin[t];
+                dsum += delta;
+                rsum += dm_mul(delta, static_cast<double>(bmin[t]) + 1.0) / top;
+            }
+            lens_count[s] = count;
+            lens_bsum[s] = bsum;
+            lens_dsum[s] = dsum;
+            lens_rsum[s] = rsum;
+            sg_bfs_clear(dist, queue, reached);
+        }
+        par.sync();
+        if (par.leader() && top > 0.0) {
+            uint64_t count = 0, bsum = 0;
+            double dsum = 0.0, rsum = 0.0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const uint32_t s = vat(i);
+                count += lens_count[s];
+                bsum += lens_bsum[s];
+                dsum += lens_dsum[s];
+                rsum += lens_rsum[s];
+            }
+            if (count) {
+                const double c = static_cast<double>(count);
+                out.lensing_deflection = dsum / c;
+                out.lensing_impact = static_cast<double>(bsum) / c;
+                out.lensing_ratio = rsum / c;
+                out.defined |= SG_LENSING;
+            }
         }
     }
 
