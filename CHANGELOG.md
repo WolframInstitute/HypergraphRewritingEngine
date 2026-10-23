@@ -33,6 +33,10 @@
   one generation, every match that shares no hyperedge with a match before it in the Wolfram
   model's standard order (`"LeastRecentEdge"`, `"RuleOrdering"`, `"RuleIndex"`), on both
   devices.
+- `"BrillLindquistDimension" -> 3` places the `"BrillLindquist"` points in a box whose z range
+  is `"BrillLindquistBoxZ"`, with point density ψ⁶. `"BrillLindquistPeriodic" -> True` measures
+  every distance to the nearest periodic image of a point. The 2D output for a given
+  `"RandomSeed"` is unchanged.
 - `"CausalEdges"` and `"BranchialEdges"` list their records in ascending order, on both devices.
   In rc2 the order was the order the run registered the pairs in, which two identical runs on
   several threads could give differently.

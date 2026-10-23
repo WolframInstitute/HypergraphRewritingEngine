@@ -332,7 +332,7 @@ HGEvolve[rule, "Sprinkling", 2, "NumStates", "SprinklingDensity" -> 24, "RandomS
 
 ## Brill-Lindquist point clouds
 
-`"BrillLindquist"` places `"SprinklingDensity"` points in the plane around two black holes of masses `"BrillLindquistMass1"` and `"BrillLindquistMass2"` (3 each), `"BrillLindquistSeparation"` (10) apart on the x axis, in the box `"BrillLindquistBoxX"` by `"BrillLindquistBoxY"` (-15 to 15 each). The density of points follows the volume element of the Brill-Lindquist metric, so points are denser near the horizons, and no point is inside a horizon, whose radius is half the mass. Two points closer than `"EdgeThreshold"` (2 when `Automatic`) are joined unless the midpoint between them is inside a horizon.
+`"BrillLindquist"` places `"SprinklingDensity"` points in the plane around two black holes of masses `"BrillLindquistMass1"` and `"BrillLindquistMass2"` (3 each), `"BrillLindquistSeparation"` (10) apart on the x axis, in the box `"BrillLindquistBoxX"` by `"BrillLindquistBoxY"` (-15 to 15 each). The density of points follows the volume element of the Brill-Lindquist metric ψ⁴ δ, which is ψ⁴ in the plane, with ψ = 1 + m1/(2 r1) + m2/(2 r2) and r1, r2 the distances to the two black holes, so points are denser near the horizons, and no point is inside a horizon, whose radius is half the mass. Two points closer than `"EdgeThreshold"` (2 when `Automatic`) are joined unless the midpoint between them is inside a horizon.
 
 Thirty points in the default box have few pairs within that distance:
 
@@ -386,7 +386,7 @@ Table[Length[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensi
 
 ---
 
-The association keys are `"Density"`, `"Mass1"`, `"Mass2"`, `"Separation"`, `"BoxX"`, `"BoxY"`, `"EdgeThreshold"` and `"Seed"`:
+The association keys are `"Density"`, `"Mass1"`, `"Mass2"`, `"Separation"`, `"BoxX"`, `"BoxY"`, `"BoxZ"`, `"Dimension"`, `"Periodic"`, `"EdgeThreshold"` and `"Seed"`:
 
 ```wl
 Length[HGEvolve[rule, <|"Type" -> "BrillLindquist", "Density" -> 30, "Mass1" -> 3., "Mass2" -> 3., "Separation" -> 10., "BoxX" -> {-8., 8.}, "BoxY" -> {-8., 8.}, "EdgeThreshold" -> 3., "Seed" -> 1|>, 0, "GlobalEdges"]]
@@ -402,6 +402,27 @@ HGEvolve[rule, "BrillLindquist", 2, "NumStates", "SprinklingDensity" -> 30, "Bri
 
 <!-- => 900 -->
 
+### Three dimensions
+
+With `"BrillLindquistDimension" -> 3` (key `"Dimension"`), the points fill a box whose z range is `"BrillLindquistBoxZ"` (key `"BoxZ"`, -15 to 15). The density of points is then ψ⁶, the volume element of ψ⁴ δ in three dimensions. With `"BrillLindquistPeriodic" -> True` (key `"Periodic"`), distances are measured to the nearest periodic image of a point, so two points near opposite faces of the box can be joined.
+
+J. Gorard, arXiv:2102.09363, places two black holes of mass 0.5 at separation 1 in the centre of a periodic box of side 20. 200 points with a cut-off of 4.3, which is 1.25 times the mean spacing (8000/200)^(1/3) ≈ 3.42, form one connected piece:
+
+```wl
+gorard = <|"Type" -> "BrillLindquist", "Dimension" -> 3, "Periodic" -> True, "Density" -> 200, "Mass1" -> 0.5, "Mass2" -> 0.5, "Separation" -> 1., "BoxX" -> {-10., 10.}, "BoxY" -> {-10., 10.}, "BoxZ" -> {-10., 10.}, "EdgeThreshold" -> 4.3, "Seed" -> 1|>;
+With[{g = Graph[DirectedEdge @@@ Rest /@ HGEvolve[rule, gorard, 0, "GlobalEdges"]]}, {VertexCount[g], EdgeCount[g], Length[WeaklyConnectedComponents[g]]}]
+```
+
+<!-- => {200, 886, 1} -->
+
+The same points without periodic distances have fewer edges:
+
+```wl
+Length[HGEvolve[rule, Append[gorard, "Periodic" -> False], 0, "GlobalEdges"]]
+```
+
+<!-- => 724 -->
+
 ## Poisson-disk and uniform point clouds
 
 `"Poisson"` places points at random in the box from 0 to 10 in each direction, and keeps a point only if it is at least `"PoissonMinDistance"` (1) from every point already kept. It makes up to 100 attempts for each of the `"SprinklingDensity"` points requested, so with a large minimum distance it keeps fewer. Two points closer than `"EdgeThreshold"` are joined; `Automatic` is twice the minimum distance.
@@ -412,7 +433,7 @@ Thirty points requested with a minimum distance of 2:
 initialStateGraph[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "PoissonMinDistance" -> 2., "RandomSeed" -> 1]]
 ```
 
-![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-45.png)
+![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-47.png)
 
 21 points are kept:
 
@@ -456,7 +477,7 @@ Twenty points:
 initialStateGraph[HGEvolve[rule, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1]]
 ```
 
-![Twenty points](../images/InitialConditions/InitialConditions-50.png)
+![Twenty points](../images/InitialConditions/InitialConditions-52.png)
 
 The number of edges at thresholds 2, 3 and 4:
 
