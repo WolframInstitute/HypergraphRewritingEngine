@@ -393,3 +393,9 @@ Expected: the derived size at most equal to 16 at 16 and 32 workers. If 16 is lo
 **Q14. Causal pairs stored only when read back, on the device.** `build_gpu/bench_gpu_evolve 7 5 1 multirule`, `6 5 1 wpp`, `3 5 1 bigpath`, `6 5 1 cycle4`, `5 5 1 allfour`, `5 5 1 wolftri` (quotient, all records, counts only), the binaries of the commit before it and of it, five interleaved runs each, `nvidia-smi` read before and after every run; and `hg_evolve_gpu` on `tools/dev/reply_jobs.py` `wpp_d8_q_counts`. Expected: lower on every row (replay lane cycles in the applications multirule d7 163.6e9 -> 123.9e9, warp link wait 108.6e9 -> 83.1e9).
 
 **Q15. The replay instance records its making match's child source table.** The six `bench_gpu_evolve` rows of Q14, the binaries of the commit before it and of it, five interleaved runs each, `nvidia-smi` read before and after every run. Expected: lower or equal on every row (the producer walk multirule d7 48.6e9 -> 42.1e9 lane cycles, applications 123.9e9 -> 112.8e9).
+
+**Q16. The GPU end to end against the CPU.** Windows binaries of 8f7ad2df and of the GPU lane's last commit (sm_89), each paclet loaded from its own fresh copy under C:\Temp, warm workers:
+
+    wolframscript -file tools/dev/gpu_end_to_end.wls C:\Temp\hg_paclet_<md5 of hg_evolve_gpu.exe>
+
+Expected from the counters: CPU/GPU at or above 1 on the counts and quotient workloads (Linux worker, warm job: wpp d8 quotient counts 0.28 s against 0.40 s on the CPU worker, wolfram 5 counts 0.05 s against 0.41 s), below 1 on torus9 and grid8 statistics (device time 0.49 s and 0.38 s against 0.13 s and 0.31 s per CPU job), and the wolfram 6 canonical and wpp 9 quotient counts partial on the GPU (device memory).
