@@ -2657,6 +2657,97 @@ TEST(GpuBinaryGate, VertexCurvatureAgreesOnBothDevices) {
     worker_stop(w);
 }
 
+// The BranchialGraph of wpp {{1,2},{1,3}} -> {{1,2},{1,4},{2,4},{3,4}} at 5 steps under Full
+// states is the same multigraph on both devices: the multiset of its edges, each an unordered
+// pair of its two states' canonical hashes, is equal. Each edge names its lower state id first,
+// so the edge data does not depend on the order in which a device paired the two events (on
+// 9a23eb34, 417 of the CPU's 1484 edges and 245 of the GPU's named the higher id first).
+TEST(GpuBinaryGate, BranchialGraphIsTheSameMultigraphOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    // The edges as hash pairs, and how many edges name the higher state id first.
+    struct Edges {
+        std::multiset<std::pair<int64_t, int64_t>> pairs;
+        size_t high_first = 0;
+    };
+    auto edges = [](const std::vector<uint8_t>& out) {
+        Edges r;
+        std::map<int64_t, int64_t> hash_of;
+        std::vector<std::pair<int64_t, int64_t>> ends;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k == "States") {
+                vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                    const int64_t id = kp.read<int64_t>();
+                    valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                        if (fk == "CanonicalHash") hash_of[id] = fvp.read<int64_t>();
+                        else fvp.skip_value();
+                    });
+                });
+            } else if (k == "GraphData") {
+                vp.read_association([&](const std::string&, wxf::Parser& gp) {
+                    gp.read_association([&](const std::string& gk, wxf::Parser& ep) {
+                        if (gk != "Edges") { ep.skip_value(); return; }
+                        ep.read_function([&](const std::string&, size_t n, wxf::Parser& lp) {
+                            for (size_t i = 0; i < n; ++i) {
+                                int64_t from = -1, to = -1;
+                                lp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                                    if (fk == "From") from = fvp.read<int64_t>();
+                                    else if (fk == "To") to = fvp.read<int64_t>();
+                                    else fvp.skip_value();
+                                });
+                                ends.emplace_back(from, to);
+                            }
+                        });
+                    });
+                });
+            } else {
+                vp.skip_value();
+            }
+        });
+        for (const auto& [a, b] : ends) {
+            if (a > b) ++r.high_first;
+            const int64_t ha = hash_of.at(a), hb = hash_of.at(b);
+            r.pairs.insert({std::min(ha, hb), std::max(ha, hb)});
+        }
+        return r;
+    };
+    const auto job = build_input({{{1, 2}, {1, 3}}}, {{1, 2}, {1, 3}},
+                                 {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, 5,
+                                 [&](wxf::Writer& o) {
+                                     put_str_list_option(o, "RequestedData", {"States"});
+                                     put_str_option(o, "CanonicalizeStates", "Full");
+                                     put_str_option(o, "IncludeCanonicalHashes", "True");
+                                     put_str_list_option(o, "GraphProperties",
+                                                         {"BranchialGraphStructure"});
+                                 },
+                                 4);
+    const auto host = cpu(job);
+    const auto device = worker_call(w, job);
+    ASSERT_FALSE(host.empty()) << cpu.w.last_error;
+    if (device.empty()) {
+        worker_stop(w);
+        GTEST_SKIP() << "the worker returned no result (no usable device?)";
+    }
+    const Edges h = edges(host), d = edges(device);
+    EXPECT_GT(h.pairs.size(), 1000u);
+    EXPECT_EQ(d.pairs, h.pairs);
+    EXPECT_EQ(h.high_first, 0u);
+    EXPECT_EQ(d.high_first, 0u);
+    worker_stop(w);
+}
+
 // "StatisticsGraph" on a rule of ternary hyperedges: under each rule both devices give the same
 // "StepStatistics" bytes, and the two rules give different statistics.
 TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
