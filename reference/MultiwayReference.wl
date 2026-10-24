@@ -53,6 +53,13 @@ EventCount::usage =
   "EventCount[result, identity, k] counts the distinct EventSignature values of the events of \
 result at steps up to k.";
 
+SingleHistoryEvolve::usage =
+  "SingleHistoryEvolve[rules, init, n, ordering] applies up to n events one at a time. Each \
+event is the match first in ordering, a list of SetReplace's \"EventOrderingFunction\" names \
+in priority order. rules and init are as for MultiwayEvolve. The result is <|\"Events\" -> \
+{{rule, inputs -> outputs}, ...}, \"Expressions\" -> edges|>, numbered from 1 as SetReplace's \
+\"AllEventsList\" and \"AllEventsEdgesList\" are. An expression's index is its creation order.";
+
 CanonicalForm::big =
   "The canonical labelling search passed `1` leaves.";
 
@@ -454,6 +461,65 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
     "CausalInstances" -> causal,
     "Branchial" -> DeleteDuplicates[branchial]
   |>
+];
+
+(* ------------------------------------------------------------------ *)
+(* Single history under SetReplace's event ordering functions          *)
+(* (libSetReplace/HypergraphMatcher.cpp, MatchComparator).             *)
+(* A match is {rule, tokens}: its rule index and its expression indices *)
+(* in pattern order. Each name compares one list of the two matches:    *)
+(* the indices sorted ascending (OldestEdge, reversed LeastOldEdge),    *)
+(* sorted descending (LeastRecentEdge, reversed NewestEdge), in pattern *)
+(* order (RuleOrdering, reversed ReverseRuleOrdering), or the rule      *)
+(* (RuleIndex, reversed ReverseRuleIndex). Lists compare by their first *)
+(* differing entry, and a prefix comes before a longer list.            *)
+(* ------------------------------------------------------------------ *)
+
+srOrderList[name_, {rule_, tokens_}] := Switch[name,
+  "OldestEdge" | "LeastOldEdge", Sort[tokens],
+  "LeastRecentEdge" | "NewestEdge", ReverseSort[tokens],
+  "RuleOrdering" | "ReverseRuleOrdering", tokens,
+  "RuleIndex" | "ReverseRuleIndex", {rule}];
+
+srReversed[name_] := MemberQ[{"LeastOldEdge", "NewestEdge", "ReverseRuleOrdering", "ReverseRuleIndex"}, name];
+
+srCompareLists[a_, b_] := Module[{i = 1},
+  While[i <= Min[Length[a], Length[b]] && a[[i]] === b[[i]], i++];
+  Which[
+    i <= Min[Length[a], Length[b]], If[a[[i]] < b[[i]], -1, 1],
+    Length[a] == Length[b], 0,
+    Length[a] < Length[b], -1,
+    True, 1]];
+
+srBefore[ordering_, m1_, m2_] := Catch[
+  Do[With[{c = srCompareLists[srOrderList[name, m1], srOrderList[name, m2]]},
+      If[c != 0, Throw[If[srReversed[name], c > 0, c < 0]]]],
+    {name, ordering}];
+  False];
+
+SingleHistoryEvolve[rules0_, init_, n_Integer, ordering_List] := Module[
+  {rules, exprs = init, alive = Range[Length[init]], events = {}, fresh, matches, best,
+   rule, binding, outs},
+  rules = Function[r, {r[[1]], r[[2]],
+    Complement[DeleteDuplicates[Flatten[r[[2]]]], DeleteDuplicates[Flatten[r[[1]]]]]}] /@ rules0;
+  fresh = Max[Append[Cases[Flatten[init], _Integer], 0]] + 1;
+  Do[
+    matches = Flatten[Table[
+      {{ri, alive[[#[[1]]]]}, #[[2]]} & /@ findMatches[rules[[ri, 1]], exprs[[alive]]],
+      {ri, Length[rules]}], 1];
+    If[matches === {}, Break[]];
+    best = First[matches];
+    Do[If[srBefore[ordering, m[[1]], best[[1]]], best = m], {m, Rest[matches]}];
+    rule = best[[1, 1]];
+    binding = best[[2]];
+    Do[binding[v] = fresh++, {v, rules[[rule, 3]]}];
+    outs = Replace[rules[[rule, 2]], binding, {2}];
+    AppendTo[events, {rule, best[[1, 2]] -> Range[Length[exprs] + 1, Length[exprs] + Length[outs]]}];
+    exprs = Join[exprs, outs];
+    alive = Join[DeleteCases[alive, Alternatives @@ best[[1, 2]]],
+      Range[Length[exprs] - Length[outs] + 1, Length[exprs]]],
+    {n}];
+  <|"Events" -> events, "Expressions" -> exprs|>
 ];
 
 End[];

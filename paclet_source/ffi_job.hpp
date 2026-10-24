@@ -116,6 +116,12 @@ struct ParsedJob {
     // generation (ParallelEvolutionEngine::set_generational). The caps and draws do not apply
     // with it.
     bool generational = false;
+    // "EventOrderingFunction": SetReplace's ordering names, in priority order, and the order they
+    // make (hgcommon::event_order_compare; 0: the option is absent). Each state's next state
+    // applies its one match first in that order
+    // (ParallelEvolutionEngine::set_event_ordering). The caps and draws do not apply with it.
+    std::vector<std::string> event_ordering_names;
+    uint32_t event_ordering = 0;
     size_t matches_per_step = 0;  // The cap above (0 = all)
     // Keep k of a state's own matches per RULE, chosen at that state's drain by the transition's
     // own rank. 0 keeps all. Distinct from max_successor_states_per_parent, which keeps the

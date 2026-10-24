@@ -98,6 +98,10 @@ struct DeviceState {
     // "Generational": a state's matching takes its generation (match_state_generation) and emits
     // one record of kGenerationRule, which apply_generation applies.
     uint32_t  generational;
+    // "EventOrderingFunction" (hgcommon::event_order_compare), with generational set: the
+    // generation is the one match first in this order. 0 under "Generational", which takes the
+    // standard order.
+    uint32_t  event_order;
     // The held match sets (held_set.hpp), set by the persistent evolver under
     // hgcommon::held_matches_apply; held 0 otherwise. The pool's words, cursor, capacity and the
     // free stacks of its size classes; the set headers (DeviceHeldSet[held_set_cap]) and the stack
@@ -490,6 +494,8 @@ public:
     void set_rank_reads_step(uint32_t on) { rank_reads_step_ = on; }
     // "Generational" (DeviceState::generational).
     void set_generational(bool on) { generational_ = on; }
+    // "EventOrderingFunction" (DeviceState::event_order).
+    void set_event_ordering(uint32_t order) { event_ordering_ = order; }
     // "StateCost": copied to the device when n != 0; DeviceState::state_cost is null otherwise.
     void set_state_cost(const hgcommon::StateCost& cost);
 
@@ -712,6 +718,7 @@ private:
     bool                               step_cap_counts_matches_ = false;
     uint32_t                           rank_reads_step_ = 0;
     bool                               generational_ = false;
+    uint32_t                           event_ordering_ = 0;
     hgcommon::StateCost*               state_cost_dev_          = nullptr;
     bool                               state_cost_on_           = false;
     uint32_t slice_scan_max_edges_ = 256;

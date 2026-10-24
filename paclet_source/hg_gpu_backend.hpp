@@ -140,6 +140,9 @@ struct GpuJob {
     bool step_cap_counts_matches = false;
     // "Generational": each step applies the state's generation. Set after the job is built.
     bool generational = false;
+    // "EventOrderingFunction" (hgcommon::event_order_compare); 0 when absent. Set after the job
+    // is built.
+    uint32_t event_ordering = 0;
     // "Threads": the host workers that build the reply; 0 is the default count
     // (hgcommon::default_worker_count). Set after the job is built.
     unsigned threads = 0;

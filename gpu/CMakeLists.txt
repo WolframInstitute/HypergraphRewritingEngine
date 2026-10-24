@@ -156,6 +156,8 @@ endforeach()
     )
     target_link_libraries(gpu_differential_tests PRIVATE
         hg_gpu hypergraph gtest gtest_main)
+    # reference/setreplace_order_reader.hpp: SetReplace's recorded single histories.
+    target_include_directories(gpu_differential_tests PRIVATE ${CMAKE_SOURCE_DIR})
     # This file states its 26 workloads with C++20 DESIGNATED initializers, which name the
     # members they set and leave the rest at their declared defaults on purpose. GCC reports
     # each omission under -Wmissing-field-initializers; clang does not warn on designated

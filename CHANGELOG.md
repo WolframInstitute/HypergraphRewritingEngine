@@ -33,6 +33,13 @@
   one generation, every match that shares no hyperedge with a match before it in the Wolfram
   model's standard order (`"LeastRecentEdge"`, `"RuleOrdering"`, `"RuleIndex"`), on both
   devices.
+- `"EventOrderingFunction"` takes SetReplace's event ordering names (`"OldestEdge"`,
+  `"LeastOldEdge"`, `"LeastRecentEdge"`, `"NewestEdge"`, `"RuleOrdering"`,
+  `"ReverseRuleOrdering"`, `"RuleIndex"`, `"ReverseRuleIndex"`), a list of them, or `Automatic`
+  for SetReplace's default. The evolution follows one history from each initial state, and each
+  step applies the state's one match first in that order, as SetReplace's `WolframModel` does.
+  The events, final states and causal graphs equal `WolframModel`'s on 119 recorded cases, on
+  both devices. An order that leaves two matches tied, `"Random"` and `"Any"` are refused.
 - `"CausalEdges"` and `"BranchialEdges"` list their records in ascending order, on both devices.
   In rc2 the order was the order the run registered the pairs in, which two identical runs on
   several threads could give differently.

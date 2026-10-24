@@ -237,7 +237,8 @@ exact configuration. Sampling and capping options refine this as follows:
   guided by the cost; they bound the candidates a step's cost is computed for.
 - **`Generational`** is the Wolfram model's single-way update. The evolution
   follows one history from each initial state, and each step is one generation. A state's
-  matches are ordered by the standard order (`hgcommon::standard_order_before`): first by the
+  matches are ordered by the standard order (`hgcommon::event_order_before` with
+  `kStandardEventOrder`): first by the
   match's edge ids sorted from newest to oldest, lexicographically (`"LeastRecentEdge"`: the
   match whose newest edge is oldest comes first), then by its edge ids in pattern order
   (`"RuleOrdering"`), then by rule index (`"RuleIndex"`). They are taken in that order, each
@@ -252,6 +253,31 @@ exact configuration. Sampling and capping options refine this as follows:
   device the block that matches a state collects its matches, orders and takes them through the
   same two functions, and emits one generation record (`match_state_generation`), which one
   thread applies as the host does (`apply_generation`).
+- **`EventOrderingFunction`** is the single-history update of SetReplace's `WolframModel`
+  (its global spacelike event selection). It takes a list of SetReplace's ordering
+  names, and `Automatic` for its default `{"LeastRecentEdge", "RuleOrdering", "RuleIndex"}`.
+  The evolution follows one history from each initial state, and each step applies one event:
+  the state's match first in the event order (`hgcommon::event_order_compare`, after
+  libSetReplace's `MatchComparator`). A name compares one list of two matches: the edge ids
+  sorted ascending (`"OldestEdge"`, reversed `"LeastOldEdge"`), sorted descending
+  (`"LeastRecentEdge"`, reversed `"NewestEdge"`), in pattern order (`"RuleOrdering"`, reversed
+  `"ReverseRuleOrdering"`), or the rule index (`"RuleIndex"`, reversed `"ReverseRuleIndex"`).
+  Two id lists compare by their first differing id, and a prefix comes before a longer list. The
+  first name that tells the matches apart decides, and a name whose list is already compared is
+  dropped (`hgcommon::event_order_append`). Edge ids are creation order as under `Generational`.
+  SetReplace breaks ties that the names leave at random, so the engine refuses a list that does
+  not order every two matches (`hgcommon::event_order_total`: a pattern-order name, and with
+  more than one rule a rule name), `"Random"`, `"Any"`, and the option together with
+  `Generational`. On the host a state's match set is handed to the child its event makes
+  (`HeldMatches::by_event_order`, ordered by the event order): the child drops the matches of
+  the consumed edges and adds the matches of the produced edges, so a step costs the matching
+  around one event and O(log M) for M held matches (`ordered_at_drain`). The event is applied
+  as a generation of one (`apply_generation`). On the device the block that matches a state
+  takes the first match in the order (`match_state_generation`, `greedy_disjoint` with limit 1)
+  and emits a generation record of one match. The caps and draws do not apply with it. With the
+  default order the events in creation order are those of `Generational`: a match on an edge of
+  generation g has a newer newest edge than every match on older edges, so SetReplace takes
+  each generation's events before any of the next, in the order `Generational` takes them.
 - **List order.** `"CausalEdges"` and `"BranchialEdges"` list their rows in ascending order
   (`hgmarshal::relation_list`), so a list's order is a function of its pairs.
 - **A truncated run.** A run that reaches a container ceiling, or whose allocation fails, stops:

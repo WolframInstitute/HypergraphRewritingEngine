@@ -650,8 +650,9 @@ __device__ __noinline__ void match_state_parent_capped(
 // "Generational", in the block of the state's rule 0, over every rule: the host's
 // generation_at_drain. A first pass counts the state's matches; a second records each match's
 // rule and edges into a spill buffer of exactly that many, with an order array and a bit per
-// edge of the state's slice. Thread 0 orders the matches by hgcommon::standard_order_before,
-// takes them by hgcommon::greedy_disjoint, writes the generation's list to the arena
+// edge of the state's slice. Thread 0 orders the matches by hgcommon::event_order_before (the
+// standard order, or under "EventOrderingFunction" ds.event_order, where it takes one match: the
+// host's ordered_at_drain), takes them by hgcommon::greedy_disjoint, writes the generation's list to the arena
 // (generation_list) and emits one record of kGenerationRule. A state with no match emits nothing.
 __device__ __noinline__ void match_state_generation(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
@@ -687,20 +688,20 @@ __device__ __noinline__ void match_state_generation(
         auto edges_at = [&](uint32_t i) { return b.edges + size_t(i) * kMaxPatternEdges; };
         auto count_at = [&](uint32_t i) { return uint32_t{rules[b.rules[i]].num_lhs_edges}; };
         for (uint32_t i = 0; i < m; ++i) b.order[i] = i;
+        const uint32_t event_order =
+            ds.event_order != 0u ? ds.event_order : hgcommon::kStandardEventOrder;
         hgcommon::ir_heapsort_idx(b.order, m, [&](uint32_t x, uint32_t y) {
-            if (hgcommon::standard_order_before(edges_at(x), count_at(x), b.rules[x],
-                                                edges_at(y), count_at(y), b.rules[y]))
-                return -1;
-            if (hgcommon::standard_order_before(edges_at(y), count_at(y), b.rules[y],
-                                                edges_at(x), count_at(x), b.rules[x]))
-                return 1;
+            const int c = hgcommon::event_order_compare(event_order, edges_at(x), count_at(x),
+                                                        b.rules[x], edges_at(y), count_at(y),
+                                                        b.rules[y]);
+            if (c != 0) return c;
             return x < y ? -1 : (x > y ? 1 : 0);
         });
         for (uint32_t w = 0; w < bitmap_words; ++w) b.quota[w] = 0u;
         // The taken matches are compacted to the front of `order`, in the order taken.
         uint32_t taken = 0, consumed = 0;
         hgcommon::greedy_disjoint(
-            b.order, m,
+            b.order, m, ds.event_order != 0u ? 1u : UINT32_MAX,
             [&](uint32_t i, uint32_t* o) {
                 const uint32_t k = count_at(i);
                 for (uint32_t j = 0; j < k; ++j) o[j] = edges_at(i)[j];

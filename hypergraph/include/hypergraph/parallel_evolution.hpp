@@ -275,19 +275,42 @@ static_assert(sizeof(MatchContext) == sizeof(StateId) + 2 * sizeof(EdgeId) * MAX
 // AncestryCandidates::flat). A dropped match's entries in the lists of its other edges stay until
 // a list is more than half such entries, when it is compacted, so a drop costs O(1) per edge
 // amortised.
+//
+// Under "EventOrderingFunction" (`event_order` nonzero) the matches are held in `by_event_order`,
+// in that event order, which is total (hgcommon::event_order_total), and `order` and the keys are
+// not used.
 struct HeldMatches {
-    HeldMatches(uint32_t max_lhs, bool handed_on) : stride(4u + max_lhs), handed(handed_on) {}
+    HeldMatches(uint32_t max_lhs, bool handed_on, uint32_t event_order_in = 0)
+        : by_event_order(EventOrderLess{event_order_in}),
+          stride(4u + max_lhs),
+          handed(handed_on),
+          event_order(event_order_in) {}
 
     struct EdgeMatches {
         std::vector<uint64_t> entries;   // slot | generation << 32
         uint32_t live = 0;
     };
+    struct OrderedMatch {
+        uint32_t slot;
+        uint16_t rule;
+        uint8_t n;
+        EdgeId edges[MAX_PATTERN_EDGES];
+    };
+    struct EventOrderLess {
+        uint32_t event_order;
+        bool operator()(const OrderedMatch& a, const OrderedMatch& b) const {
+            return hgcommon::event_order_before(event_order, a.edges, a.n, a.rule, b.edges, b.n,
+                                                b.rule);
+        }
+    };
 
+    std::set<OrderedMatch, EventOrderLess> by_event_order;
     KeyOrderIndex<uint32_t> order;
     std::vector<uint32_t> slab;
     std::vector<uint32_t> free_slots;
     uint32_t stride;
     bool handed;
+    uint32_t event_order;
     std::vector<EdgeMatches> by_edge;
     std::vector<std::vector<EdgeId>> adjacency;
 
@@ -306,7 +329,15 @@ struct HeldMatches {
     }
     // Holds the match under `key` unless it is held; false when it was.
     bool add(uint64_t key, uint16_t rule, const EdgeId* edges, uint8_t n) {
-        if (order.contains(key, [&](uint32_t s) { return same(s, rule, edges, n); })) return false;
+        OrderedMatch om{};
+        if (event_order != 0) {
+            om.rule = rule;
+            om.n = n;
+            for (uint8_t i = 0; i < n; ++i) om.edges[i] = edges[i];
+            if (by_event_order.count(om) != 0) return false;
+        } else if (order.contains(key, [&](uint32_t s) { return same(s, rule, edges, n); })) {
+            return false;
+        }
         uint32_t slot;
         if (!free_slots.empty()) {
             slot = free_slots.back();
@@ -319,7 +350,12 @@ struct HeldMatches {
         slab[slot + 1] = static_cast<uint32_t>(key);
         slab[slot + 2] = static_cast<uint32_t>(key >> 32);
         for (uint8_t i = 0; i < n; ++i) slab[slot + 4 + i] = edges[i];
-        order.insert(key, slot);
+        if (event_order != 0) {
+            om.slot = slot;
+            by_event_order.insert(om);
+        } else {
+            order.insert(key, slot);
+        }
         if (handed) {
             const uint64_t entry = slot | (static_cast<uint64_t>(generation_at(slot)) << 32);
             for (uint8_t i = 0; i < n; ++i) {
@@ -339,8 +375,16 @@ struct HeldMatches {
         for (const uint64_t entry : entries) {
             const uint32_t slot = static_cast<uint32_t>(entry);
             if (generation_at(slot) != static_cast<uint32_t>(entry >> 32)) continue;   // dropped
-            order.erase(key_at(slot), [&](uint32_t s) { return s == slot; });
             const EdgeId* edges = edges_at(slot);
+            if (event_order != 0) {
+                OrderedMatch om{};
+                om.rule = rule_at(slot);
+                om.n = count_at(slot);
+                for (uint8_t i = 0; i < om.n; ++i) om.edges[i] = edges[i];
+                by_event_order.erase(om);
+            } else {
+                order.erase(key_at(slot), [&](uint32_t s) { return s == slot; });
+            }
             for (uint8_t i = 0; i < count_at(slot); ++i)
                 if (edges[i] != e) --by_edge[edges[i]].live;
             ++slab[slot + 3];
@@ -1128,10 +1172,16 @@ public:
     // selection.
     void set_matches_per_step(size_t max);
     // "Generational": each state's next state applies, as one generation, the matches taken in
-    // the standard order that share no edge (hgcommon::standard_order_before, greedy_disjoint;
-    // Rewriter::apply_generation). The caps do not apply with it.
+    // the standard order that share no edge (hgcommon::event_order_before with
+    // kStandardEventOrder, greedy_disjoint; Rewriter::apply_generation). The caps do not apply
+    // with it.
     void set_generational(bool on);
     bool generational() const { return generational_; }
+    // "EventOrderingFunction": `order` (hgcommon::event_order_compare) nonzero makes each state's
+    // next state apply the one match first in that order (ordered_at_drain), so each initial
+    // state has one history of one event per step. The caps do not apply with it.
+    void set_event_ordering(uint32_t order) { event_ordering_ = order; }
+    uint32_t event_ordering() const { return event_ordering_; }
     // "StateCost": the step cap (set_max_states_per_step, set_matches_per_step) keeps the
     // successors of lowest cost under `cost`, the successor rank breaking ties. A program with
     // n == 0 ranks by the successor rank alone.
@@ -1654,10 +1704,19 @@ private:
     // "Generational", at a state's drain: the generation's matches among the state's own, then
     // one task applying them (submit_generation_task, execute_generation_task).
     void generation_at_drain(StateId state, uint32_t step);
-    void submit_generation_task(StateId state, uint32_t step, std::vector<MatchRecord> matches);
+    // "EventOrderingFunction", at a state's drain: the state's first match in event order, from
+    // the match set its parent handed on (match_held) or from its own matches, applied as a
+    // generation of one event. The set goes to the child the event makes.
+    void ordered_at_drain(StateId state, uint32_t step);
+    void submit_generation_task(StateId state, uint32_t step, std::vector<MatchRecord> matches,
+                                HeldMatches* held = nullptr);
     void execute_generation_task(StateId state, uint32_t step,
-                                 const std::vector<MatchRecord>& matches);
+                                 const std::vector<MatchRecord>& matches, HeldMatches* held);
+    // Whether the run follows one history from each initial state ("Generational" or
+    // "EventOrderingFunction").
+    bool single_history() const { return generational_ || event_ordering_ != 0; }
     bool generational_{false};
+    uint32_t event_ordering_{0};
 
     // MaxStatesPerStep. Every transition the drains of step s keep is a candidate of step s, in
     // step s's depth slot; once the depth join reports step s complete, select_step submits the N

@@ -19,6 +19,7 @@
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
+#include "reference/setreplace_order_reader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -76,6 +77,9 @@ struct Workload {
     uint32_t persistent_blocks = 0;
     // "Generational" (EvolveInput::generational, ParallelEvolutionEngine::set_generational).
     bool generational = false;
+    // "EventOrderingFunction" (EvolveInput::event_ordering,
+    // ParallelEvolutionEngine::set_event_ordering); 0: absent.
+    uint32_t event_ordering = 0;
     // Collapse isomorphic initial states under quotient exploration (default off).
 };
 
@@ -269,6 +273,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_exploration_probability(w.exploration_probability);
     engine.set_state_cost(w.state_cost);
     engine.set_generational(w.generational);
+    engine.set_event_ordering(w.event_ordering);
 
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
@@ -436,6 +441,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.exploration_probability = w.exploration_probability;
     in.persistent_blocks = w.persistent_blocks;
     in.generational = w.generational;
+    in.event_ordering = w.event_ordering;
     return in;
 }
 
@@ -1703,6 +1709,124 @@ TEST(Generational, GenerationsAgreeAcrossEngines) {
             EXPECT_EQ(cpu.raw_events, gpu.raw_events) << at;
             EXPECT_EQ(cpu.num_events, gpu.num_events) << at;
         }
+    }
+}
+
+// "EventOrderingFunction" on both engines: the same states, events, causal and branchial edges
+// under each state mode and event identity, for SetReplace's default order and two others, on
+// the cases of GenerationsAgreeAcrossEngines.
+TEST(EventOrdering, HistoriesAgreeAcrossEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<std::vector<hg_gpu::VertexId>>> init;
+        uint32_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"path", {rule({{0, 1}, {1, 2}}, {{0, 2}})}, {{{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}}}, 5},
+        {"growth", {rule({{0, 1}}, {{0, 1}, {1, 2}})}, {{{0u, 1u}}}, 12},
+        {"two-rules", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 3}}), rule({{0, 1}}, {{1, 0}})},
+         {{{1u, 2u}, {2u, 3u}, {3u, 1u}}}, 12},
+        {"cycle-fresh", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 3}, {3, 1}})},
+         {{{1u, 2u}, {2u, 3u}, {3u, 1u}}}, 12},
+        {"two-roots", {rule({{0, 1}}, {{0, 2}, {2, 1}})}, {{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}}, 8},
+    };
+    using namespace hgcommon;
+    const uint32_t orders[] = {
+        kStandardEventOrder,
+        kEventOrderNewestEdge | (kEventOrderReverseRuleOrdering << 4) |
+            (kEventOrderReverseRuleIndex << 8),
+        kEventOrderReverseRuleIndex | (kEventOrderOldestEdge << 4) | (kEventOrderRuleOrdering << 8)};
+    const std::pair<hg_gpu::CanonicalizationMode, hg_gpu::EventCanonicalizationMode> modes[] = {
+        {hg_gpu::CanonicalizationMode::None, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Automatic, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::Automatic},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::Full}};
+    for (const Case& c : cases) {
+        for (const uint32_t order : orders) {
+            for (const auto& [states, events] : modes) {
+                Workload w;
+                w.name = c.name;
+                w.rules = c.rules;
+                w.initial_states = c.init;
+                w.num_steps = c.steps;
+                w.canon_mode = states;
+                w.event_canon_mode = events;
+                w.event_ordering = order;
+                const NormalizedResult cpu = run_cpu(w);
+                const NormalizedResult gpu = run_gpu(w);
+                const std::string at = std::string(c.name) + " order " + std::to_string(order) +
+                                       " states " + std::to_string(static_cast<int>(states)) +
+                                       " events " + std::to_string(static_cast<int>(events));
+                EXPECT_GT(cpu.raw_events, 0u) << at;
+                EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes) << at;
+                EXPECT_EQ(cpu.event_keys, gpu.event_keys) << at;
+                EXPECT_EQ(cpu.causal_edge_keys, gpu.causal_edge_keys) << at;
+                EXPECT_EQ(cpu.branchial_edge_keys, gpu.branchial_edge_keys) << at;
+                EXPECT_EQ(cpu.raw_states, gpu.raw_states) << at;
+                EXPECT_EQ(cpu.raw_events, gpu.raw_events) << at;
+                EXPECT_EQ(cpu.num_events, gpu.num_events) << at;
+            }
+        }
+    }
+}
+
+// The device engine on every case SetReplace's WolframModel recorded
+// (reference/setreplace_order_cases.hpp): its events (rule, consumed edges, produced edges,
+// numbered from 1 in creation order), its edges up to a renaming of the vertices it creates, and
+// its causal pairs equal SetReplace's. hypergraph/tests/test_event_ordering.cpp checks the host
+// engine on the same cases.
+TEST(EventOrdering, DeviceMatchesSetReplaceWolframModel) {
+    using setreplace_order::Edges;
+    const auto cases = setreplace_order::read_cases();
+    ASSERT_EQ(cases.size(), setreplace_order::kCases);
+    for (const auto& k : cases) {
+        Workload w;
+        w.name = k.name;
+        for (const auto& [lhs, rhs] : k.rules) {
+            auto to8 = [](const Edges& l) {
+                std::vector<std::vector<uint8_t>> out;
+                for (const auto& e : l) out.emplace_back(e.begin(), e.end());
+                return out;
+            };
+            w.rules.push_back(rule(to8(lhs), to8(rhs)));
+        }
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+        for (const auto& e : k.init) init.emplace_back(e.begin(), e.end());
+        w.initial_states = {init};
+        w.num_steps = k.max_events;
+        w.canon_mode = hg_gpu::CanonicalizationMode::None;
+        w.transitive_reduction = false;
+        w.event_ordering = k.order;
+        const hg_gpu::EvolveResult r = hg_gpu::evolve(make_input(w));
+        std::vector<const hg_gpu::Event*> evs;
+        for (const auto& ev : r.events) evs.push_back(&ev);
+        std::sort(evs.begin(), evs.end(),
+                  [](const hg_gpu::Event* a, const hg_gpu::Event* b) { return a->id < b->id; });
+        Edges events;
+        std::map<uint32_t, uint32_t> position;
+        for (const hg_gpu::Event* ev : evs) {
+            std::vector<uint32_t> row{static_cast<uint32_t>(ev->rule) + 1u};
+            for (const hg_gpu::EdgeId e : r.consumed_of(*ev)) row.push_back(e + 1u);
+            for (const hg_gpu::EdgeId e : hg_gpu::EvolveResult::produced_of(*ev)) row.push_back(e + 1u);
+            position[ev->id] = static_cast<uint32_t>(events.size()) + 1u;
+            events.push_back(row);
+        }
+        EXPECT_EQ(events, k.events) << k.name;
+        Edges expressions;
+        for (uint32_t id = 0; id < r.edge_records.size(); ++id) {
+            const auto v = r.edge_vertices(id);
+            expressions.emplace_back(v.begin(), v.end());
+        }
+        EXPECT_TRUE(setreplace_order::same_up_to_relabel(expressions, k.expressions)) << k.name;
+        std::set<std::pair<uint32_t, uint32_t>> pairs;
+        for (const auto& c : r.causal_edges) {
+            if (!position.count(c.from) || !position.count(c.to)) continue;
+            pairs.emplace(position[c.from], position[c.to]);
+        }
+        const std::vector<std::pair<uint32_t, uint32_t>> causal(pairs.begin(), pairs.end());
+        EXPECT_EQ(causal, k.causal) << k.name;
     }
 }
 

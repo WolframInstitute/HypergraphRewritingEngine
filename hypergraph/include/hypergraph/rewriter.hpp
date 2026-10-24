@@ -42,11 +42,14 @@ struct GenerationMatch {
     const VariableBinding* binding;
 };
 
-// What a generation made: the state, and how many events it recorded.
+// What a generation made: the state, how many events it recorded, and its produced edges, the
+// ids first_produced .. first_produced + num_produced - 1.
 struct GenerationResult {
     StateId new_state = INVALID_ID;
     StateId raw_state = INVALID_ID;
     uint32_t num_events = 0;
+    EdgeId first_produced = INVALID_ID;
+    uint32_t num_produced = 0;
     bool was_new_state = false;
 };
 

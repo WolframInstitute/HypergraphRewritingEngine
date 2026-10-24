@@ -124,6 +124,10 @@ struct EvolveInput {
     // match_state_generation; rewrite.cu, apply_generation). Every state is expanded, the relations
     // come from the edges, and the caps and draws are off (the FFI drops them).
     bool     generational = false;
+    // "EventOrderingFunction" (hgcommon::event_order_compare): one history from each initial
+    // state, each state's next state applying its one match first in this order, as a generation
+    // of one event. 0: the option is absent.
+    uint32_t event_ordering = 0;
 
     // Override for EngineConfig::slice_scan_max_edges (0 keeps the default).
     // Tests set a tiny value to force the index-backed match path and the

@@ -183,6 +183,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
     ../hypergraph/tests/test_sampling_reproducibility.cpp
+    ../hypergraph/tests/test_event_ordering.cpp
     ../hypergraph/tests/test_causal_branchial.cpp
     ../hypergraph/tests/test_event_canonicalization.cpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
@@ -247,6 +248,7 @@ create_test_executable(evolution_tests
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
     ../hypergraph/tests/test_sampling_reproducibility.cpp
+    ../hypergraph/tests/test_event_ordering.cpp
 )
 
 # =============================================================================

@@ -952,6 +952,10 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
 // (select_step). A transition not kept is not taken: no rewrite, no event, no state. Each is a
 // pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
+    if (event_ordering_ != 0) {
+        ordered_at_drain(state, step);
+        return;
+    }
     if (generational_) {
         generation_at_drain(state, step);
         return;
@@ -1197,13 +1201,14 @@ void ParallelEvolutionEngine::generation_at_drain(StateId state, uint32_t step) 
     std::sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) {
         const MatchRecord& a = *own[x];
         const MatchRecord& b = *own[y];
-        return hgcommon::standard_order_before(a.matched_edges(), a.num_edges(), a.rule_index(),
-                                               b.matched_edges(), b.num_edges(), b.rule_index());
+        return hgcommon::event_order_before(hgcommon::kStandardEventOrder, a.matched_edges(),
+                                            a.num_edges(), a.rule_index(), b.matched_edges(),
+                                            b.num_edges(), b.rule_index());
     });
     std::unordered_set<EdgeId> used;
     std::vector<MatchRecord> taken;
     hgcommon::greedy_disjoint(
-        order.data(), static_cast<uint32_t>(order.size()),
+        order.data(), static_cast<uint32_t>(order.size()), UINT32_MAX,
         [&](uint32_t m, uint32_t* out) {
             const uint8_t n = own[m]->num_edges();
             for (uint8_t i = 0; i < n; ++i) out[i] = own[m]->matched_edges()[i];
@@ -1214,27 +1219,58 @@ void ParallelEvolutionEngine::generation_at_drain(StateId state, uint32_t step) 
     submit_generation_task(state, step, std::move(taken));
 }
 
+void ParallelEvolutionEngine::ordered_at_drain(StateId state, uint32_t step) {
+    MatchJoin* join = match_join_for(state);
+    HeldMatches* set = join->held;
+    join->held = nullptr;
+    if (!set) {
+        set = new HeldMatches(max_lhs_edges_, true, event_ordering_);
+        if (auto stored = state_matches_.lookup(id_key(state)); stored.has_value())
+            (*stored)->for_each([&](const MatchRecord& m) {
+                if (!m.is_forwarded)
+                    set->add(0, m.rule_index(), m.matched_edges(), m.num_edges());
+            });
+        hg_->get_state(state).edges.for_each([&](EdgeId e) {
+            const Edge& edge = hg_->get_edge(e);
+            set->link(e, edge.vertices, edge.arity);
+        });
+    }
+    if (set->by_event_order.empty()) {
+        delete set;
+        return;
+    }
+    const uint32_t slot = set->by_event_order.begin()->slot;
+    std::vector<MatchRecord> one{held_record(*set, slot, state, step)};
+    submit_generation_task(state, step, std::move(one), set);
+}
+
 void ParallelEvolutionEngine::submit_generation_task(StateId state, uint32_t step,
-                                                     std::vector<MatchRecord> matches) {
+                                                     std::vector<MatchRecord> matches,
+                                                     HeldMatches* held) {
     // A generation past the budget, or after a stop, is the state's matching again when a
-    // continuation resumes it: the generation is a function of the state.
+    // continuation resumes it: the generation is a function of the state. The resumed state
+    // matches itself, so it takes no held set.
     if (should_stop_.load(std::memory_order_relaxed) || step > step_budget()) {
+        delete held;
         defer_match_task(state, step);
         return;
     }
     note_depth_task_pushed(step);
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, state, step, matches = std::move(matches)]() {
+        [this, state, step, matches = std::move(matches), held]() {
             DepthTaskGuard depth_guard(*this, step);
-            execute_generation_task(state, step, matches);
+            execute_generation_task(state, step, matches, held);
         },
         EvolutionJobType::REWRITE);
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::execute_generation_task(StateId state, uint32_t step,
-                                                      const std::vector<MatchRecord>& matches) {
+                                                      const std::vector<MatchRecord>& matches,
+                                                      HeldMatches* held) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
+    // The state's match set goes to the child, or is deleted on any return before it.
+    std::unique_ptr<HeldMatches> own_held(held);
     if (should_stop_.load(std::memory_order_relaxed)) { defer_match_task(state, step); return; }
     if ((max_states_ > 0 && hg_->num_states() >= max_states_) ||
         (max_events_ > 0 && hg_->num_events() + matches.size() > max_events_)) {
@@ -1252,7 +1288,20 @@ void ParallelEvolutionEngine::execute_generation_task(StateId state, uint32_t st
     if (r.raw_state == INVALID_ID) return;
     total_rewrites_.fetch_add(r.num_events, std::memory_order_relaxed);
     total_events_.fetch_add(r.num_events, std::memory_order_relaxed);
-    submit_match_task(r.raw_state, step + 1);
+    if (!own_held) {
+        submit_match_task(r.raw_state, step + 1);
+        return;
+    }
+    // One event: the child updates the held set by its consumed and produced edges.
+    MatchContext ctx;
+    ctx.parent_state = state;
+    ctx.num_consumed = matches[0].num_edges();
+    for (uint8_t i = 0; i < matches[0].num_edges(); ++i)
+        ctx.consumed_edges[i] = matches[0].matched_edges()[i];
+    ctx.num_produced = static_cast<uint16_t>(r.num_produced);
+    for (uint32_t i = 0; i < r.num_produced; ++i) ctx.produced_edges[i] = r.first_produced + i;
+    ctx.held = own_held.release();
+    submit_match_task_with_context(r.raw_state, step + 1, ctx);
 }
 
 void ParallelEvolutionEngine::drop_blocks(DepthExtra& x) {
@@ -1795,12 +1844,12 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // reports it (QuotientNeedsFull, QuotientStepCap).
     explore_from_canonical_states_only_ = hgcommon::quotient_exploration_applies(
         explore_from_canonical_states_only_, full_states, max_states_per_step_);
-    // "Generational" expands every state of its history.
-    if (generational_) explore_from_canonical_states_only_ = false;
+    // "Generational" and "EventOrderingFunction" expand every state of their histories.
+    if (single_history()) explore_from_canonical_states_only_ = false;
     rank_reads_step_ = hgcommon::rank_reads_step(full_states, max_states_per_step_);
     // A generation's events are not class-frame transitions of one match each, so "Generational"
     // records the relations from the edges.
-    const bool qc = full_states && !generational_ &&
+    const bool qc = full_states && !single_history() &&
                     hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
                                                        hg_->positional_event_identity(),
                                                        hg_->event_signature_keys());
@@ -1884,7 +1933,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     hg_->set_transition_orbits(hgcommon::transition_key_reads_orbits(full_states, reads_keys));
     hg_->set_quotient_expansions_by_depth(hgcommon::qc_expansions_by_depth(max_states_per_step_));
     hg_->set_keyed_conditions(
-        hgcommon::run_reads_rank_tuples(hg_->event_signature_keys(), reads_keys), generational_);
+        hgcommon::run_reads_rank_tuples(hg_->event_signature_keys(), reads_keys), single_history());
 
     // The exploration strategy and the raw reconstruction are separate decisions, and only the
     // second is expensive. Quotient causal exploration decides state identity and costs what the
@@ -2776,7 +2825,7 @@ void ParallelEvolutionEngine::set_rule_weights(std::vector<double> w) { rule_wei
 const std::vector<double>& ParallelEvolutionEngine::rule_weights() const { return rule_weights_; }
 
 bool ParallelEvolutionEngine::defers_to_drain() const {
-    return generational_ ||
+    return single_history() ||
            hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
                                    static_cast<uint32_t>(max_successor_states_per_parent_),
                                    static_cast<uint32_t>(max_states_per_step_)) != 0;
@@ -3116,7 +3165,8 @@ void ParallelEvolutionEngine::match_held(StateId state, const MatchContext& ctx)
         find_delta_matches(rules_[r], r, state, s.edges, in_child, get_edge, get_signature,
                            [&](uint16_t rule, const EdgeId* edges, uint8_t n,
                                const VariableBinding&, StateId) {
-                               held.add(lineage_key(rule, edges, n), rule, edges, n);
+                               held.add(held.event_order != 0 ? 0 : lineage_key(rule, edges, n),
+                                        rule, edges, n);
                            },
                            ctx.produced_edges, static_cast<uint8_t>(ctx.num_produced));
     HG_STAT(stats_.mine().delta_pattern_matches.bump(1));

@@ -170,6 +170,7 @@ const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in
     if (open.explore_from_canonical_states_only != in.explore_from_canonical_states_only)
         return "explore_from_canonical_states_only";
     if (open.generational != in.generational) return "generational";
+    if (open.event_ordering != in.event_ordering) return "event_ordering";
     // The per-event content arrays are written as events are minted, only when this is set.
     if (open.materialize_events != in.materialize_events) return "materialize_events";
     // The applications the branchial enumeration reads are published only when this is set.
@@ -250,6 +251,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         opening_.transitive_reduction = in.transitive_reduction;
         opening_.explore_from_canonical_states_only = in.explore_from_canonical_states_only;
         opening_.generational = in.generational;
+        opening_.event_ordering = in.event_ordering;
         opening_.materialize_events = in.materialize_events;
         opening_.materialize_relations = in.materialize_relations;
     } else if (const char* what = continuation_mismatch(opening_, in)) {
@@ -275,11 +277,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     const bool full_states = in.canonicalization == CanonicalizationMode::Full;
     // Quotient exploration as it runs: the request, unless the state mode or MaxStatesPerStep
     // turns it off, as on the host.
-    // "Generational" expands every state of its history and records the relations from the edges,
-    // as on the host.
-    const bool explore = !in.generational && hgcommon::quotient_exploration_applies(
+    // "Generational" and "EventOrderingFunction" expand every state of their histories and record
+    // the relations from the edges, as on the host.
+    const bool single_history = in.generational || in.event_ordering != 0u;
+    const bool explore = !single_history && hgcommon::quotient_exploration_applies(
         in.explore_from_canonical_states_only, full_states, in.max_states_per_step);
-    const bool qc_route = full_states && !in.generational &&
+    const bool qc_route = full_states && !single_history &&
                           in.num_steps > 0 &&
                           hgcommon::quotient_route_requested(
                               explore, /*positional=*/false,
@@ -429,7 +432,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // clears the two counters every call so a session's later Step does not inherit the
     // tallies of its first.
     engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
-    engine.set_generational(in.generational);
+    // "EventOrderingFunction" runs as a generation of one event (DeviceState::event_order).
+    engine.set_generational(single_history);
+    engine.set_event_ordering(in.event_ordering);
     engine.set_rank_reads_step(hgcommon::rank_reads_step(full_states, in.max_states_per_step));
     engine.set_lineage(lineage);
     engine.set_state_cost(in.max_states_per_step != 0 ? in.state_cost : hgcommon::StateCost{});

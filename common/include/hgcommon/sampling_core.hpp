@@ -156,57 +156,131 @@ HG_HD inline uint32_t step_positions(uint64_t random_seed, uint32_t step, uint64
     return k;
 }
 
-// THE STANDARD ORDER OF A GENERATION ("Generational"): the Wolfram model's default event order,
-// "LeastRecentEdge", then "RuleOrdering", then "RuleIndex". An edge's age is its id: under
-// "Generational" both engines issue edge ids in creation order, the initial edges in input order
-// and then each generation's produced edges in the order of its events and of each right-hand
-// side. Match a comes before match b when its edge ids sorted from newest to oldest are
-// lexicographically smaller (its newest edge is older), then when its edge ids in pattern order
-// are, then when its rule index is smaller.
-HG_HD inline bool standard_order_before(const uint32_t* a, uint32_t na, uint32_t rule_a,
-                                        const uint32_t* b, uint32_t nb, uint32_t rule_b) {
+// THE EVENT ORDER ("Generational", "EventOrderingFunction"): SetReplace's event ordering
+// functions (libSetReplace/HypergraphMatcher.cpp, MatchComparator). An order is a list of keys,
+// each 4 bits of a uint32_t from the low end, 0 ending the list. A key compares one function of
+// two matches: their edge ids sorted ascending ("OldestEdge" 1, reversed "LeastOldEdge" 2),
+// sorted descending ("LeastRecentEdge" 3, reversed "NewestEdge" 4), in pattern order
+// ("RuleOrdering" 5, reversed "ReverseRuleOrdering" 6), or their rule index ("RuleIndex" 7,
+// reversed "ReverseRuleIndex" 8). Two id lists compare lexicographically, and when one is a
+// prefix of the other the shorter comes first. The first key that tells the matches apart
+// decides. An edge's age is its id: under both modes both engines issue edge ids in creation
+// order, the initial edges in input order and then the produced edges in the order of the events
+// and of each right-hand side.
+enum : uint32_t {
+    kEventOrderOldestEdge = 1,
+    kEventOrderLeastOldEdge = 2,
+    kEventOrderLeastRecentEdge = 3,
+    kEventOrderNewestEdge = 4,
+    kEventOrderRuleOrdering = 5,
+    kEventOrderReverseRuleOrdering = 6,
+    kEventOrderRuleIndex = 7,
+    kEventOrderReverseRuleIndex = 8,
+};
+
+// SetReplace's default order: "LeastRecentEdge", "RuleOrdering", "RuleIndex".
+constexpr uint32_t kStandardEventOrder =
+    kEventOrderLeastRecentEdge | (kEventOrderRuleOrdering << 4) | (kEventOrderRuleIndex << 8);
+
+// -1, 0 or 1 as match a comes before, ties with, or comes after match b under `order`.
+HG_HD inline int event_order_compare(uint32_t order, const uint32_t* a, uint32_t na,
+                                     uint32_t rule_a, const uint32_t* b, uint32_t nb,
+                                     uint32_t rule_b) {
     constexpr uint32_t kMax = 16;
-    uint32_t sa[kMax], sb[kMax];
     const uint32_t ma = na < kMax ? na : kMax, mb = nb < kMax ? nb : kMax;
-    for (uint32_t i = 0; i < ma; ++i) sa[i] = a[i];
-    for (uint32_t i = 0; i < mb; ++i) sb[i] = b[i];
-    auto sort_desc = [](uint32_t* v, uint32_t n) {
-        for (uint32_t i = 1; i < n; ++i) {
-            const uint32_t x = v[i];
+    auto sort = [](const uint32_t* in, uint32_t* v, uint32_t n, bool desc) {
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t x = in[i];
             uint32_t j = i;
-            while (j > 0 && v[j - 1] < x) { v[j] = v[j - 1]; --j; }
+            while (j > 0 && (desc ? v[j - 1] < x : v[j - 1] > x)) { v[j] = v[j - 1]; --j; }
             v[j] = x;
         }
     };
-    sort_desc(sa, ma);
-    sort_desc(sb, mb);
     auto lex = [](const uint32_t* x, uint32_t nx, const uint32_t* y, uint32_t ny) -> int {
         for (uint32_t i = 0; i < nx && i < ny; ++i)
             if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
         return nx == ny ? 0 : (nx < ny ? -1 : 1);
     };
-    const int newest = lex(sa, ma, sb, mb);
-    if (newest != 0) return newest < 0;
-    const int pattern = lex(a, ma, b, mb);
-    if (pattern != 0) return pattern < 0;
-    return rule_a < rule_b;
+    for (uint32_t k = order; k != 0; k >>= 4) {
+        const uint32_t key = k & 0xFu;
+        const uint32_t function = (key - 1u) >> 1;
+        int c = 0;
+        if (function <= 1u) {
+            uint32_t sa[kMax], sb[kMax];
+            sort(a, sa, ma, function == 1u);
+            sort(b, sb, mb, function == 1u);
+            c = lex(sa, ma, sb, mb);
+        } else if (function == 2u) {
+            c = lex(a, ma, b, mb);
+        } else {
+            c = rule_a < rule_b ? -1 : (rule_a > rule_b ? 1 : 0);
+        }
+        if (c != 0) return ((key - 1u) & 1u) ? -c : c;
+    }
+    return 0;
 }
 
-// A GENERATION'S EVENTS: the matches taken in standard order, each unless it shares an edge with
-// one taken before it, so the set is maximal and its matches share no edge. `order[0..n)` lists
-// the matches in standard order; `edges_of(m, out)` writes match m's edge ids and returns their
-// count; `used(e)` and `use(e)` read and mark an edge; `take(m)` takes match m.
+HG_HD inline bool event_order_before(uint32_t order, const uint32_t* a, uint32_t na,
+                                     uint32_t rule_a, const uint32_t* b, uint32_t nb,
+                                     uint32_t rule_b) {
+    return event_order_compare(order, a, na, rule_a, b, nb, rule_b) < 0;
+}
+
+// The code of an "EventOrderingFunction" name, 0 for a name that is not one.
+inline uint32_t event_order_code(const char* name) {
+    constexpr const char* kNames[8] = {"OldestEdge",   "LeastOldEdge",        "LeastRecentEdge",
+                                       "NewestEdge",   "RuleOrdering",        "ReverseRuleOrdering",
+                                       "RuleIndex",    "ReverseRuleIndex"};
+    for (uint32_t i = 0; i < 8; ++i) {
+        const char* p = kNames[i];
+        const char* q = name;
+        while (*p != '\0' && *p == *q) { ++p; ++q; }
+        if (*p == '\0' && *q == '\0') return i + 1u;
+    }
+    return 0;
+}
+
+// `order` with key `code` appended. A key whose function is already in the order compares
+// matches the order has already found equal, so it is left out.
+inline uint32_t event_order_append(uint32_t order, uint32_t code) {
+    uint32_t n = 0;
+    for (uint32_t k = order; k != 0; k >>= 4, ++n)
+        if (((k & 0xFu) - 1u) >> 1 == (code - 1u) >> 1) return order;
+    return order | (code << (4u * n));
+}
+
+// Whether `order` tells every two distinct matches of `num_rules` rules apart. Two matches are
+// the same match when they have the same rule and the same edges in pattern order. So the order
+// needs "RuleOrdering" or "ReverseRuleOrdering", and with two or more rules "RuleIndex" or
+// "ReverseRuleIndex".
+inline bool event_order_total(uint32_t order, uint32_t num_rules) {
+    bool pattern = false, rule = num_rules <= 1u;
+    for (uint32_t k = order; k != 0; k >>= 4) {
+        const uint32_t function = ((k & 0xFu) - 1u) >> 1;
+        pattern = pattern || function == 2u;
+        rule = rule || function == 3u;
+    }
+    return pattern && rule;
+}
+
+// A GENERATION'S EVENTS: the matches taken in event order, each unless it shares an edge with
+// one taken before it, until `limit` are taken. With no limit the set is maximal and its matches
+// share no edge. `order[0..n)` lists the matches in event order; `edges_of(m, out)` writes match
+// m's edge ids and returns their count; `used(e)` and `use(e)` read and mark an edge; `take(m)`
+// takes match m.
 template <class EdgesOf, class Used, class Use, class Take>
-HG_HD inline void greedy_disjoint(const uint32_t* order, uint32_t n, EdgesOf&& edges_of,
-                                  Used&& used, Use&& use, Take&& take) {
+HG_HD inline void greedy_disjoint(const uint32_t* order, uint32_t n, uint32_t limit,
+                                  EdgesOf&& edges_of, Used&& used, Use&& use, Take&& take) {
     uint32_t edges[16];
-    for (uint32_t i = 0; i < n; ++i) {
+    uint32_t taken = 0;
+    for (uint32_t i = 0; i < n && taken < limit; ++i) {
         const uint32_t k = edges_of(order[i], edges);
         bool free = true;
         for (uint32_t j = 0; j < k && free; ++j) free = !used(edges[j]);
         if (!free) continue;
         for (uint32_t j = 0; j < k; ++j) use(edges[j]);
         take(order[i]);
+        ++taken;
     }
 }
 

@@ -45,6 +45,7 @@ Options[HGEvolve] = {
   "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, drawn uniformly without replacement from "RandomSeed" and the step. It replaces "MaxStatesPerStep". *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
   "Generational" -> False,  (* True: one history; each step applies every match of the state that shares no edge with a match before it in the standard order ("LeastRecentEdge", "RuleOrdering", "RuleIndex"), the Wolfram model's single-way update. The caps and draws do not apply with it. Provisional name. *)
+  "EventOrderingFunction" -> None,  (* None, Automatic, or one of SetReplace's event ordering names or a list of them in priority order: one history from each initial state, and each step applies the state's one match first in that order, as SetReplace's WolframModel does. Automatic is SetReplace's default {"LeastRecentEdge", "RuleOrdering", "RuleIndex"}. The caps and draws do not apply with it. *)
   "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps a state's transitions regardless of rule, and "MaxStatesPerStep" a step's. Applies on both devices. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
      fiber of the rule -> multiway functor). Applies to the styled graph
@@ -477,6 +478,7 @@ HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
 HGEvolve::overflow = "The engine returned a PARTIAL result (`1`; `2` occurrence(s)): `3`";
 HGEvolve::warn = "The engine returned warnings (`1`): `2`";
+HGEvolve::evorder = "\"EventOrderingFunction\" -> `1` is not None, Automatic, a string or a list of strings.";
 HGEvolve::statecost = "\"StateCost\" -> `1` is not supported: `2`. A cost is a pure function of \"Invariants\" statistic names (such as #BallDimension) built from real numbers, +, -, *, /, Abs, Min, Max, Sqrt, Log, Exp and powers with a constant exponent.";
 
 (* ============================================================================ *)
@@ -1147,10 +1149,20 @@ hgStateCostProgram[f : Function[_]] := Module[{body, emit, out},
 hgStateCostProgram[other_] := (Message[HGEvolve::statecost, other, "it is not None or a pure function"];
   $Failed);
 
-hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue, stateCost},
+(* "EventOrderingFunction": the ordering names the engine takes, {} when the option is None. The
+   engine refuses a name that is not one of SetReplace's and a list that leaves matches tied. *)
+hgEventOrdering[None] := {};
+hgEventOrdering[Automatic] := {"LeastRecentEdge", "RuleOrdering", "RuleIndex"};
+hgEventOrdering[s_String] := {s};
+hgEventOrdering[l : {__String}] := l;
+hgEventOrdering[other_] := (Message[HGEvolve::evorder, other]; $Failed);
+
+hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue, stateCost, eventOrdering},
   branchialStepValue = hgBranchialStepValue[ov["BranchialStep"], graphProperties];
   stateCost = hgStateCostProgram[ov["StateCost"]];
   If[stateCost === $Failed, Return[$Failed, Module]];
+  eventOrdering = hgEventOrdering[ov["EventOrderingFunction"]];
+  If[eventOrdering === $Failed, Return[$Failed, Module]];
 
   <|
     "CanonicalizeStates" -> ov["CanonicalizeStates"],
@@ -1192,6 +1204,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "UniformRandom" -> ov["UniformRandom"],
     "MatchesPerStep" -> ov["MatchesPerStep"],
     "Generational" -> ov["Generational"],
+    "EventOrderingFunction" -> eventOrdering,
     "MatchesPerStateRule" -> ov["MatchesPerStateRule"]
   |>
 ]

@@ -166,6 +166,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"UniformRandom"` | `False` | whether `"MatchesPerStep"` caps the transitions kept per step |
 | `"MatchesPerStep"` | `0` | the number of transitions kept per step with `"UniformRandom"`, drawn uniformly (`0` for no cap) |
 | `"Generational"` | `False` | whether each step applies, as one generation, every match that shares no hyperedge with a match before it in the standard order |
+| `"EventOrderingFunction"` | `None` | SetReplace's event order, as a name, a list of names or `Automatic`: each step applies the state's one match first in that order |
 | `"BranchialStep"` | `Automatic` | the step whose branchial pairs the branchial graph shows: `Automatic`, `All`, `-1` (the final step) or a step number from 1 |
 | `"EdgeDeduplication"` | `True` | whether a causal graph has one edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
@@ -1278,6 +1279,29 @@ HGEvolve[{{x, y}} -> {{x, y}, {y, z}}, {{1, 2}}, 6, "NumEvents", "Generational" 
 
 The caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"StateCost"` do not apply with it.
 
+### "EventOrderingFunction"
+
+With a list of SetReplace's event ordering names, the evolution follows one history from each initial state, and each step applies one event: the match of the state that comes first in the order. This is the update of SetReplace's `WolframModel`. The order compares two matches by the first name in the list that tells them apart:
+
+|   |   |
+|---|---|
+| `"OldestEdge"`, `"LeastOldEdge"` | the hyperedge ids of the match sorted from oldest to newest, the smaller list first or last |
+| `"LeastRecentEdge"`, `"NewestEdge"` | the hyperedge ids sorted from newest to oldest, the smaller list first or last |
+| `"RuleOrdering"`, `"ReverseRuleOrdering"` | the hyperedge ids in the order of the rule's left-hand side, the smaller list first or last |
+| `"RuleIndex"`, `"ReverseRuleIndex"` | the position of the rule, the smaller first or last |
+
+A hyperedge id is its creation order: the initial hyperedges in input order, then the hyperedges each event makes in right-hand-side order. Two lists compare by their first differing id, and a list comes before a longer list that starts with it. `Automatic` is SetReplace's default, `{"LeastRecentEdge", "RuleOrdering", "RuleIndex"}`. The list must order every two matches: it contains `"RuleOrdering"` or `"ReverseRuleOrdering"`, and with more than one rule `"RuleIndex"` or `"ReverseRuleIndex"`. `"Random"` and `"Any"` are not supported.
+
+On a path of four hyperedges, the default order contracts the oldest pair first, and `"NewestEdge"` the newest:
+
+```wl
+Lookup[Values @ HGEvolve[{{x, y}, {y, z}} -> {{x, z}}, {{1, 2}, {2, 3}, {3, 4}, {4, 5}}, 3, "Events", "EventOrderingFunction" -> #], "ConsumedEdges"] & /@ {Automatic, {"NewestEdge", "RuleOrdering"}}
+```
+
+<!-- => {{{0, 1}, {2, 3}, {4, 5}}, {{2, 3}, {1, 4}, {0, 5}}} -->
+
+With the default order the events are those of `"Generational"`, one per step. The caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"StateCost"` do not apply with it, and it cannot be combined with `"Generational"`.
+
 ### "BranchialStep"
 
 The branchial graph shows the pairs of one step. Under `Automatic`, `"BranchialGraph"` shows the final step and the evolution graphs with branchial edges show every step. Three steps of the triangle rule have nine branchial pairs:
@@ -1311,7 +1335,7 @@ Table[EdgeCount[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure", "BranchialStep" -> All]
 ```
 
-![All shows every step](../../images/HGEvolve/HGEvolve-120.png)
+![All shows every step](../../images/HGEvolve/HGEvolve-121.png)
 
 ### "EdgeDeduplication"
 
@@ -1426,7 +1450,7 @@ The genesis event is the first vertex of the causal graph:
 HGEvolve[chain, {{1, 2}}, 2, "CausalGraphStructure", "ShowGenesisEvents" -> True, AspectRatio -> 1/2]
 ```
 
-![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-132.png)
+![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-133.png)
 
 ### "ColorByRule"
 
@@ -1437,7 +1461,7 @@ extend = {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}};
 HGEvolve[extend, {{1, 1}, {1, 1}}, 1, "StatesGraph", "ColorByRule" -> True, ImageSize -> 420]
 ```
 
-![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-133.png)
+![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-134.png)
 
 The result is a [Legended]() graph:
 
@@ -1464,7 +1488,7 @@ EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Fu
 HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged", ImageSize -> 400, AspectRatio -> 1/2]
 ```
 
-!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-136.png)
+!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-137.png)
 
 ```wl
 EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged"]]
@@ -1536,7 +1560,7 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3, ImageSize -> 300]
 ```
 
-![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-143.png)
+![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-144.png)
 
 ```wl
 Options[HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3], AspectRatio]
@@ -1551,7 +1575,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "StatesGraphStructure", VertexLabels -> Automatic, AspectRatio -> 1/2]
 ```
 
-![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-145.png)
+![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-146.png)
 
 ### "GridWidth"
 
@@ -1706,7 +1730,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-160.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-161.png)
 
 Two steps reach 239 states up to isomorphism:
 
@@ -1860,7 +1884,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-176.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-177.png)
 
 ---
 

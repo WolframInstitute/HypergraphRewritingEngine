@@ -433,6 +433,10 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                     "StepStatisticsMatrixLimit is a byte count or Automatic, got " +
                                     std::to_string(v));
                             req.step_statistics_matrix_limit = static_cast<uint64_t>(v);
+                        } else if (option_key == "EventOrderingFunction") {
+                            // SetReplace's ordering names in priority order; {} when absent
+                            req.event_ordering_names =
+                                option_parser.read<std::vector<std::string>>();
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
                             req.graph_properties = option_parser.read<std::vector<std::string>>();
@@ -587,6 +591,34 @@ static void refuse_invalid_input(const hgffi::ParsedJob& req) {
     }
 }
 
+// "EventOrderingFunction": the order its names make (hgcommon::event_order_compare), 0 when the
+// option is absent. The job is refused when a name is not one of SetReplace's, when the names
+// leave two distinct matches tied (SetReplace breaks such ties at random, from a generator this
+// engine does not reproduce), and with "Generational".
+static uint32_t parse_event_ordering(const hgffi::ParsedJob& req) {
+    if (req.event_ordering_names.empty()) return 0;
+    const char* kRefused =
+        "\"EventOrderingFunction\" needs a list of \"OldestEdge\", \"LeastOldEdge\", "
+        "\"LeastRecentEdge\", \"NewestEdge\", \"RuleOrdering\", \"ReverseRuleOrdering\", "
+        "\"RuleIndex\" and \"ReverseRuleIndex\" that orders every two matches: it contains "
+        "\"RuleOrdering\" or \"ReverseRuleOrdering\", and with more than one rule \"RuleIndex\" "
+        "or \"ReverseRuleIndex\". \"Random\" and \"Any\" are not supported";
+    uint32_t order = 0;
+    for (const std::string& name : req.event_ordering_names) {
+        const uint32_t code = hgcommon::event_order_code(name.c_str());
+        if (code == 0)
+            throw std::runtime_error(std::string(kRefused) + "; got \"" + name + "\"");
+        order = hgcommon::event_order_append(order, code);
+    }
+    if (!hgcommon::event_order_total(order, static_cast<uint32_t>(req.parsed_rules_raw.size())))
+        throw std::runtime_error(std::string(kRefused) + "; the names given leave matches tied");
+    if (req.generational)
+        throw std::runtime_error(
+            "\"EventOrderingFunction\" and \"Generational\" -> True are two update orders; give "
+            "one of them");
+    return order;
+}
+
 // The step cap in force. "MatchesPerStep" applies with "UniformRandom" and replaces
 // "MaxStatesPerStep": it keeps a step's N lowest-ranked transitions (step_cap_counts_matches),
 // where MaxStatesPerStep keeps the transitions into the step's N lowest-ranked successor states.
@@ -709,6 +741,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         job.generational = req.generational;
+        job.event_ordering = req.event_ordering;
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
         }
@@ -761,6 +794,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
     engine.set_generational(req.generational);
+    engine.set_event_ordering(req.event_ordering);
 
     // Convert rules to unified format
     uint16_t rule_index = 0;
@@ -1077,6 +1111,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         }
 
         if (!held_session) refuse_invalid_input(req);
+        if (!held_session) req.event_ordering = parse_event_ordering(req);
 
         // quotient_route_requested counts two requests; each is named only when the job made it.
         if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full) {
@@ -1101,15 +1136,15 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 "state is expanded."});
             req.explore_from_canonical_states_only = false;
         }
-        if (!held_session && req.generational &&
+        if (!held_session && (req.generational || req.event_ordering != 0) &&
             (req.matches_per_step != 0 || req.max_states_per_step != 0 ||
              req.max_successor_states_per_parent != 0 || req.matches_per_state_rule != 0 ||
              req.transition_rate < 1.0 || !req.rule_weights.empty() ||
              req.exploration_probability < 1.0 || hgcommon::state_cost_active(req.state_cost))) {
             req.ffi_warnings.push_back({"GenerationalCaps", 1,
-                "\"Generational\" applies every disjoint match of a state in the standard order: "
-                "the caps, \"TransitionRate\", \"RuleWeights\", \"ExplorationProbability\" and "
-                "\"StateCost\" do not apply with it."});
+                "\"Generational\" and \"EventOrderingFunction\" choose the matches of a state "
+                "by an event order: the caps, \"TransitionRate\", \"RuleWeights\", "
+                "\"ExplorationProbability\" and \"StateCost\" do not apply with them."});
             req.matches_per_step = 0;
             req.max_states_per_step = 0;
             req.max_successor_states_per_parent = 0;
