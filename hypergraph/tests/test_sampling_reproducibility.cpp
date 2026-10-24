@@ -1598,6 +1598,29 @@ TEST(Generational, AGenerationAppliesTheDisjointMatchesInStandardOrder) {
     }
 }
 
+// Under Full states with Automatic event identity a generation's causal edges are those of None
+// states: rule {{x,y}} -> {{x,y},{y,z}} from one edge, 5 generations, 31 events and 30 causal
+// edges under each state mode and event identity.
+TEST(Generational, EveryStateModeAndEventIdentityGivesTheCausalEdges) {
+    const std::pair<StateCanonicalizationMode, EventSignatureKeys> modes[] = {
+        {StateCanonicalizationMode::None, hgcommon::EVENT_SIG_NONE},
+        {StateCanonicalizationMode::Automatic, hgcommon::EVENT_SIG_NONE},
+        {StateCanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE},
+        {StateCanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC}};
+    for (const auto& [states, keys] : modes) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(states);
+        hg.set_event_signature_keys(keys);
+        ParallelEvolutionEngine e(&hg, 4);
+        e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
+        e.set_generational(true);
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}}, 5);
+        const int at = static_cast<int>(states) * 10 + static_cast<int>(keys != 0);
+        EXPECT_EQ(hg.num_events(), 31u) << at;
+        EXPECT_EQ(e.num_causal_edges(), 30u) << at;
+    }
+}
+
 // Rule {{x,y}} -> {{x,y},{y,z}} from one edge: every edge is rewritten each generation, so
 // generation g has 2^g edges and 2^(g-1) events.
 TEST(Generational, EveryDisjointMatchIsApplied) {

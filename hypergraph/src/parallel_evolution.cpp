@@ -1810,7 +1810,9 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // "Generational" expands every state of its history.
     if (generational_) explore_from_canonical_states_only_ = false;
     rank_reads_step_ = hgcommon::rank_reads_step(full_states, max_states_per_step_);
-    const bool qc = full_states &&
+    // A generation's events are not class-frame transitions of one match each, so "Generational"
+    // records the relations from the edges.
+    const bool qc = full_states && !generational_ &&
                     hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
                                                        hg_->positional_event_identity(),
                                                        hg_->event_signature_keys());
