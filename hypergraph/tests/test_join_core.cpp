@@ -126,16 +126,43 @@ std::vector<uint8_t> identity_order(size_t n) {
 TEST(JoinCore, NextPositionIsTheFirstUNBOUNDOneInTheSchedule) {
     const std::vector<uint8_t> order{2, 0, 1};
     auto at = [&](uint8_t k) { return order[k]; };
+    auto none = [](uint8_t) { return false; };
 
-    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b000), 2) << "nothing bound: schedule head";
-    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b100), 0) << "2 bound: next in schedule";
-    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b101), 1);
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b000, none), 2) << "nothing bound: schedule head";
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b100, none), 0) << "2 bound: next in schedule";
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b101, none), 1);
 
     // Seeded away from the schedule head: counting by depth would take order[1]=0 and leave
     // position 2 unbound forever. The rule takes 2, the first unbound one.
-    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b010), 2) << "anchor at position 1";
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b010, none), 2) << "anchor at position 1";
 
-    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b111), 0xFFu) << "all bound";
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b111, none), 0xFFu) << "all bound";
+
+    // A position with a bound variable comes first: with 1 bound and only 0 touching it, 0 is
+    // taken before the schedule's head 2.
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b010, [](uint8_t p) { return p == 0; }), 0)
+        << "anchor at position 1, position 0 shares its variable";
+}
+
+// A chain {{x,y},{y,z},{z,w}} seeded at its last edge binds its middle edge next (it shares z),
+// and the seeded joins at every edge and position find every match.
+TEST(JoinCore, ASeededJoinBindsAConnectedPositionNext) {
+    std::vector<Edge> edges{{{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 4}}, {{2, 5}}};
+    std::vector<std::vector<uint8_t>> lhs{{0, 1}, {1, 2}, {2, 3}};
+    const auto order = identity_order(lhs.size());
+    ScanCtx ctx{&edges, &lhs, &order};
+    std::set<std::vector<EdgeId>> seeded;
+    for (EdgeId anchor = 0; anchor < edges.size(); ++anchor)
+        for (uint8_t p = 0; p < lhs.size(); ++p) {
+            St st;
+            hgcommon::join_seed(ctx, st, anchor, p, [&](const St& s) {
+                if (anchor == 2 && p == 2) EXPECT_EQ(s.pattern[1], 1) << "z is bound";
+                std::vector<EdgeId> by_pattern(lhs.size());
+                for (uint8_t d = 0; d < s.depth; ++d) by_pattern[s.pattern[d]] = s.matched[d];
+                seeded.insert(by_pattern);
+            });
+        }
+    EXPECT_EQ(seeded, brute_force(edges, lhs));
 }
 
 TEST(JoinCore, MatchesBruteForceOnAPath) {

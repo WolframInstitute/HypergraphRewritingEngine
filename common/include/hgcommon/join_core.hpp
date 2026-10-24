@@ -89,26 +89,42 @@ struct JoinState {
     }
 };
 
-// WHICH PATTERN POSITION TO BIND NEXT: the first in the schedule that is not bound yet.
+// WHICH PATTERN POSITION TO BIND NEXT: the first in the schedule that is not bound yet and has
+// a bound variable (touches(p)), and when none has one, the first that is not bound yet.
 //
 // Selecting by COUNT -- order[depth] -- assumes the search began at order[0]. That holds for a
 // full scan and does NOT hold for a seeded one: an anchor pinned at some other position leaves
 // order[0] never bound at all, so every match through it is silently missed, and because
 // forwarding is inductive each miss deletes a whole subtree while the run stays self-consistent.
 //
+// A position with a bound variable takes its candidates from that vertex's edges. On a full scan
+// the schedule is connected, so its next position has one and the two rules agree. A seeded join
+// anchored away from the schedule's head reaches a position with no bound variable through the
+// schedule alone, and that position's candidates are every edge of the state.
+//
 // Takes the schedule as an accessor so that a caller that expands by SPAWNING A TASK per
 // candidate instead of recursing -- ParallelEvolutionEngine::execute_expand_task -- selects with
 // this same function.
 //
 // 0xFF means every position is bound.
-template <typename OrderAt>
+template <typename OrderAt, typename Touches>
 HG_HD HG_INLINE uint8_t join_next_position(OrderAt&& order_at, uint8_t num_lhs_edges,
-                                           uint32_t bound_pattern_mask) {
+                                           uint32_t bound_pattern_mask, Touches&& touches) {
+    uint8_t first = 0xFFu;
     for (uint8_t k = 0; k < num_lhs_edges; ++k) {
         const uint8_t p = order_at(k);
-        if (!(bound_pattern_mask & (1u << p))) return p;
+        if (bound_pattern_mask & (1u << p)) continue;
+        if (touches(p)) return p;
+        if (first == 0xFFu) first = p;
     }
-    return 0xFFu;
+    return first;
+}
+
+// Whether pattern edge `vars[0..arity)` has a variable in `bound_mask`.
+HG_HD inline bool join_pattern_touches(const uint8_t* vars, uint8_t arity, uint32_t bound_mask) {
+    for (uint8_t i = 0; i < arity; ++i)
+        if ((bound_mask >> vars[i]) & 1u) return true;
+    return false;
 }
 
 // Clear exactly the variables bound since `saved_mask`. No values are saved because a variable
@@ -157,8 +173,12 @@ HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
     if (base == n) { emit(st); return; }
 
     auto next_position = [&]() {
-        return join_next_position([&](uint8_t k) { return ctx.order_at(k); }, n,
-                                  st.bound_pattern_mask());
+        return join_next_position(
+            [&](uint8_t k) { return ctx.order_at(k); }, n, st.bound_pattern_mask(),
+            [&](uint8_t p) {
+                return join_pattern_touches(ctx.pattern_vars(p), ctx.pattern_arity(p),
+                                            st.bound_mask);
+            });
     };
     Cursor cur[St::kMaxEdges];
     uint8_t at[St::kMaxEdges];         // the pattern position each depth binds

@@ -2513,7 +2513,11 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         matched_mask |= (1u << data.match_order[i]);
     }
     const uint8_t pattern_idx = hgcommon::join_next_position(
-        [&](uint8_t k) { return rule.match_order[k]; }, rule.num_lhs_edges, matched_mask);
+        [&](uint8_t k) { return rule.match_order[k]; }, rule.num_lhs_edges, matched_mask,
+        [&](uint8_t p) {
+            return hgcommon::join_pattern_touches(rule.lhs[p].vars, rule.lhs[p].arity,
+                                                  data.binding.bound_mask);
+        });
     if (pattern_idx >= rule.num_lhs_edges) return;
 
     const PatternEdge& pattern_edge = rule.lhs[pattern_idx];
