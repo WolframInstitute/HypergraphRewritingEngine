@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <map>
 #include <random>
@@ -2234,9 +2236,17 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
     if (::mkfifo(w.in_path.c_str(), 0600) != 0) return false;
     if (::mkfifo(w.out_path.c_str(), 0600) != 0) return false;
 
+    // A worker that has exited makes a write to its job pipe fail with EPIPE, which worker_call
+    // reports, and not end the test process.
+    ::signal(SIGPIPE, SIG_IGN);
+    // The child reports a failed exec on a close-on-exec pipe: the parent reads end of file when
+    // the exec succeeded and the child's errno when it did not.
+    int exec_pipe[2];
+    if (::pipe2(exec_pipe, O_CLOEXEC) != 0) return false;
     w.pid = ::fork();
     if (w.pid < 0) return false;
     if (w.pid == 0) {
+        ::close(exec_pipe[0]);
         const int fin  = ::open(w.in_path.c_str(),  O_RDONLY);
         const int fout = ::open(w.out_path.c_str(), O_WRONLY);
         if (fin >= 0)  ::dup2(fin, 0);
@@ -2247,12 +2257,35 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
         }
         if (cuda_visible_devices) ::setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices, 1);
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
+        const int err = errno;
+        [[maybe_unused]] const ssize_t written = ::write(exec_pipe[1], &err, sizeof(err));
         ::_exit(127);
     }
+    ::close(exec_pipe[1]);
     w.in_fd  = ::open(w.in_path.c_str(),  O_WRONLY | O_CLOEXEC);
     w.out_fd = ::open(w.out_path.c_str(), O_RDONLY | O_CLOEXEC);
-    w.started = (w.in_fd >= 0 && w.out_fd >= 0);
+    int err = 0;
+    const ssize_t got = ::read(exec_pipe[0], &err, sizeof(err));
+    ::close(exec_pipe[0]);
+    if (got == static_cast<ssize_t>(sizeof(err)))
+        w.last_error = "exec of " + exe + " failed: " + std::strerror(err);
+    w.started = (w.in_fd >= 0 && w.out_fd >= 0 && got == 0);
     return w.started;
+}
+
+// Why the worker gave no reply: its exit status or signal when it has exited, or the errno of
+// the failed read or write.
+std::string worker_gone(WorkerPipes& w, const char* what, int err) {
+    int st = 0;
+    if (w.pid > 0 && ::waitpid(w.pid, &st, WNOHANG) == w.pid) {
+        w.pid = -1;
+        if (WIFEXITED(st)) return std::string(what) + ": worker exited with status " +
+                                  std::to_string(WEXITSTATUS(st));
+        if (WIFSIGNALED(st)) return std::string(what) + ": worker killed by signal " +
+                                    std::to_string(WTERMSIG(st));
+    }
+    return std::string(what) + (err ? std::string(": ") + std::strerror(err)
+                                    : std::string(": worker closed its output"));
 }
 
 void worker_stop(WorkerPipes& w) {
@@ -2264,46 +2297,62 @@ void worker_stop(WorkerPipes& w) {
     ::rmdir(w.dir.c_str());
 }
 
-bool read_exact_fd(int fd, size_t n, std::vector<uint8_t>& out) {
+// Reads exactly n bytes: 0, or the errno of a failed read, or -1 at end of file.
+int read_exact_fd(int fd, size_t n, std::vector<uint8_t>& out) {
     out.assign(n, 0);
     size_t got = 0;
     while (got < n) {
         const ssize_t r = ::read(fd, out.data() + got, n - got);
-        if (r <= 0) return false;
+        if (r < 0) return errno;
+        if (r == 0) return -1;
         got += static_cast<size_t>(r);
     }
-    return true;
+    return 0;
 }
 
-// Send one job, read one reply. Empty reply means the worker reported an error for that job; its
-// message is in w.last_error.
+// Send one job, read one reply. An empty reply means the worker reported an error for that job,
+// or gave no reply; the message is in w.last_error.
 std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job) {
     w.last_error.clear();
+    auto failed_read = [&](int rc) {
+        w.last_error = worker_gone(w, "reading the reply", rc > 0 ? rc : 0);
+        return std::vector<uint8_t>{};
+    };
     uint8_t len[8];
     for (int i = 0; i < 8; ++i) len[i] = static_cast<uint8_t>((job.size() >> (8 * i)) & 0xFF);
-    if (::write(w.in_fd, len, 8) != 8) return {};
+    if (::write(w.in_fd, len, 8) != 8) {
+        w.last_error = worker_gone(w, "writing the job", errno);
+        return {};
+    }
     size_t sent = 0;
     while (sent < job.size()) {
         const ssize_t r = ::write(w.in_fd, job.data() + sent, job.size() - sent);
-        if (r <= 0) return {};
+        if (r <= 0) {
+            w.last_error = worker_gone(w, "writing the job", errno);
+            return {};
+        }
         sent += static_cast<size_t>(r);
     }
     std::vector<uint8_t> lenbuf;
     uint64_t reply_len = 0;
     for (;;) {
-        if (!read_exact_fd(w.out_fd, 8, lenbuf)) return {};
+        if (const int rc = read_exact_fd(w.out_fd, 8, lenbuf)) return failed_read(rc);
         reply_len = 0;
         for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
         if (!(reply_len >> 63)) break;
         // A progress frame (bit 63) precedes the reply; its text is skipped.
         std::vector<uint8_t> progress;
-        if (!read_exact_fd(w.out_fd, reply_len & ~(1ull << 63), progress)) return {};
+        if (const int rc = read_exact_fd(w.out_fd, reply_len & ~(1ull << 63), progress))
+            return failed_read(rc);
     }
-    if (reply_len == 0) return {};
+    if (reply_len == 0) {
+        w.last_error = "the worker sent an empty frame";
+        return {};
+    }
     const bool error = (reply_len >> 62) == 1;   // bit 62 set, bit 63 clear: an error frame
     reply_len &= ~(3ull << 62);
     std::vector<uint8_t> reply;
-    if (!read_exact_fd(w.out_fd, reply_len, reply)) return {};
+    if (const int rc = read_exact_fd(w.out_fd, reply_len, reply)) return failed_read(rc);
     if (error) {
         w.last_error.assign(reply.begin(), reply.end());
         return {};
@@ -3505,6 +3554,16 @@ TEST(GpuBinaryGate, StateEdgeIdsAreTheIdsEventsName) {
 }
 // A job the engine refuses comes back as an error frame carrying the engine's message, and the
 // worker serves the next job. The message went only to the worker's stderr, which no client reads.
+// A worker whose binary cannot be executed is refused at its start, with the exec's errno. A
+// worker that stops replying is reported with its exit status or signal (worker_gone).
+TEST(Session, AWorkerThatCannotStartIsNamed) {
+    WorkerPipes w;
+    EXPECT_FALSE(worker_start(w, "/nonexistent/hg_evolve"));
+    EXPECT_NE(w.last_error.find("exec of /nonexistent/hg_evolve failed"), std::string::npos)
+        << w.last_error;
+    worker_stop(w);
+}
+
 TEST(Session, AWorkerReportsARefusedJobWithItsMessage) {
     if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
     CpuWorker w;
