@@ -4612,7 +4612,7 @@ TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {
         ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
         const auto cpu = host(branch_job(3, "Evolve", 0, opts, 2));
         const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 2));
-        ASSERT_FALSE(gpu.empty()) << name;
+        ASSERT_FALSE(gpu.empty()) << name << ": " << w.last_error;
         const auto c = value_bytes(cpu, "Warnings"), g = value_bytes(gpu, "Warnings");
         EXPECT_FALSE(c.empty()) << name << ": the CPU reports no warning";
         EXPECT_EQ(c, g) << name;
