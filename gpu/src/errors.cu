@@ -56,6 +56,7 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
         case ErrorKind::kCanonicalFormsFull:  return "canonical form records (retryable: grow config)";
         case ErrorKind::kStateInvariantsFull: return "StepStatistics records (retryable: grow config)";
+        case ErrorKind::kHeldPoolFull:        return "held match sets (retryable: grow config)";
         // The same kind names the CPU reports.
         case ErrorKind::kEventSigRawFallback: return "EventSigRawFallback";
         case ErrorKind::kDrainCapBufferFull:  return "DrainCapBufferFull";

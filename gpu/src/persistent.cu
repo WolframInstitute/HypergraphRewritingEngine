@@ -10,6 +10,7 @@
 // cannot be compiled within a safe ceiling is a defect whether or not it links.
 
 #include "hg_gpu/event_identity.hpp"
+#include "hg_gpu/held_set.hpp"
 #include "hg_gpu/keyed.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/explore_depth.hpp"
@@ -296,6 +297,315 @@ __device__ void select_positions(const DeviceState& ds, uint32_t s, uint32_t m,
     __syncthreads();
 }
 
+// The set a selected record hands on and the rewrite's event, read by the child's expand entry
+// (held_expand).
+__device__ inline void held_hand_on(const DeviceState& ds, const MatchRecord& rec,
+                                    const AppliedMatch& a) {
+    if (ds.held == 0u || a.state == INVALID_ID) return;
+    ds.held_handoff[2u * a.state] = rec.matched_edges[kHeldRecordWord];
+    ds.held_handoff[2u * a.state + 1u] = a.event;
+}
+
+// A child's expand entry under held sets, by the whole block: the child updates the set its
+// rewrite handed it (held_update_block) and lists it on its step for the step's selection. True
+// when the update held the child's matches; false when the child has no set or the pool could
+// not hold them, and its state is then matched in full (a failed set is listed and the selection
+// frees it).
+__device__ inline bool held_expand(const DeviceState& ds, const DeviceRule* rules, StateId child,
+                                   uint32_t step) {
+    __shared__ uint32_t s_h;
+    __shared__ EventId s_event;
+    if (threadIdx.x == 0) {
+        s_h = kHeldNone;
+        if (ds.held != 0u && child < ds.max_states && step < ds.step_slots) {
+            s_h = ds.held_handoff[2u * child];
+            s_event = ds.held_handoff[2u * child + 1u];
+            ds.held_handoff[2u * child] = kHeldNone;
+        }
+    }
+    __syncthreads();
+    const uint32_t h = s_h;
+    if (h == kHeldNone) return false;
+    const HeldCtx c = held_ctx(ds, rules);
+    const bool ok = held_update_block(c, h, child, s_event);
+    if (threadIdx.x == 0) {
+        DeviceHeldSet& set = c.sets[h];
+        if (!ok) set.live = kHeldFailed;
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> head(ds.held_step_head[step]);
+        uint32_t old = head.load(cuda::memory_order_relaxed);
+        do {
+            set.next = old;
+        } while (!head.compare_exchange_weak(old, h, cuda::memory_order_release,
+                                             cuda::memory_order_relaxed));
+    }
+    __syncthreads();
+    return ok;
+}
+
+
+// "MatchesPerStep" with held match sets (DeviceState::held, held_set.hpp), the host's
+// select_positions over HeldMatches, on the calling block. The step's sets are the
+// sets of the states whose matching emitted candidates of step s, built here (the slots and the
+// order by every lane, each lane the buckets of its index mod 32), and the sets its children's
+// updates listed (held_step_head). The positions
+// hgcommon::step_positions draws for the step's event step s + 1 are kept over the sets in group
+// order by hgcommon::step_select_blocks. Each kept transition is booked on step s + 1 and
+// appended to `found` with the set its child takes in kHeldRecordWord: a set's last kept
+// transition takes the set and each other a copy. A set no transition takes is freed.
+__device__ void held_select_step(const DeviceState& ds, uint32_t s,
+                                 typename Pool<MatchRecord>::DeviceView cand,
+                                 typename Pool<MatchRecord>::DeviceView found,
+                                 StepSelectScratch sel, const DeviceRule* rules) {
+    const HeldCtx c = held_ctx(ds, rules);
+    const uint32_t lane = threadIdx.x, nt = blockDim.x;
+    __shared__ uint32_t s_nb;
+    __shared__ uint32_t s_start;
+    __shared__ uint32_t s_n;
+    __shared__ uint32_t s_full;
+    __shared__ uint32_t s_failed;
+    constexpr uint64_t kNoSet = ~uint64_t{0};
+    // The step's sets, in sel.idx (one per state of the step), and their groups in sel.group.
+    auto add_block = [&](uint32_t h) {
+        if (s_nb < sel.cap) {
+            sel.idx[s_nb] = h;
+            sel.group[s_nb] = ds.state_label[c.sets[h].state];
+            ++s_nb;
+        } else {
+            s_full = 1u;
+        }
+    };
+    // THE STATES WHOSE MATCHING EMITTED CANDIDATES (the roots): on thread 0, a set for each state
+    // and each candidate's set in sel.rank[i - start] (kNoSet for a record of another step), then
+    // room in each set's order and slab for its candidates.
+    if (lane == 0) {
+        s_nb = 0;
+        s_full = 0;
+        s_failed = 0;
+        // The candidates of step s, from the scan start (select_step's rule).
+        s_start = sel.words[1];
+        s_n = min(cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*cand.counter)
+                      .load(cuda::memory_order_relaxed),
+                  cand.capacity);
+        uint32_t next_start = s_n;
+        for (uint32_t i = s_start; i < s_n; ++i) {
+            sel.rank[i - s_start] = kNoSet;
+            const MatchRecord& r = cand.at(i);
+            if (!match_published(r)) { next_start = min(next_start, i); continue; }
+            if (r.step != s) {
+                if (r.step > s) next_start = min(next_start, i);
+                continue;
+            }
+            uint32_t h = kHeldNone;
+            for (uint32_t b = 0; b < s_nb && h == kHeldNone; ++b)
+                if (c.sets[sel.idx[b]].state == r.state_id) h = sel.idx[b];
+            if (h == kHeldNone) {
+                h = held_new_set(c, r.state_id);
+                if (h == kHeldNone) { s_full = 1u; continue; }
+                add_block(h);
+            }
+            ++c.sets[h].pending;
+            sel.rank[i - s_start] = h;
+        }
+        sel.words[1] = next_start;
+        for (uint32_t b = 0; b < s_nb; ++b) {
+            DeviceHeldSet& set = c.sets[sel.idx[b]];
+            bool ok = true;
+            while (ok && set.order.size + set.pending > (uint64_t{hgcommon::ko_load} << set.order.bits))
+                ok = held_grow_order(c, set);
+            if (ok) ok = held_grow_slab(c, set, set.used + set.pending);
+            set.pending = 0;
+            set.order.defer_tree = 1u;
+            if (!ok) set.live = kHeldFailed;
+        }
+    }
+    __syncthreads();
+    // A slot and the slab entry of each candidate, a lane each; sel.rank becomes set << 32 | slot.
+    const uint32_t start = s_start, n = s_n;
+    for (uint32_t i = start + lane; i < n; i += nt) {
+        const uint64_t h = sel.rank[i - start];
+        if (h == kNoSet) continue;
+        DeviceHeldSet& set = c.sets[h];
+        if (set.live == kHeldFailed) { sel.rank[i - start] = kNoSet; continue; }
+        const MatchRecord& r = cand.at(i);
+        const uint32_t slot = atomicAdd(&set.used, 1u);
+        uint32_t* w = set.slab + uint64_t{slot} * set.stride;
+        const uint64_t key = held_key(ds, r.rule_id, r.matched_edges, r.num_edges);
+        w[0] = r.rule_id | (uint32_t{r.num_edges} << 16);
+        w[1] = static_cast<uint32_t>(key);
+        w[2] = static_cast<uint32_t>(key >> 32);
+        w[3] = kHeldNone;
+        for (uint32_t e = 0; e < r.num_edges; ++e) w[4 + e] = r.matched_edges[e];
+        sel.rank[i - start] = (h << 32) | slot;
+    }
+    __syncthreads();
+    // The order, by bucket: bucket % 32 is a lane's. A full bucket leaves the entry to thread 0.
+    for (uint32_t i = start; i < n; ++i) {
+        const uint64_t v = sel.rank[i - start];
+        if (v == kNoSet) continue;
+        DeviceHeldSet& set = c.sets[v >> 32];
+        const uint32_t slot = static_cast<uint32_t>(v);
+        const uint64_t key = held_key_at(set, slot);
+        if (hgcommon::ko_bucket_of(key, set.order.bits) % nt != lane) continue;
+        if (!hgcommon::ko_insert(set.order, key, slot)) {
+            sel.rank[i - start] = v | (uint64_t{1} << 31);
+            atomicAdd(&s_failed, 1u);
+        }
+    }
+    __syncthreads();
+    // The built sets' trees, from their counts.
+    for (uint32_t b = 0; b < s_nb; ++b) {
+        DeviceHeldSet& set = c.sets[sel.idx[b]];
+        if (!set.order.defer_tree) continue;
+        held_order_rebuild_tree(set.order);
+        if (lane == 0) set.order.defer_tree = 0u;
+        __syncthreads();
+    }
+    if (lane == 0) {
+        for (uint32_t i = start; i < n && s_failed; ++i) {
+            const uint64_t v = sel.rank[i - start];
+            if (v == kNoSet || !(v & (uint64_t{1} << 31))) continue;
+            DeviceHeldSet& set = c.sets[v >> 32];
+            const uint32_t slot = static_cast<uint32_t>(v) & 0x7FFFFFFFu;
+            bool ok = true;
+            while (ok && !hgcommon::ko_insert(set.order, held_key_at(set, slot), slot))
+                ok = held_grow_order(c, set);
+            if (!ok) set.live = kHeldFailed;
+        }
+        // A set that could not hold its candidates is freed, and the run retries with a larger
+        // pool.
+        for (uint32_t b = 0; b < s_nb; ++b)
+            if (c.sets[sel.idx[b]].live == kHeldFailed) s_full = 1u;
+        // The sets the step's children listed.
+        uint32_t h = cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(ds.held_step_head[s])
+                         .exchange(kHeldNone, cuda::memory_order_acq_rel);
+        while (h != kHeldNone) {
+            const uint32_t next = c.sets[h].next;
+            if (c.sets[h].live == kHeldFailed) held_free_set(c, h);
+            else add_block(h);
+            h = next;
+        }
+        const uint32_t nb = s_nb;
+        const bool full = s_full != 0u;
+        if (full) ds.errors.record(ErrorKind::kHeldPoolFull);
+        // Group order: an insertion sort of the step's few blocks.
+        for (uint32_t i = 1; i < nb; ++i) {
+            const uint32_t hi = sel.idx[i];
+            const uint64_t gi = sel.group[i];
+            uint32_t j = i;
+            while (j > 0 && sel.group[j - 1] > gi) {
+                sel.idx[j] = sel.idx[j - 1];
+                sel.group[j] = sel.group[j - 1];
+                --j;
+            }
+            sel.idx[j] = hi;
+            sel.group[j] = gi;
+        }
+        uint64_t total = 0;
+        for (uint32_t b = 0; b < nb; ++b) total += c.sets[sel.idx[b]].order.size;
+        const uint32_t want = ds.max_states_per_step < total ? ds.max_states_per_step
+                                                             : static_cast<uint32_t>(total);
+        const uint32_t npos = hgcommon::step_positions(ds.sampling_seed, s + 1u, total, want,
+                                                       sel.pos);
+        // The kept transitions, (block << 32 | slot), in sel.rank.
+        struct Run {
+            const HeldCtx& c;
+            HeldEntry* entries;   // [size], sorted by key
+            uint32_t*  blocks;
+            __device__ uint64_t key(uint64_t q) const { return entries[q].key; }
+            __device__ uint32_t block(uint64_t q) const { return blocks[q]; }
+            __device__ uint32_t value(uint64_t q) const { return entries[q].value; }
+        };
+        struct Blocks {
+            const HeldCtx& c;
+            const StepSelectScratch& sel;
+            uint32_t nb;
+            bool* failed;
+            __device__ uint32_t count() const { return nb; }
+            __device__ uint64_t group(uint32_t i) const { return sel.group[i]; }
+            __device__ uint64_t size(uint32_t i) const { return c.sets[sel.idx[i]].order.size; }
+            __device__ uint32_t select(uint32_t i, uint64_t p, uint64_t* lo, uint64_t* hi) const {
+                return hgcommon::ko_select(c.sets[sel.idx[i]].order, p, lo, hi).value;
+            }
+            // Equal groups (a lineage label collision): the blocks' entries merged by key, in
+            // pool words freed at the end of the selection.
+            __device__ Run merged(uint32_t g, uint32_t h) const {
+                uint64_t size = 0;
+                for (uint32_t i = g; i < h; ++i) size += c.sets[sel.idx[i]].order.size;
+                HeldEntry* e = reinterpret_cast<HeldEntry*>(held_alloc(c.pool, 4ull * size));
+                uint32_t* blk = held_alloc(c.pool, size);
+                if (!e || !blk) {
+                    *failed = true;
+                    return Run{c, e, blk};
+                }
+                uint64_t w = 0;
+                for (uint32_t i = g; i < h; ++i)
+                    hgcommon::ko_for_each(c.sets[sel.idx[i]].order, [&](const HeldEntry& x) {
+                        e[w] = x;
+                        blk[w] = i;
+                        ++w;
+                    });
+                for (uint64_t a = 1; a < size; ++a) {
+                    const HeldEntry x = e[a];
+                    const uint32_t xb = blk[a];
+                    uint64_t j = a;
+                    while (j > 0 && e[j - 1].key > x.key) {
+                        e[j] = e[j - 1];
+                        blk[j] = blk[j - 1];
+                        --j;
+                    }
+                    e[j] = x;
+                    blk[j] = xb;
+                }
+                return Run{c, e, blk};
+            }
+        };
+        bool merge_failed = false;
+        Blocks view{c, sel, nb, &merge_failed};
+        uint32_t kept = 0;
+        hgcommon::step_select_blocks(view, sel.pos, npos, [&](uint32_t block, uint32_t slot) {
+            if (kept < sel.cap) sel.rank[kept++] = (uint64_t{block} << 32) | slot;
+        });
+        if (merge_failed) ds.errors.record(ErrorKind::kHeldPoolFull);
+        step_book(ds, s + 1u, kept);
+        // How many kept transitions each block hands its set to, in the group's position word.
+        for (uint32_t b = 0; b < nb; ++b) sel.group[b] = 0;
+        for (uint32_t k = 0; k < kept; ++k) ++sel.group[sel.rank[k] >> 32];
+        for (uint32_t k = 0; k < kept; ++k) {
+            const uint32_t b = static_cast<uint32_t>(sel.rank[k] >> 32);
+            const uint32_t slot = static_cast<uint32_t>(sel.rank[k]);
+            const uint32_t set = sel.idx[b];
+            const DeviceHeldSet& from = c.sets[set];
+            const uint32_t i = found.claim();
+            if (i == Pool<MatchRecord>::kInvalid) {
+                ds.errors.record(ErrorKind::kMatchPoolFull);
+                step_release(ds, s + 1u, 1u);
+                --sel.group[b];
+                continue;
+            }
+            MatchRecord& rec = found.at(i);
+            rec.rule_id = held_rule_at(from, slot);
+            rec.state_id = from.state;
+            rec.step = s;
+            rec.num_edges = static_cast<uint8_t>(held_count_at(from, slot));
+            for (uint32_t e = 0; e < kMaxPatternEdges; ++e) rec.matched_edges[e] = INVALID_ID;
+            const EdgeId* edges = held_edges_at(from, slot);
+            for (uint32_t e = 0; e < rec.num_edges; ++e) rec.matched_edges[e] = edges[e];
+            // The last kept transition of the block takes its set, each other a copy, which
+            // a failed copy leaves to match its state in full.
+            rec.matched_edges[kHeldRecordWord] =
+                --sel.group[b] == 0 ? set : held_copy_set(c, set);
+            publish_match(rec);
+        }
+        // A block no transition takes: its set is freed.
+        for (uint32_t b = 0; b < nb; ++b) {
+            bool taken = false;
+            for (uint32_t k = 0; k < kept && !taken; ++k) taken = (sel.rank[k] >> 32) == b;
+            if (!taken) held_free_set(c, sel.idx[b]);
+        }
+    }
+    __syncthreads();
+}
+
 // Selection of step s on the calling block: rank the step's candidates; when the cap counts
 // successor states, replace each rank by its successor's (the smallest rank into it,
 // hgcommon::successor_ranks); under "StateCost" each candidate also carries its successor's
@@ -312,6 +622,11 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
                                          const SuccessorCtx* succ) {
     const uint32_t tid = threadIdx.x, nt = blockDim.x;
     const unsigned long long t_select = tid == 0 ? clock64() : 0;
+    if (ds.held != 0u) {
+        held_select_step(ds, s, cand, found, sel, rules);
+        if (tid == 0 && sel.cycles) atomicAdd(sel.cycles, clock64() - t_select);
+        return;
+    }
     __shared__ uint32_t s_cnt;
     // THE SCAN STARTS AT sel.words[1]: below it every candidate belongs to a step already
     // selected. A candidate of step s + 1 or later is produced from a state step s's selection
@@ -1668,6 +1983,7 @@ __global__ void k_persistent_evolve(
                     child_sid = a.state;
                     child_event = a.event;
                     child_events = a.num_events;
+                    held_hand_on(ds, rec, a);
                     child_step = rec.step + 1u;
                     child_kept = a.kept;
                     child_keyed = a.keyed;
@@ -1718,6 +2034,7 @@ __global__ void k_persistent_evolve(
                         evt = a.event;
                         keyed = a.keyed;
                         kept = a.kept;
+                        held_hand_on(ds, rec, a);
                     }
                     if (lane == 0) acc_rewrite += clock64() - t0;
                 }
@@ -1833,11 +2150,18 @@ __global__ void k_persistent_evolve(
                 const ExpandEntry& e = ev.expand.await(expand_base);
                 child_sid  = e.state;
                 child_step = e.depth;
-                expand_parts = match_parts_of(ds, child_sid, match_q.size_approx());
-                step_book(ds, child_step, num_rules * expand_parts);
             }
         }
         __syncthreads();
+        if (expand_count) {
+            // A child with a held set updates it and pushes no match item.
+            const bool held = held_expand(ds, rules, child_sid, child_step);
+            if (threadIdx.x == 0) {
+                expand_parts = held ? 0u : match_parts_of(ds, child_sid, match_q.size_approx());
+                step_book(ds, child_step, num_rules * expand_parts);
+            }
+            __syncthreads();
+        }
         if (expand_count) {
             // The items, a lane each: (rule, part) for item k. The block is one warp.
             const uint32_t parts = expand_parts;
@@ -2287,6 +2611,19 @@ struct EngineState::PersistentScratch {
     uint32_t*                    succ_order = nullptr;
     uint8_t*                     succ_lead = nullptr;
     uint32_t                     succ_blocks = 0;
+    // The held match sets (DeviceState::held): the pool of held_capacity words, its class heads
+    // and cursor (held_heads[kHeldClasses]), held_set_cap headers and their free stack, the
+    // hand-on words of held_handoff_states states and held_step_slots step lists.
+    uint32_t*           held_words = nullptr;
+    uint64_t            held_capacity = 0;
+    unsigned long long* held_heads = nullptr;
+    DeviceHeldSet*      held_sets = nullptr;
+    uint32_t*           held_free_sets = nullptr;
+    uint32_t            held_set_cap = 0;
+    uint32_t*           held_handoff = nullptr;
+    uint32_t            held_handoff_states = 0;
+    uint32_t*           held_step_head = nullptr;
+    uint32_t            held_step_slots = 0;
     void free_step_succ() {
         for (void* q : {static_cast<void*>(step_id), static_cast<void*>(step_srank),
                         static_cast<void*>(step_order), static_cast<void*>(step_lead),
@@ -2320,6 +2657,10 @@ struct EngineState::PersistentScratch {
         if (step_pos) cudaFree(step_pos);
         if (explore_frames) cudaFree(explore_frames);
         if (keyed_words) cudaFree(keyed_words);
+        for (void* q : {static_cast<void*>(held_words), static_cast<void*>(held_heads),
+                        static_cast<void*>(held_sets), static_cast<void*>(held_free_sets),
+                        static_cast<void*>(held_handoff), static_cast<void*>(held_step_head)})
+            if (q) cudaFree(q);
     }
 };
 
@@ -2806,6 +3147,79 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         tokens[0] = 0u;
         HG_CUDA_CHECK(cudaMemcpy(dsk.step_pending, tokens.data(), sizeof(uint32_t) * tokens.size(),
                                  cudaMemcpyHostToDevice), "step tokens");
+    }
+    // "MatchesPerStep" with held match sets (held_set.hpp, hgcommon::held_matches_apply): the
+    // pool, the set headers and the stack of free ones, the hand-on words and the step lists. A
+    // session's run matches each state in full, since its sets would outlive the launch. A rule
+    // with kMaxPatternEdges left-hand edges leaves no record word for the set.
+    uint32_t max_lhs = 0;
+    for (const DeviceRule& r : rules) max_lhs = std::max<uint32_t>(max_lhs, r.num_lhs_edges);
+    dsk.held = 0u;
+    if (!session && dsk.edge_label != nullptr && dsk.max_states_per_step != 0u &&
+        dsk.step_cap_counts_matches && max_lhs < kMaxPatternEdges &&
+        hgcommon::held_matches_apply(true, dsk.state_cost != nullptr, dsk.matches_per_state_rule,
+                                     dsk.max_successor_states_per_parent,
+                                     dsk.exploration_probability)) {
+        const uint64_t words = engine.config().held_pool_words;
+        const uint64_t set_cap64 =
+            2ull * (uint64_t{dsk.max_states_per_step} + roots.size()) + 16u;
+        const uint32_t set_cap = set_cap64 > dsk.max_states ? dsk.max_states + 16u
+                                                            : static_cast<uint32_t>(set_cap64);
+        if (ps.held_capacity != words) {
+            if (ps.held_words) cudaFree(ps.held_words);
+            ps.held_words = nullptr;
+            ps.held_capacity = 0;
+            HG_CUDA_CHECK(cudaMalloc(&ps.held_words, sizeof(uint32_t) * words), "held pool");
+            ps.held_capacity = words;
+        }
+        if (!ps.held_heads) {
+            HG_CUDA_CHECK(cudaMalloc(&ps.held_heads, sizeof(unsigned long long) * (kHeldClasses + 1u)),
+                          "held pool heads");
+        }
+        if (ps.held_set_cap < set_cap) {
+            if (ps.held_sets) cudaFree(ps.held_sets);
+            if (ps.held_free_sets) cudaFree(ps.held_free_sets);
+            HG_CUDA_CHECK(cudaMalloc(&ps.held_sets, sizeof(DeviceHeldSet) * set_cap), "held sets");
+            HG_CUDA_CHECK(cudaMalloc(&ps.held_free_sets, sizeof(uint32_t) * (set_cap + 1u)),
+                          "held free sets");
+            ps.held_set_cap = set_cap;
+        }
+        if (ps.held_handoff_states < dsk.max_states) {
+            if (ps.held_handoff) cudaFree(ps.held_handoff);
+            HG_CUDA_CHECK(cudaMalloc(&ps.held_handoff, sizeof(uint32_t) * 2ull * dsk.max_states),
+                          "held hand-on");
+            ps.held_handoff_states = dsk.max_states;
+        }
+        if (ps.held_step_slots < dsk.step_slots) {
+            if (ps.held_step_head) cudaFree(ps.held_step_head);
+            HG_CUDA_CHECK(cudaMalloc(&ps.held_step_head, sizeof(uint32_t) * dsk.step_slots),
+                          "held step lists");
+            ps.held_step_slots = dsk.step_slots;
+        }
+        // Every run starts with an empty pool, every header free, no hand-on and empty lists.
+        HG_CUDA_CHECK(cudaMemset(ps.held_heads, 0, sizeof(unsigned long long) * (kHeldClasses + 1u)),
+                      "held pool heads clear");
+        std::vector<uint32_t> free_sets(set_cap + 1u);
+        free_sets[0] = set_cap;
+        for (uint32_t i = 0; i < set_cap; ++i) free_sets[1u + i] = i;
+        HG_CUDA_CHECK(cudaMemcpy(ps.held_free_sets, free_sets.data(),
+                                 sizeof(uint32_t) * free_sets.size(), cudaMemcpyHostToDevice),
+                      "held free sets");
+        HG_CUDA_CHECK(cudaMemset(ps.held_handoff, 0xFF, sizeof(uint32_t) * 2ull * dsk.max_states),
+                      "held hand-on clear");
+        HG_CUDA_CHECK(cudaMemset(ps.held_step_head, 0xFF, sizeof(uint32_t) * dsk.step_slots),
+                      "held step lists clear");
+        dsk.held = 1u;
+        dsk.held_words = ps.held_words;
+        dsk.held_cursor = ps.held_heads + kHeldClasses;
+        dsk.held_capacity = words;
+        dsk.held_free_heads = ps.held_heads;
+        dsk.held_sets = ps.held_sets;
+        dsk.held_set_cap = set_cap;
+        dsk.held_free_sets = ps.held_free_sets;
+        dsk.held_handoff = ps.held_handoff;
+        dsk.held_step_head = ps.held_step_head;
+        dsk.held_stride = 4u + max_lhs;
     }
     // MaxSuccessorStatesPerParent's per-block candidates (match_state_parent_capped).
     SuccessorScratch succ_scratch{};

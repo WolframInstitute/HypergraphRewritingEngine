@@ -128,12 +128,15 @@ enum class ErrorKind : uint32_t {
     // class has no record and summarises as the state with no edges. Config-sized, so growing
     // is a real remedy.
     kStateInvariantsFull = 40,
+    // The held match sets' pool (EngineConfig::held_pool_words) could not hold a step's sets: the
+    // step's selection chose from what it held. Config-sized, so growing is a real remedy.
+    kHeldPoolFull        = 41,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
     // kTrPredsNodes (25) and kQcNodes (26) came to sit above an implicit kCount of 25 and could
     // never be reported at all. Stated explicitly, with the static_assert below as the guard.
-    kCount               = 41
+    kCount               = 42
 };
 
 // DISTINCT VALUES, NOT MERELY IN-RANGE ONES. record() indexes the counter array by the enum
@@ -162,6 +165,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kCapturesDropped) <
               static_cast<uint32_t>(ErrorKind::kCount), "kCapturesDropped is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kStateInvariantsFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kStateInvariantsFull is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kHeldPoolFull) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kHeldPoolFull is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kCanonicalMapFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kCanonicalMapFull is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kEventSigRawFallback) <

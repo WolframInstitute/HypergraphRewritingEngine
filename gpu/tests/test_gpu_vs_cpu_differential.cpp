@@ -1980,6 +1980,57 @@ TEST(Sampling, SuccessorCapsAreTheSameOnBothEngines) {
     }
 }
 
+// "MatchesPerStep" under None states hands each kept transition's state's match set to its child
+// on both engines (HeldMatches, held_set.hpp): the same states, events and relations over long
+// histories, for one and three transitions per step, at three seeds. Rule
+// {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}} on a 4 x 4 torus for 40 steps, a rule
+// with a repeated vertex, and two rules, one of which deletes.
+TEST(Sampling, HeldMatchSetsKeepTheSameHistoryOnBothEngines) {
+    std::vector<std::vector<hg_gpu::VertexId>> torus;
+    for (hg_gpu::VertexId r = 0; r < 4; ++r)
+        for (hg_gpu::VertexId c = 0; c < 4; ++c) {
+            torus.push_back({r * 4 + c, r * 4 + (c + 1) % 4});
+            torus.push_back({r * 4 + c, ((r + 1) % 4) * 4 + c});
+        }
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+        uint32_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"torus", {rule({{0, 1}, {1, 2}, {2, 3}, {3, 4}}, {{1, 5}, {5, 4}, {3, 0}, {0, 5}})},
+         torus, 40},
+        {"loops", {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}})},
+         {{0u, 0u}, {0u, 0u}}, 25},
+        {"grow-delete", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 3}, {3, 1}}), rule({{0, 1}}, {})},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}}, 30},
+    };
+    for (const Case& c : cases)
+        for (uint32_t n : {1u, 3u})
+            for (uint64_t seed : {uint64_t(5), uint64_t(1), uint64_t(12345)}) {
+                Workload w;
+                w.name = std::string(c.name) + " n " + std::to_string(n) + " seed " +
+                         std::to_string(seed);
+                w.rules = c.rules;
+                w.initial_states = {c.init};
+                w.num_steps = c.steps;
+                w.canon_mode = hg_gpu::CanonicalizationMode::None;
+                w.random_seed = seed;
+                w.max_states_per_step = n;
+                w.step_cap_counts_matches = true;
+                const NormalizedResult cpu = run_cpu(w);
+                const NormalizedResult gpu = run_gpu(w);
+                EXPECT_GT(cpu.raw_events, 0u) << w.name;
+                EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
+                EXPECT_EQ(gpu.event_keys, cpu.event_keys) << w.name;
+                EXPECT_EQ(gpu.raw_states, cpu.raw_states) << w.name;
+                EXPECT_EQ(gpu.raw_events, cpu.raw_events) << w.name;
+                EXPECT_EQ(gpu.observable_causal, cpu.observable_causal) << w.name;
+                EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial) << w.name;
+            }
+}
+
 // Under MaxStatesPerStep the reconstruction keeps one expansion per (class, depth)
 // (hgcommon::qc_expansion_key), on both engines: Full states, Automatic events, rules whose
 // classes recur at several depths, caps 1, 2, 3 and 5 over 5 steps. The host's reconstruction

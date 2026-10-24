@@ -280,8 +280,13 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   consumed edge are dropped through the set's per-edge lists, and the matches on a produced edge
   are found by matching around those edges over the set's vertex adjacency
   (`AncestryCandidates::flat`). A step then costs the matches that touch its event. On the
-  device the block that finishes a step's last piece of work makes the same selection. A
-  transition not kept is not taken.
+  device the block that finishes a step's last piece of work makes the same selection
+  (`hgcommon::step_select_blocks` over `hgcommon/key_order_core.hpp`), and under
+  `hgcommon::held_matches_apply` the sets are the device's held sets (`held_set.hpp`): the
+  selection hands each set on in the selected record, and the child's expand entry updates it
+  with the whole block, the matches on a consumed edge found by joins anchored at it in the
+  parent and dropped, the matches on a produced edge found by joins anchored at it in the child.
+  A transition not kept is not taken.
 
 Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;
 the drain fires once per state), `RuleWeights.*`.

@@ -448,6 +448,10 @@ struct EngineConfig {
     // state slot (EngineState::invariant_pool_words). Allocated only when the run records them; grown on
     // kStateInvariantsFull.
     uint64_t state_invariant_words = uint64_t{1} << 20;
+    // Words of the held match sets' pool (held_set.hpp), allocated when a run holds them: 256 MB.
+    // A run whose sets do not fit records kHeldPoolFull, which grow-and-retry answers by doubling
+    // this.
+    uint64_t held_pool_words = uint64_t{1} << 26;
     // Match records (match_pool_records): the rewrite pool, and under MaxStatesPerStep each step's
     // candidates as well. 0 sizes it at 8 records per state slot. kMatchPoolFull grows it alone.
     // 64 bits wide so the struct has no padding (PersistentEvolver::run compares configs bytewise).

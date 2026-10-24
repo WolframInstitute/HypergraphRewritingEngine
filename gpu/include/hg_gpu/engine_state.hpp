@@ -98,6 +98,23 @@ struct DeviceState {
     // "Generational": a state's matching takes its generation (match_state_generation) and emits
     // one record of kGenerationRule, which apply_generation applies.
     uint32_t  generational;
+    // The held match sets (held_set.hpp), set by the persistent evolver under
+    // hgcommon::held_matches_apply; held 0 otherwise. The pool's words, cursor, capacity and the
+    // free stacks of its size classes; the set headers (DeviceHeldSet[held_set_cap]) and the stack
+    // of free ones ([held_set_cap + 1], the top in word 0); for each state, the set its creating
+    // rewrite hands it and that rewrite's event ([2 * max_states]); for each step, the first set
+    // of its list ([step_slots]).
+    uint32_t            held = 0;
+    uint32_t*           held_words = nullptr;
+    unsigned long long* held_cursor = nullptr;
+    uint64_t            held_capacity = 0;
+    unsigned long long* held_free_heads = nullptr;
+    void*               held_sets = nullptr;
+    uint32_t            held_set_cap = 0;
+    uint32_t*           held_free_sets = nullptr;
+    uint32_t*           held_handoff = nullptr;
+    uint32_t*           held_step_head = nullptr;
+    uint32_t            held_stride = 0;
     // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
     // (select_step, state_cost_of_form_device).
     const hgcommon::StateCost* state_cost = nullptr;

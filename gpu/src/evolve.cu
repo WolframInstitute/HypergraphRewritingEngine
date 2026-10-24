@@ -834,6 +834,9 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kStateInvariantsFull:
             cfg.state_invariant_words = 2 * cfg.state_invariant_words;
             return true;
+        case ErrorKind::kHeldPoolFull:
+            cfg.held_pool_words = 2 * cfg.held_pool_words;
+            return true;
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
         case ErrorKind::kCausalPairMapFull:   dbl(cfg.causal_pair_slots);    return true;
         case ErrorKind::kBranchialMapFull:    dbl(cfg.branchial_pair_slots); return true;
@@ -928,6 +931,10 @@ static void log_config_growth(const char* header, const EngineConfig& initial,
     LOG_FIELD(survivor_scratch);
     LOG_FIELD(canonical_form_words);
     LOG_FIELD(state_invariant_words);
+    if (winning.held_pool_words != initial.held_pool_words)
+        std::fprintf(stderr, "  held_pool_words: %llu → %llu\n",
+                     (unsigned long long)initial.held_pool_words,
+                     (unsigned long long)winning.held_pool_words);
 #undef LOG_FIELD
 }
 
@@ -1383,6 +1390,7 @@ static EngineConfig covering_config(const EngineConfig& live, const EngineConfig
     EngineConfig c = own;
     auto widen = [&](auto EngineConfig::*f) { c.*f = std::max(live.*f, own.*f); };
     widen(&EngineConfig::state_invariant_words);
+    widen(&EngineConfig::held_pool_words);
     widen(&EngineConfig::max_edges);
     widen(&EngineConfig::max_vertices);
     widen(&EngineConfig::max_vertex_slots);
