@@ -4316,7 +4316,7 @@ TEST(GpuBinaryGate, DeviceBranchialRowsGiveTheCpuStepStatistics) {
 // The sampling and cap options keep the same transitions on both devices, through one worker
 // that has run other jobs. First the GPUEvolution tutorial's calls in its order, sent with every
 // option of hgJobOptions: the last, the branching rule from two loops at 5 steps with
-// TransitionRate 0.25 and RandomSeed 7, is {11, 10, 9, 2} on the CPU. Then each sampling and cap
+// TransitionRate 0.25 and RandomSeed 7, is {25, 24, 23, 21} on the CPU. Then each sampling and cap
 // option under CanonicalizeStates None, Automatic, Full and Full with quotient exploration, at
 // three seeds. The four counts agree on every job, and quotient exploration gives the counts of
 // full capture.
@@ -4394,10 +4394,10 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
             key(ww, "MatchesPerStateRule"); ww.write(int64_t{0});
         }, 22), "tutorial call " + std::to_string(&c - calls));
     }
-    EXPECT_EQ(read_int_key(last, "NumStates"), 11);
-    EXPECT_EQ(read_int_key(last, "NumEvents"), 10);
-    EXPECT_EQ(read_int_key(last, "NumCausalEdges"), 9);
-    EXPECT_EQ(read_int_key(last, "NumBranchialEdges"), 2);
+    EXPECT_EQ(read_int_key(last, "NumStates"), 25);
+    EXPECT_EQ(read_int_key(last, "NumEvents"), 24);
+    EXPECT_EQ(read_int_key(last, "NumCausalEdges"), 23);
+    EXPECT_EQ(read_int_key(last, "NumBranchialEdges"), 21);
 
     struct Option { const char* key; double real; int64_t integer; bool list; };
     const Option options[] = {

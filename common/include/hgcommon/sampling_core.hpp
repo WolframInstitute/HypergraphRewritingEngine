@@ -40,13 +40,18 @@ HG_HD inline double sampling_rate_for_rule(double transition_rate, const double*
 // event_signature(EVENT_SIG_TRANSITION, ...) over the input state's canonical hash, the rule, and
 // the consumed edges' canonical ranks WITHIN that state. Two runs that reach the same transition
 // compute the same key, which is the whole point.
-HG_HD inline bool transition_survives(uint64_t transition_key, uint64_t random_seed, double rate) {
+//
+// `step` is rank_step's value: the transition's step when every state is matched at one step,
+// 0 otherwise. At step 0 the draw is the step-free draw.
+HG_HD inline bool transition_survives(uint64_t transition_key, uint64_t random_seed, double rate,
+                                      uint32_t step) {
     if (rate >= 1.0) return true;
     if (rate <= 0.0) return false;
 
-    // splitmix64 of (seed, transition). The seed is mixed by multiplication rather than xor so
-    // that seed 0 is not the identity -- a caller who leaves the seed alone still gets a draw.
-    uint64_t x = transition_key ^ (random_seed * 0x9E3779B97F4A7C15ULL);
+    // splitmix64 of (seed, step, transition). The seed is mixed by multiplication rather than xor
+    // so that seed 0 is not the identity -- a caller who leaves the seed alone still gets a draw.
+    uint64_t x = transition_key ^ (random_seed * 0x9E3779B97F4A7C15ULL) ^
+                 (static_cast<uint64_t>(step) * 0xD6E8FEB86659FD93ULL);
     x += 0x9E3779B97F4A7C15ULL;
     x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
@@ -65,8 +70,8 @@ HG_HD inline bool transition_survives(uint64_t transition_key, uint64_t random_s
 // correlated with whether it survived a rate draw, or the two controls would compound instead
 // of composing.
 //
-// `step` is rank_step's value: the transition's step under a step cap, 0 otherwise. At step 0 the
-// rank is the step-free rank.
+// `step` is rank_step's value: the transition's step when every state is matched at one step, 0
+// otherwise. At step 0 the rank is the step-free rank.
 HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_seed,
                                       uint32_t step) {
     uint64_t x = transition_key ^ (random_seed * 0x9E3779B97F4A7C15ULL) ^ 0xA5A5A5A5A5A5A5A5ULL ^
@@ -76,13 +81,19 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
-// The step a transition's rank reads. Under a step cap ("MaxStatesPerStep", "MatchesPerStep")
-// quotient exploration is off and every state is matched at one step, so the rank mixes that
-// step in: a history that returns to an isomorphic state draws a new order there. Without a step
-// cap a class is matched once, at a depth a shorter path can still lower, and the rank reads 0.
-// `step` is the step of the transition's event, the step its source state is matched at.
-HG_HD inline uint32_t rank_step(uint32_t step, uint32_t states_per_step) {
-    return states_per_step != 0u ? step : 0u;
+// The step a transition's rank and draw read. Under a step cap, or under None or Automatic states,
+// every state is matched at one step, so the rank and the draw mix that step in: a history that
+// returns to an isomorphic state draws again there. Under Full states without a step cap a state
+// is its isomorphism class, and the rank and the draw read 0, so a class's transitions are drawn
+// the same at every step it is reached, as quotient exploration draws them (docs/SPEC.md §5.4).
+// `step` is the step of the transition's event. `reads_step` is rank_reads_step's value.
+HG_HD inline uint32_t rank_step(uint32_t step, uint32_t reads_step) {
+    return reads_step != 0u ? step : 0u;
+}
+
+// Whether ranks and draws read the step (rank_step).
+HG_HD inline uint32_t rank_reads_step(bool full_states, uint64_t max_states_per_step) {
+    return (max_states_per_step != 0u || !full_states) ? 1u : 0u;
 }
 
 // THE "MatchesPerStep" SELECTION. Without "StateCost" a step keeps n of its T transitions, drawn

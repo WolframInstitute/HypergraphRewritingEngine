@@ -1471,6 +1471,41 @@ TEST(SamplingReproducibility, AHistoryThatReturnsToAClassDrawsAgainThere) {
     }
 }
 
+// The same history without a step cap: under None states every state is matched at one step, so
+// the per-parent cap, the per-rule cap and the spine of a draw that keeps nothing read the step
+// too (hgcommon::rank_reads_step). Each makes a single history of 120 events, and some class is
+// left by at least two transitions.
+TEST(SamplingReproducibility, ASingleHistoryWithoutAStepCapDrawsAgainAtAReturningClass) {
+    enum class Mode { kSuccessors, kPerRule, kSpine };
+    for (Mode mode : {Mode::kSuccessors, Mode::kPerRule, Mode::kSpine})
+        for (size_t threads : {size_t(1), size_t(4)}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 0}).build());
+            if (mode == Mode::kSuccessors) e.set_max_successor_states_per_parent(1);
+            if (mode == Mode::kPerRule) e.set_matches_per_state_rule(1);
+            if (mode == Mode::kSpine) e.set_transition_rate(1e-12);
+            e.set_random_seed(1);
+            e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 120);
+            const int m = static_cast<int>(mode);
+            ASSERT_EQ(hg.num_events(), 120u) << m << " at " << threads;
+            std::map<uint64_t, std::set<uint32_t>> chosen;
+            for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+                const Event& x = hg.get_event(ev);
+                if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+                const State& in = hg.get_state(x.input_state);
+                hg.ensure_state_edge_ranks(x.input_state, in.edges);
+                chosen[hg.get_or_compute_canonical_hash(x.input_state)].insert(
+                    Hypergraph::edge_rank_in(hg.edge_rank_table(x.input_state),
+                                             x.consumed_edges[0]));
+            }
+            size_t most = 0;
+            for (const auto& c : chosen) most = std::max(most, c.second.size());
+            EXPECT_GE(most, 2u) << m << " at " << threads << " threads";
+        }
+}
+
 // "MatchesPerStep" under None states chooses the same transitions at 1, 4 and 32 workers, for
 // one and for three transitions per step.
 TEST(SamplingReproducibility, MatchesPerStepUnderNoneStatesIsTheSameAtEveryWorkerCount) {

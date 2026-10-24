@@ -164,9 +164,9 @@ initial states, steps, options)`** — the same for 1 or N threads, quotient on 
 exact configuration. Sampling and capping options refine this as follows:
 
 - **`TransitionRate`** (with `RuleWeights`) keeps each transition with the given probability,
-  drawn from the transition's isomorphism-invariant identity and the seed — so the sampled
-  subgraph is the same at every worker count and on either device, and reproducible for a fixed
-  `RandomSeed`. A spine keeps the state's transitions with the smallest seeded rank when none of
+  drawn from the transition's isomorphism-invariant identity, the seed and the step (below) —
+  so the sampled subgraph is the same at every worker count and on either device, and
+  reproducible for a fixed `RandomSeed`. A spine keeps the state's transitions with the smallest seeded rank when none of
   its draws passed, so a fixed rate below the branching factor thins rather than extinguishes. A
   run under it matches every state in full (match forwarding off), so the draw and the spine see
   all of the state's transitions.
@@ -195,10 +195,13 @@ exact configuration. Sampling and capping options refine this as follows:
   and `Full` states the key is the transition key and the group 0. With `MatchesPerStep -> 1`
   each step applies one transition to one state, so the run is a single history. All three are
   schedule-independent, and a transition not kept is not taken (no event, no state).
-- **The step in a step cap.** Under `MaxStatesPerStep` and `MatchesPerStep` every state is
-  matched at one step, and every rank and every draw of positions mixes in the step of the
-  events the transitions make (`hgcommon::rank_step`). A history that returns to an isomorphic
-  state draws its choice there again.
+- **The step in a rank.** Under `MaxStatesPerStep` and `MatchesPerStep`, and under `None` and
+  `Automatic` states, every state is matched at one step, and every rank, every draw and every
+  draw of positions mixes in the step of the events the transitions make
+  (`hgcommon::rank_step`, `hgcommon::rank_reads_step`). A history that returns to an isomorphic
+  state draws its choice there again. Under `Full` states without a step cap a state is its
+  isomorphism class, and the ranks and draws read step 0, so quotient exploration and full
+  capture keep the same transitions.
 - **Lineage labels.** Under `None` states with `MatchesPerStep` every edge and state carries a
   64-bit label fixed when it is made (`hgcommon::lineage_*`). An initial state's label is a hash
   of its canonical hash, and its edges' labels hash that label with each edge's canonical rank.

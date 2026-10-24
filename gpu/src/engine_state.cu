@@ -439,7 +439,8 @@ DeviceState EngineState::device() const {
         d.exploration_probability          = exploration_probability_;
         d.max_states_per_step              = max_states_per_step_;
         d.step_cap_counts_matches          = step_cap_counts_matches_ ? 1u : 0u;
-        d.state_cost                       = state_cost_on_ ? state_cost_dev_ : nullptr;
+        d.rank_reads_step                  = rank_reads_step_;
+        d.state_cost                     = state_cost_on_ ? state_cost_dev_ : nullptr;
         d.edge_label                       = lineage_ ? edge_label_ : nullptr;
         d.state_label                      = lineage_ ? state_label_ : nullptr;
         d.step_pending                     = states_per_step_;

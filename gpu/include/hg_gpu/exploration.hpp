@@ -119,7 +119,7 @@ __device__ inline __noinline__ uint64_t selection_rank_device(const DeviceState&
                                                  uint8_t num_edges, uint32_t event_step,
                                                  const EdgeId* staged_ids = nullptr,
                                                  uint32_t staged_count = 0) {
-    const uint32_t rs = hgcommon::rank_step(event_step, ds.max_states_per_step != 0u ? 1u : 0u);
+    const uint32_t rs = hgcommon::rank_step(event_step, ds.rank_reads_step);
     if (ds.max_states_per_step != 0u && ds.step_cap_counts_matches)
         return hgcommon::step_order_rank(
             step_order_device(ds, state_id, rule_id, matched_edges, num_edges, staged_ids,

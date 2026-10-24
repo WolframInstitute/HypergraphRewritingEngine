@@ -92,6 +92,9 @@ struct DeviceState {
     uint32_t  max_states_per_step;
     // The step cap counts transitions (MatchesPerStep) rather than successor states.
     uint32_t  step_cap_counts_matches;
+    // hgcommon::rank_reads_step: 1 under a step cap or under None or Automatic states, where the
+    // ranks and draws mix in the event's step (hgcommon::rank_step).
+    uint32_t  rank_reads_step;
     // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
     // (select_step, state_cost_of_form_device).
     const hgcommon::StateCost* state_cost = nullptr;
@@ -463,6 +466,8 @@ public:
     void set_transition_orbits(bool enabled) { transition_orbits_ = enabled; }
     // The step cap counts transitions (MatchesPerStep) rather than successor states.
     void set_step_cap_counts_matches(bool on) { step_cap_counts_matches_ = on; }
+    // hgcommon::rank_reads_step of the run's state mode and step cap.
+    void set_rank_reads_step(uint32_t on) { rank_reads_step_ = on; }
     // "StateCost": copied to the device when n != 0; DeviceState::state_cost is null otherwise.
     void set_state_cost(const hgcommon::StateCost& cost);
 
@@ -683,6 +688,7 @@ private:
     bool                               quotient_causal_ = false;
     bool                               transition_orbits_ = false;
     bool                               step_cap_counts_matches_ = false;
+    uint32_t                           rank_reads_step_ = 0;
     hgcommon::StateCost*               state_cost_dev_          = nullptr;
     bool                               state_cost_on_           = false;
     uint32_t slice_scan_max_edges_ = 256;

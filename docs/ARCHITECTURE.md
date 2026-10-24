@@ -252,8 +252,9 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   distribution, so branching shape survives. A run under `TransitionRate`, `RuleWeights` or
   `MatchesPerStateRule` turns forwarding off, so each state's own matching finds all of its
   matches.
-- **Keyed draws.** Every draw is a function of the transition's isomorphism-invariant identity
-  and the seed — never a worker's RNG — so the sampled subgraph is the same at every worker
+- **Keyed draws.** Every draw is a function of the transition's isomorphism-invariant identity,
+  the seed and, under None or Automatic states or a step cap, the step (`hgcommon::rank_step`) —
+  never a worker's RNG — so the sampled subgraph is the same at every worker
   count and on either device, and reproducible for a fixed seed.
 - **The spine.** Below the branching factor a fixed rate makes the sampled evolution go
   extinct, so a state whose draws all failed keeps its transitions with the smallest seeded rank

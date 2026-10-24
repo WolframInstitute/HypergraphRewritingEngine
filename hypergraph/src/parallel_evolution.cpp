@@ -884,7 +884,7 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
 }
 
 bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_t canonical_key,
-                                                         int site, uint16_t rule) {
+                                                         int site, uint16_t rule, uint32_t step) {
     // Own-found draws only. Track the running minimum own key -- complete exactly at the
     // state's drain, because its own matching is what the drain joins on -- and mark whether
     // any own draw passed. Forwarded draws go through transition_survives directly and touch
@@ -896,8 +896,8 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     // saturates at skeleton-plus-bushes; seeding it makes each seed explore a different
     // skeleton, which is what lets repeated sampling recover the graph. Still a pure
     // function of (transition, seed): schedule-stable, device-stable.
-    join->fold_own_rank(spine_rank(canonical_key));
-    if (transition_survives(canonical_key, site, rule)) {
+    join->fold_own_rank(spine_rank(canonical_key, step));
+    if (transition_survives(canonical_key, site, rule, step)) {
         join->mark_own_spawned();
         return true;
     }
@@ -1304,7 +1304,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     uint64_t kept = 0;
     (*stored)->for_each([&](const MatchRecord& m) {
         if (m.is_forwarded) return;   // own_min_key is fed by own draws only
-        if (spine_rank(canonical_transition_key(state, m)) != want) return;
+        if (spine_rank(canonical_transition_key(state, m), step) != want) return;
         if (kept++ == 0) join->mark_own_spawned();
         submit_rewrite_task(m, step);
     });
@@ -1313,7 +1313,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
 
 
 bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int site,
-                                                  uint16_t rule) const {
+                                                  uint16_t rule, uint32_t step) const {
     // The rate is THIS RULE's, so a weighted rule set thins each rule at its own probability
     // while every draw stays keyed on the transition's isomorphism-invariant identity.
     const double rate = rate_for_rule(rule);
@@ -1324,7 +1324,8 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int s
 
     // The draw itself lives in hgcommon so the device runs THIS rule and not a second copy of
     // it; keyed on the transition rather than on thread state, for the reason recorded there.
-    const bool survives = hgcommon::transition_survives(transition_key, random_seed_, rate);
+    const bool survives = hgcommon::transition_survives(
+        transition_key, random_seed_, rate, hgcommon::rank_step(step, rank_reads_step_));
     if (survives) HG_STAT(draws_survived_.fetch_add(1, std::memory_order_relaxed));
     return survives;
 }
@@ -1808,6 +1809,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
         explore_from_canonical_states_only_, full_states, max_states_per_step_);
     // "Generational" expands every state of its history.
     if (generational_) explore_from_canonical_states_only_ = false;
+    rank_reads_step_ = hgcommon::rank_reads_step(full_states, max_states_per_step_);
     const bool qc = full_states &&
                     hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
                                                        hg_->positional_event_identity(),
@@ -2236,7 +2238,7 @@ void ParallelEvolutionEngine::execute_match_task(
         if (defers_to_drain()) return;
         if (sampling_active() &&
             !transition_survives_spined(state, canonical_transition_key(state, match), 3,
-                                        match.rule_index())) return;
+                                        match.rule_index(), step)) return;
 
         if (batched_matching_) {
             batch.push_back(match);
@@ -2634,7 +2636,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     if (defers_to_drain()) return false;
     if (sampling_active() &&
         !transition_survives_spined(data.state, canonical_transition_key(data.state, match), 4,
-                                    match.rule_index())) return false;
+                                    match.rule_index(), data.step)) return false;
 
     out = match;
     return true;
@@ -3071,8 +3073,9 @@ bool ParallelEvolutionEngine::sampling_active() const {
                                      defers_to_drain() ? 1u : 0u);
 }
 
-uint64_t ParallelEvolutionEngine::spine_rank(uint64_t canonical_key) const {
-    return hgcommon::transition_rank(canonical_key, random_seed_, 0u);
+uint64_t ParallelEvolutionEngine::spine_rank(uint64_t canonical_key, uint32_t step) const {
+    return hgcommon::transition_rank(canonical_key, random_seed_,
+                                     hgcommon::rank_step(step, rank_reads_step_));
 }
 
 uint64_t ParallelEvolutionEngine::lineage_key(uint16_t rule, const EdgeId* edges,
@@ -3143,8 +3146,7 @@ MatchRecord ParallelEvolutionEngine::held_record(const HeldMatches& set, uint32_
 
 uint64_t ParallelEvolutionEngine::selection_rank(StateId state, const MatchRecord& match,
                                                  uint32_t step, uint64_t* key) {
-    const uint32_t rs =
-        hgcommon::rank_step(step, static_cast<uint32_t>(max_states_per_step_ != 0));
+    const uint32_t rs = hgcommon::rank_step(step, rank_reads_step_);
     if (max_states_per_step_ != 0 && step_cap_counts_matches_) {
         const hgcommon::StepOrder o = step_order(state, match);
         *key = o.key;

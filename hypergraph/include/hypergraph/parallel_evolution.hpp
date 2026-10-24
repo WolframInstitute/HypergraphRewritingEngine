@@ -938,6 +938,9 @@ private:
     // (hgcommon::lineage_edge, lineage_state), written once when the edge or state is made and
     // read after the job that publishes it.
     bool lineage_on_{false};
+    // hgcommon::rank_reads_step: 1 under a step cap or under None or Automatic states, where the
+    // ranks and draws read the step. Set in configure.
+    uint32_t rank_reads_step_{0};
     SegmentedArray<uint64_t> edge_labels_;
     SegmentedArray<uint64_t> state_labels_;
     // Labels a root and its edges from its canonical hash and edge ranks.
@@ -1184,7 +1187,7 @@ public:
     // by REACHABILITY (a coin cannot fire on a transition whose source was never created), not
     // by per-transition survival. Seeding the spine attacks reachability directly: each seed
     // keeps a different one-per-state skeleton.
-    uint64_t spine_rank(uint64_t canonical_key) const;
+    uint64_t spine_rank(uint64_t canonical_key, uint32_t step) const;
 
     // The order of a transition under "MatchesPerStep" (hgcommon::StepOrder): under None states
     // the source state's lineage label and the transition's lineage key, otherwise 0 and the
@@ -1618,7 +1621,7 @@ private:
     // has a survivor; a failing draw on a state that has already drained with NO survivor is
     // forced through instead (the late spine). See MatchJoin.
     bool transition_survives_spined(StateId source, uint64_t canonical_key, int site,
-                                   uint16_t rule);
+                                   uint16_t rule, uint32_t step);
 
     // At a state's drain with sampling active and no survivor spawned: submit the stored match
     // with the minimum canonical transition key, so every reachable state keeps at least one
@@ -1677,7 +1680,8 @@ private:
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both
     // forwarding paths -- consults exactly this.
-    bool transition_survives(uint64_t transition_key, int site, uint16_t rule) const;
+    bool transition_survives(uint64_t transition_key, int site, uint16_t rule,
+                             uint32_t step) const;
 
 
     // Books one match task's completion however its function exits.

@@ -301,12 +301,14 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
     EdgeId edges[kMaxPatternEdges];
     for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
     for (uint8_t d = 0; d < depth; ++d) edges[pattern[d]] = matched[d];
-    // The draw keys on the transition key; the caps and the spine order by selection rank, which
-    // without a step cap is transition_rank of the same key at step 0.
+    // The draw keys on the transition key and the event's step (rank_step); the caps and the
+    // spine order by selection rank, which without a step cap is transition_rank of the same key
+    // and step.
+    const uint32_t rs = hgcommon::rank_step(step + 1u, ds.rank_reads_step);
     uint64_t key = 0, r = 0;
     if (c.mode == EmitMode::kDraw || c.mode == EmitMode::kSpineEmit) {
         key = transition_key_device(ds, state_id, rid, edges, depth);
-        r = hgcommon::transition_rank(key, ds.sampling_seed, 0u);
+        r = hgcommon::transition_rank(key, ds.sampling_seed, rs);
     } else {
         r = selection_rank_device(ds, state_id, rid, edges, depth, step + 1u);
     }
@@ -324,7 +326,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         atomicMin(c.s_min_rank, static_cast<unsigned long long>(r));
         const double rate = hgcommon::sampling_rate_for_rule(
             ds.transition_rate, ds.rule_weights, ds.num_rule_weights, rid);
-        if (!hgcommon::transition_survives(key, ds.sampling_seed, rate)) return false;
+        if (!hgcommon::transition_survives(key, ds.sampling_seed, rate, rs)) return false;
         atomicExch(c.s_survived, 1u);
         return true;
     }
