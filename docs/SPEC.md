@@ -198,7 +198,7 @@ exact configuration. Sampling and capping options refine this as follows:
 - **The step in a step cap.** Under `MaxStatesPerStep` and `MatchesPerStep` every state is
   matched at one step, and every rank and every draw of positions mixes in the step of the
   events the transitions make (`hgcommon::rank_step`). A history that returns to an isomorphic
-  state chooses again there instead of repeating its earlier choice.
+  state draws its choice there again.
 - **Lineage labels.** Under `None` states with `MatchesPerStep` every edge and state carries a
   64-bit label fixed when it is made (`hgcommon::lineage_*`). An initial state's label is a hash
   of its canonical hash, and its edges' labels hash that label with each edge's canonical rank.

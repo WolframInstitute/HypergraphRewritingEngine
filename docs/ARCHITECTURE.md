@@ -275,11 +275,12 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   positions drawn from the seed and the step (`select_positions`). Step s + 1 holds a token until
   that selection is in, so a capped run's steps complete in order. Under None states with no
   other drain selection the selection hands each state's set to the children it makes (a copy to
-  all but the last), and a child updates it instead of matching its state (`match_held`): the
-  matches on a consumed edge are dropped through the set's per-edge lists, and the matches on a
-  produced edge are found by matching around those edges over the set's vertex adjacency
-  (`AncestryCandidates::flat`). A step then costs the matches that touch its event. On the device the block that finishes a step's last piece of work
-  makes the same selection. A transition not kept is not taken.
+  all but the last), and the child's match task updates it (`match_held`): the matches on a
+  consumed edge are dropped through the set's per-edge lists, and the matches on a produced edge
+  are found by matching around those edges over the set's vertex adjacency
+  (`AncestryCandidates::flat`). A step then costs the matches that touch its event. On the
+  device the block that finishes a step's last piece of work makes the same selection. A
+  transition not kept is not taken.
 
 Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;
 the drain fires once per state), `RuleWeights.*`.
