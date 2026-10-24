@@ -60,6 +60,15 @@ public:
         return false;
     }
 
+    // Whether an entry with `key` for which same(value) holds is present.
+    template <class Same>
+    bool contains(uint64_t key, Same&& same) const {
+        const std::vector<Entry>& v = buckets_[bucket_of(key)];
+        for (size_t i = lower(v, key); i < v.size() && v[i].key == key; ++i)
+            if (same(v[i].value)) return true;
+        return false;
+    }
+
     // The entry at position p (0 <= p < size()) in key order, and the positions [*lo, *hi) of the
     // entries whose key equals it.
     const Entry& select(uint64_t p, uint64_t* lo, uint64_t* hi) const {

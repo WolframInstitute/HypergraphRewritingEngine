@@ -244,18 +244,140 @@ struct ExpandChunk {
 // Every field initialised and no padding (fields ordered by size, counts widened to 16 bits): a
 // context is copied whole, and a copy of an object with an unwritten byte reads an
 // indeterminate value, which the model checker reports.
+struct HeldMatches;
+
 struct MatchContext {
     StateId parent_state{INVALID_ID};
     EdgeId consumed_edges[MAX_PATTERN_EDGES]{};
     EdgeId produced_edges[MAX_PATTERN_EDGES]{};
     uint16_t num_consumed{0};
     uint16_t num_produced{0};
+    // The parent's held match set, handed to this child (ParallelEvolutionEngine::match_held);
+    // null when the child matches its state itself.
+    HeldMatches* held{nullptr};
     bool has_parent() const;
     bool edge_was_consumed(EdgeId eid) const;
     bool edge_was_produced(EdgeId eid) const;
 };
-static_assert(sizeof(MatchContext) == sizeof(StateId) + 2 * sizeof(EdgeId) * MAX_PATTERN_EDGES + 2 + 2,
+static_assert(sizeof(MatchContext) == sizeof(StateId) + 2 * sizeof(EdgeId) * MAX_PATTERN_EDGES +
+                                          2 + 2 + sizeof(HeldMatches*),
               "MatchContext has padding");
+
+// "MatchesPerStep" under None states with no other drain selection
+// (ParallelEvolutionEngine::inherit_matches_): the match set of a state, handed to the child its
+// step's selection rewrites, which updates it by the rewrite's consumed and produced edges
+// (match_held). It also holds the blocks of every other "MatchesPerStep" step selection
+// (select_positions). Each match is held by its step-order key in `order` as a slab slot of
+// `stride` words: the rule and the edge count, the key's low and high words, the slot's
+// generation, then the matched edges in pattern order; the slots of dropped matches are reused,
+// each reuse a new generation. A handed-on set (`handed`) also lists the matches on each edge
+// (`by_edge`, slot and generation) and the state's edges at each vertex (`adjacency`, read by
+// AncestryCandidates::flat). A dropped match's entries in the lists of its other edges stay until
+// a list is more than half such entries, when it is compacted, so a drop costs O(1) per edge
+// amortised.
+struct HeldMatches {
+    HeldMatches(uint32_t max_lhs, bool handed_on) : stride(4u + max_lhs), handed(handed_on) {}
+
+    struct EdgeMatches {
+        std::vector<uint64_t> entries;   // slot | generation << 32
+        uint32_t live = 0;
+    };
+
+    KeyOrderIndex<uint32_t> order;
+    std::vector<uint32_t> slab;
+    std::vector<uint32_t> free_slots;
+    uint32_t stride;
+    bool handed;
+    std::vector<EdgeMatches> by_edge;
+    std::vector<std::vector<EdgeId>> adjacency;
+
+    uint16_t rule_at(uint32_t slot) const { return static_cast<uint16_t>(slab[slot] & 0xFFFFu); }
+    uint8_t count_at(uint32_t slot) const { return static_cast<uint8_t>(slab[slot] >> 16); }
+    uint64_t key_at(uint32_t slot) const {
+        return slab[slot + 1] | (static_cast<uint64_t>(slab[slot + 2]) << 32);
+    }
+    uint32_t generation_at(uint32_t slot) const { return slab[slot + 3]; }
+    const EdgeId* edges_at(uint32_t slot) const { return &slab[slot + 4]; }
+    bool same(uint32_t slot, uint16_t rule, const EdgeId* edges, uint8_t n) const {
+        if (rule_at(slot) != rule || count_at(slot) != n) return false;
+        for (uint8_t i = 0; i < n; ++i)
+            if (slab[slot + 4 + i] != edges[i]) return false;
+        return true;
+    }
+    // Holds the match under `key` unless it is held; false when it was.
+    bool add(uint64_t key, uint16_t rule, const EdgeId* edges, uint8_t n) {
+        if (order.contains(key, [&](uint32_t s) { return same(s, rule, edges, n); })) return false;
+        uint32_t slot;
+        if (!free_slots.empty()) {
+            slot = free_slots.back();
+            free_slots.pop_back();
+        } else {
+            slot = static_cast<uint32_t>(slab.size());
+            slab.resize(slab.size() + stride, 0u);
+        }
+        slab[slot] = rule | (static_cast<uint32_t>(n) << 16);
+        slab[slot + 1] = static_cast<uint32_t>(key);
+        slab[slot + 2] = static_cast<uint32_t>(key >> 32);
+        for (uint8_t i = 0; i < n; ++i) slab[slot + 4 + i] = edges[i];
+        order.insert(key, slot);
+        if (handed) {
+            const uint64_t entry = slot | (static_cast<uint64_t>(generation_at(slot)) << 32);
+            for (uint8_t i = 0; i < n; ++i) {
+                if (by_edge.size() <= edges[i]) by_edge.resize(static_cast<size_t>(edges[i]) + 1);
+                by_edge[edges[i]].entries.push_back(entry);
+                ++by_edge[edges[i]].live;
+            }
+        }
+        return true;
+    }
+    // Drops every held match that uses edge `e` (a handed-on set).
+    void drop_edge(EdgeId e) {
+        if (e >= by_edge.size()) return;
+        std::vector<uint64_t> entries;
+        entries.swap(by_edge[e].entries);
+        by_edge[e].live = 0;
+        for (const uint64_t entry : entries) {
+            const uint32_t slot = static_cast<uint32_t>(entry);
+            if (generation_at(slot) != static_cast<uint32_t>(entry >> 32)) continue;   // dropped
+            order.erase(key_at(slot), [&](uint32_t s) { return s == slot; });
+            const EdgeId* edges = edges_at(slot);
+            for (uint8_t i = 0; i < count_at(slot); ++i)
+                if (edges[i] != e) --by_edge[edges[i]].live;
+            ++slab[slot + 3];
+            free_slots.push_back(slot);
+            for (uint8_t i = 0; i < count_at(slot); ++i)
+                if (edges[i] != e) compact(edges[i]);
+        }
+    }
+    // Drops the entries of dropped matches from edge f's list once they are more than half.
+    void compact(EdgeId f) {
+        EdgeMatches& m = by_edge[f];
+        if (m.entries.size() <= 2u * m.live + 8u) return;
+        size_t w = 0;
+        for (const uint64_t entry : m.entries)
+            if (generation_at(static_cast<uint32_t>(entry)) == static_cast<uint32_t>(entry >> 32))
+                m.entries[w++] = entry;
+        m.entries.resize(w);
+    }
+    // Edge `e` with vertices `v[0..arity)` enters or leaves the state, at each distinct vertex.
+    void link(EdgeId e, const VertexId* v, uint8_t arity) {
+        for (uint8_t i = 0; i < arity; ++i) {
+            if (std::find(v, v + i, v[i]) != v + i) continue;
+            if (adjacency.size() <= v[i]) adjacency.resize(static_cast<size_t>(v[i]) + 1);
+            adjacency[v[i]].push_back(e);
+        }
+    }
+    void unlink(EdgeId e, const VertexId* v, uint8_t arity) {
+        for (uint8_t i = 0; i < arity; ++i) {
+            if (std::find(v, v + i, v[i]) != v + i) continue;
+            std::vector<EdgeId>& at = adjacency[v[i]];
+            const auto it = std::find(at.begin(), at.end(), e);
+            if (it == at.end()) continue;
+            *it = at.back();
+            at.pop_back();
+        }
+    }
+};
 
 // =============================================================================
 // SCAN/EXPAND Task Data Structures (HGMatch Dataflow Model)
@@ -788,14 +910,27 @@ private:
 
     // "MatchesPerStep" without "StateCost": the transitions a state's drain keeps, by their
     // step-order key, and the state's step-order group (hgcommon::StepOrder). select_positions
-    // reads the step's blocks and deletes their indices; drop_blocks deletes the indices of
-    // blocks no selection read.
-    using OrderIndex = KeyOrderIndex<const MatchRecord*>;
+    // reads the step's blocks and hands their sets to the rewrites or deletes them; drop_blocks
+    // deletes the sets of blocks no selection read.
     struct OrderBlock {
         uint64_t group;
         StateId state;
-        OrderIndex* index;
+        HeldMatches* set;
     };
+    // Whether a "MatchesPerStep" step's selection hands each kept transition's state's match set
+    // to the child it makes (HeldMatches): None states, no "StateCost", no per-state cap, no
+    // ExplorationProbability, and no forwarding validation.
+    bool inherit_matches_{false};
+    // The most left-hand-side edges of any rule: a held match's slab stride, less one.
+    uint32_t max_lhs_edges_{0};
+    // The child's match set from the parent's (ctx.held): the parent's matches that use a
+    // consumed edge go (HeldMatches::drop_edge), and the child's that use a produced edge come,
+    // found by matching around those edges over the set's adjacency. Its own match task,
+    // synchronous.
+    void match_held(StateId state, const MatchContext& ctx);
+    // A rewrite's record of held match `slot` of `set` at `state`: its core, with the binding
+    // its edges give (hgcommon::bind_matched_edges), in step `step`'s match arena.
+    MatchRecord held_record(const HeldMatches& set, uint32_t slot, StateId state, uint32_t step);
     // Under None states with "MatchesPerStep": each edge's and each state's lineage label
     // (hgcommon::lineage_edge, lineage_state), written once when the edge or state is made and
     // read after the job that publishes it.
@@ -807,7 +942,7 @@ private:
     // Labels the edges and the state a rewrite of `match` made.
     void label_rewrite(const MatchRecord& match, StateId child, const EdgeId* produced,
                        uint8_t num_produced);
-    uint64_t lineage_key(const MatchRecord& match) const;
+    uint64_t lineage_key(uint16_t rule, const EdgeId* edges, uint8_t n) const;
 
     // MATCH STORAGE BY STEP. When match_epochs_on_ is set, everything a match task at step t
     // allocates for its matches -- each new match's MatchCore and stable MatchRecord, the dedup
@@ -942,6 +1077,8 @@ public:
     // explicitly owns it from that point: the setter is the override, not a hint.
     void set_match_forwarding(bool enable);
     void set_batched_matching(bool enable);
+    // Each state's drain re-matches it in full and compares. A held match set is not handed on
+    // under it (inherit_matches_), so every state of a "MatchesPerStep" run matches itself.
     void set_validate_match_forwarding(bool enable);
 
     // Enable online transitive reduction for causal edges (Goranci algorithm)
@@ -1367,8 +1504,11 @@ private:
     void submit_match_task(StateId state, uint32_t step);
     void submit_match_task_with_context(StateId state, uint32_t step, const MatchContext& ctx);
     // `booked_at` is the depth the task is counted at: its own step, or the step above for a
-    // rewrite the per-step selection submits after its own step has settled.
-    void submit_rewrite_task(const MatchRecord& match, uint32_t step, uint32_t booked_at);
+    // rewrite the per-step selection submits after its own step has settled. `held`, when not
+    // null, is the source state's match set, which the rewrite hands to the child it makes
+    // (MatchContext::held) or deletes.
+    void submit_rewrite_task(const MatchRecord& match, uint32_t step, uint32_t booked_at,
+                             HeldMatches* held = nullptr);
     void submit_rewrite_task(const MatchRecord& match, uint32_t step) {
         submit_rewrite_task(match, step, step);
     }
@@ -1401,7 +1541,8 @@ private:
     // `out` is ready to rewrite. The caller batches these rather than tasking each one -- the
     // work here is a hash insert and two list pushes, less than the cost of scheduling it.
     bool complete_match(const ExpandTaskData& data, MatchRecord& out);
-    void execute_rewrite_task(const MatchRecord& match, uint32_t step);
+    void execute_rewrite_task(const MatchRecord& match, uint32_t step,
+                              HeldMatches* held = nullptr);
 
     // Per-state match join. The two ordering rules below are what make the drain exact, and
     // both are invariants rather than observations:

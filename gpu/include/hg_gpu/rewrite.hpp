@@ -1,6 +1,7 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 
+#include "hgcommon/rewrite_core.hpp"   // bind_matched_edges
 #include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/match.hpp"
@@ -51,13 +52,16 @@ template <class Out>
 __device__ inline void bind_matched_vertices(const DeviceState& ds, const DeviceRule& rule,
                                              const EdgeId* matched, Out* binding) {
     for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = INVALID_ID;
-    for (uint8_t p = 0; p < rule.num_lhs_edges; ++p) {
-        const EdgeId dedge = matched[p];
-        if (dedge == INVALID_ID) continue;
-        const Edge& e = ds.edge_pool.at(dedge);
-        for (uint8_t i = 0; i < rule.lhs[p].arity && i < e.arity; ++i)
-            binding[rule.lhs[p].vars[i]] = ds.vertex_pool.at(e.vertex_offset + i);
-    }
+    hgcommon::bind_matched_edges(
+        rule.num_lhs_edges, [&](uint32_t p) { return uint32_t{rule.lhs[p].arity}; },
+        [&](uint32_t p, uint32_t i) { return rule.lhs[p].vars[i]; },
+        [&](uint32_t p) {
+            return matched[p] == INVALID_ID ? 0u : uint32_t{ds.edge_pool.at(matched[p]).arity};
+        },
+        [&](uint32_t p, uint32_t i) {
+            return ds.vertex_pool.at(ds.edge_pool.at(matched[p]).vertex_offset + i);
+        },
+        [&](uint32_t var, VertexId v) { binding[var] = v; });
 }
 
 struct AppliedMatch {

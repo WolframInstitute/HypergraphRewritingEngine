@@ -1488,3 +1488,44 @@ TEST(SamplingReproducibility, MatchesPerStepUnderNoneStatesIsTheSameAtEveryWorke
             EXPECT_EQ(run(threads), one) << n << " per step at " << threads << " workers";
     }
 }
+
+// "MatchesPerStep" under None states hands each kept transition's state's match set to the child
+// it makes, which updates it by the rewrite's consumed and produced edges. The run equals the one
+// whose every drain builds its set from a full match of its state (forwarding validation turns
+// the hand-on off): the same events, step by step, for one and three transitions per step, at 1
+// and 4 workers. Rule {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}} on a 4 x 4 torus.
+TEST(SamplingReproducibility, AHandedOnMatchSetGivesTheEventsOfAFullMatch) {
+    std::vector<std::vector<VertexId>> torus;
+    for (VertexId r = 0; r < 4; ++r)
+        for (VertexId c = 0; c < 4; ++c) {
+            torus.push_back({r * 4 + c, r * 4 + (c + 1) % 4});
+            torus.push_back({r * 4 + c, ((r + 1) % 4) * 4 + c});
+        }
+    auto run = [&](size_t n, size_t threads, bool handed) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).lhs({2, 3}).lhs({3, 4})
+                       .rhs({1, 5}).rhs({5, 4}).rhs({3, 0}).rhs({0, 5}).build());
+        e.set_matches_per_step(n);
+        e.set_random_seed(5);
+        if (!handed) e.set_validate_match_forwarding(true);
+        e.evolve(torus, 40);
+        std::map<uint32_t, std::multiset<uint64_t>> by_step;
+        std::vector<EdgeId> consumed;
+        for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+            const Event& x = hg.get_event(ev);
+            if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+            by_step[hg.get_state(x.output_state).step].insert(
+                hg.get_or_compute_canonical_hash(x.output_state));
+            if (threads == 1)
+                for (uint8_t i = 0; i < x.num_consumed; ++i) consumed.push_back(x.consumed_edges[i]);
+        }
+        EXPECT_GT(hg.num_events(), 30 * n);
+        return std::make_pair(by_step, consumed);
+    };
+    for (size_t n : {size_t(1), size_t(3)})
+        for (size_t threads : {size_t(1), size_t(4)})
+            EXPECT_EQ(run(n, threads, true), run(n, threads, false))
+                << n << " per step at " << threads << " workers";
+}

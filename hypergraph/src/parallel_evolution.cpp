@@ -651,8 +651,17 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     uint32_t step,
     const MatchContext& ctx
 ) {
-    if (should_stop_.load(std::memory_order_relaxed)) { defer_cut_match_task(state, step); return; }
-    if (step > match_budget()) { defer_match_task(state, step); return; }
+    // A deferred state is matched in full when it resumes, so it takes no held set.
+    if (should_stop_.load(std::memory_order_relaxed)) {
+        delete ctx.held;
+        defer_cut_match_task(state, step);
+        return;
+    }
+    if (step > match_budget()) {
+        delete ctx.held;
+        defer_match_task(state, step);
+        return;
+    }
 
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
@@ -670,11 +679,20 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
 }
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step,
-                                                  uint32_t booked_at) {
-    if (should_stop_.load(std::memory_order_relaxed)) { defer_rewrite_task(match, step); return; }
+                                                  uint32_t booked_at, HeldMatches* held) {
+    // A deferred rewrite's child matches its state itself, so it takes no held set.
+    if (should_stop_.load(std::memory_order_relaxed)) {
+        delete held;
+        defer_rewrite_task(match, step);
+        return;
+    }
     // Past the budget: the match is already stored on its state, so dropping the rewrite would
     // strand it -- the state's own matching will not re-offer a match it already holds.
-    if (step > step_budget()) { defer_rewrite_task(match, step); return; }
+    if (step > step_budget()) {
+        delete held;
+        defer_rewrite_task(match, step);
+        return;
+    }
 
     DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index(), step);
 
@@ -682,9 +700,9 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
     // one that matches on it -- so the depth join is where it is counted.
     note_depth_task_pushed(booked_at);
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, match, step, booked_at]() {
+        [this, match, step, booked_at, held]() {
             DepthTaskGuard depth_guard(*this, booked_at);
-            execute_rewrite_task(match, step);
+            execute_rewrite_task(match, step, held);
         },
         EvolutionJobType::REWRITE
     );
@@ -920,26 +938,41 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
 // (select_step). A transition not kept is not taken: no rewrite, no event, no state. Each is a
 // pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
-    std::vector<RankedMatch> cands;
-    drain_candidates(state, step, cands);
     const size_t k = max_successor_states_per_parent_;
     const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
     if (max_states_per_step_ != 0 && step_cap_counts_matches_ && !costed) {
         // MatchesPerStep: the state's kept transitions go to the step as one block in step
-        // order.
-        if (k != 0) {
-            for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
-            keep_lowest_successors(cands, k);
-        }
+        // order. A child handed its parent's set holds it already (match_held); any other state
+        // holds the transitions its drain keeps, and under inherit_matches_ its adjacency.
         DepthExtra* x = depth_join_.storage().find_extra(step);
         if (!x) return;
-        auto* index = new OrderIndex();
-        for (const RankedMatch& c : cands) index->insert(c.key, c.match);
+        MatchJoin* join = match_join_for(state);
+        HeldMatches* set = join->held;
+        join->held = nullptr;
+        if (!set) {
+            std::vector<RankedMatch> cands;
+            drain_candidates(state, step, cands);
+            if (k != 0) {
+                for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
+                keep_lowest_successors(cands, k);
+            }
+            set = new HeldMatches(max_lhs_edges_, inherit_matches_);
+            for (const RankedMatch& c : cands)
+                set->add(c.key, c.match->rule_index(), c.match->matched_edges(),
+                         c.match->num_edges());
+            if (inherit_matches_)
+                hg_->get_state(state).edges.for_each([&](EdgeId e) {
+                    const Edge& edge = hg_->get_edge(e);
+                    set->link(e, edge.vertices, edge.arity);
+                });
+        }
         const uint64_t group = lineage_on_ ? *state_labels_.find(state) : 0u;
-        x->blocks.push(OrderBlock{group, state, index}, match_arena(step));
-        HG_STAT(step_candidates_offered_.fetch_add(cands.size(), std::memory_order_relaxed));
+        HG_STAT(step_candidates_offered_.fetch_add(set->order.size(), std::memory_order_relaxed));
+        x->blocks.push(OrderBlock{group, state, set}, match_arena(step));
         return;
     }
+    std::vector<RankedMatch> cands;
+    drain_candidates(state, step, cands);
     if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_) || costed)
         for (RankedMatch& c : cands)
             c.succ = successor_identity(state, *c.match, costed ? &c.cost : nullptr);
@@ -1066,47 +1099,48 @@ void ParallelEvolutionEngine::select_positions(uint32_t step, DepthExtra& x) {
     std::sort(blocks.begin(), blocks.end(),
               [](const OrderBlock& a, const OrderBlock& b) { return a.group < b.group; });
     uint64_t total = 0;
-    for (const OrderBlock& b : blocks) total += b.index->size();
+    for (const OrderBlock& b : blocks) total += b.set->order.size();
     std::vector<uint64_t> pos(std::min<uint64_t>(max_states_per_step_, total));
     const uint32_t n = hgcommon::step_positions(random_seed_, step, total,
                                                 static_cast<uint32_t>(pos.size()), pos.data());
-    uint64_t kept = 0;
-    auto submit = [&](const MatchRecord* rec, StateId state) {
-        MatchRecord m = *rec;
-        m.is_forwarded = m.source_state != state ? 1u : 0u;
-        m.source_state = state;
-        submit_rewrite_task(m, step, step + 1);
-        ++kept;
+    struct Kept {
+        size_t block;
+        uint32_t slot;
     };
+    std::vector<Kept> kept;
     uint32_t next = 0;   // the first position not yet taken
     uint64_t offset = 0;
     for (size_t g = 0; g < blocks.size();) {
         size_t h = g + 1;
         while (h < blocks.size() && blocks[h].group == blocks[g].group) ++h;
         uint64_t size = 0;
-        for (size_t i = g; i < h; ++i) size += blocks[i].index->size();
+        for (size_t i = g; i < h; ++i) size += blocks[i].set->order.size();
         if (h == g + 1) {
-            const OrderBlock& b = blocks[g];
+            const HeldMatches& set = *blocks[g].set;
             uint64_t taken_hi = 0;
             for (; next < n && pos[next] < offset + size; ++next) {
                 const uint64_t p = pos[next] - offset;
                 if (p < taken_hi) continue;   // in the tie run already kept
                 uint64_t lo = 0, hi = 0;
-                b.index->select(p, &lo, &hi);
+                set.order.select(p, &lo, &hi);
                 for (uint64_t q = lo; q < hi; ++q) {
                     uint64_t l2, h2;
-                    submit(b.index->select(q, &l2, &h2).value, b.state);
+                    kept.push_back(Kept{g, set.order.select(q, &l2, &h2).value});
                 }
                 taken_hi = hi;
             }
         } else if (next < n && pos[next] < offset + size) {
             // Equal groups: the blocks' entries merged by key.
-            struct Merged { uint64_t key; const MatchRecord* rec; StateId state; };
+            struct Merged {
+                uint64_t key;
+                size_t block;
+                uint32_t slot;
+            };
             std::vector<Merged> run;
             run.reserve(size);
             for (size_t i = g; i < h; ++i)
-                blocks[i].index->for_each([&](const OrderIndex::Entry& e) {
-                    run.push_back(Merged{e.key, e.value, blocks[i].state});
+                blocks[i].set->order.for_each([&](const KeyOrderIndex<uint32_t>::Entry& e) {
+                    run.push_back(Merged{e.key, i, e.value});
                 });
             std::sort(run.begin(), run.end(),
                       [](const Merged& a, const Merged& b) { return a.key < b.key; });
@@ -1117,19 +1151,41 @@ void ParallelEvolutionEngine::select_positions(uint32_t step, DepthExtra& x) {
                 uint64_t lo = p, hi = p + 1;
                 while (lo > 0 && run[lo - 1].key == run[p].key) --lo;
                 while (hi < run.size() && run[hi].key == run[p].key) ++hi;
-                for (uint64_t q = lo; q < hi; ++q) submit(run[q].rec, run[q].state);
+                for (uint64_t q = lo; q < hi; ++q) kept.push_back(Kept{run[q].block, run[q].slot});
                 taken_hi = hi;
             }
         }
         offset += size;
         g = h;
     }
-    for (const OrderBlock& b : blocks) delete b.index;
-    if (kept) HG_STAT(stats_.mine().spine_forced.bump(kept));
+    // Every record is read before any set is handed on, since a rewrite updates the set it is
+    // handed. Under inherit_matches_ a block's set goes to its last kept transition and a copy
+    // to each of the others; a set no rewrite takes is deleted.
+    std::vector<MatchRecord> records;
+    records.reserve(kept.size());
+    std::vector<uint32_t> left(blocks.size(), 0);
+    for (const Kept& k : kept) {
+        records.push_back(held_record(*blocks[k.block].set, k.slot, blocks[k.block].state, step));
+        ++left[k.block];
+    }
+    std::vector<HeldMatches*> handed(kept.size(), nullptr);
+    for (size_t b = 0; b < blocks.size(); ++b)
+        if (!inherit_matches_ || left[b] == 0) {
+            delete blocks[b].set;
+            blocks[b].set = nullptr;
+        }
+    if (inherit_matches_)
+        for (size_t i = 0; i < kept.size(); ++i) {
+            const size_t b = kept[i].block;
+            handed[i] = --left[b] == 0 ? blocks[b].set : new HeldMatches(*blocks[b].set);
+        }
+    for (size_t i = 0; i < kept.size(); ++i)
+        submit_rewrite_task(records[i], step, step + 1, handed[i]);
+    if (!kept.empty()) HG_STAT(stats_.mine().spine_forced.bump(kept.size()));
 }
 
 void ParallelEvolutionEngine::drop_blocks(DepthExtra& x) {
-    x.blocks.for_each([](const OrderBlock& b) { delete b.index; });
+    x.blocks.for_each([](const OrderBlock& b) { delete b.set; });
     x.blocks.reset();
 }
 
@@ -1649,6 +1705,14 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // Under None states "MatchesPerStep" orders transitions by lineage (hgcommon::StepOrder).
     lineage_on_ = max_states_per_step_ != 0 && step_cap_counts_matches_ &&
                   hg_->state_canonicalization_mode() == StateCanonicalizationMode::None;
+    // A step's selection hands each kept transition's state's matches to its child when nothing
+    // else chooses among a state's matches at its drain.
+    inherit_matches_ = lineage_on_ && !hgcommon::state_cost_active(state_cost_) &&
+                       matches_per_state_rule_ == 0 && max_successor_states_per_parent_ == 0 &&
+                       exploration_probability_ >= 1.0 && !validate_match_forwarding_;
+    max_lhs_edges_ = 0;
+    for (const RewriteRule& r : rules_)
+        max_lhs_edges_ = std::max<uint32_t>(max_lhs_edges_, r.num_lhs_edges);
     // Quotient exploration is defined over Full classes (docs/SPEC.md §5.4) and is not applied
     // under None or Automatic states or under MaxStatesPerStep: every state is expanded. The FFI
     // reports it (QuotientNeedsFull, QuotientStepCap).
@@ -1791,8 +1855,11 @@ bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {
 // REWRITE Task Execution
 // =============================================================================
 
-void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uint32_t step) {
+void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uint32_t step,
+                                                   HeldMatches* held) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
+    // The source state's match set goes to the child, or is deleted on any return before it.
+    std::unique_ptr<HeldMatches> own_held(held);
 
     // A stop keeps this rewrite for a continuation (kept only on a continuable run), as the
     // limits below do when they are what stops the run.
@@ -1895,6 +1962,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         for (uint8_t i = 0; i < rr.num_produced; ++i) {
             ctx.produced_edges[i] = rr.produced_edges[i];
         }
+        ctx.held = own_held.release();
 
         // Quotient exploration: record the canonical transition, then relax the child's
         // depth. Expansion is driven by relaxation, so a state is matched once, at the
@@ -1992,9 +2060,15 @@ void ParallelEvolutionEngine::execute_match_task(
     // submit time, so an early return here still has to be accounted for.
     MatchTaskGuard join_guard(*this, state, step);
 
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > match_budget()) return;
-
+    // A state cut short is matched in full when it resumes, so a held set is dropped.
+    if (should_stop_.load(std::memory_order_relaxed) || step > match_budget()) {
+        delete ctx.held;
+        return;
+    }
+    if (ctx.held) {
+        match_held(state, ctx);
+        return;
+    }
 
     const State& s = hg_->get_state(state);
     const AncestryCandidates cands{hg_, state, &s.edges};
@@ -2908,17 +2982,70 @@ uint64_t ParallelEvolutionEngine::spine_rank(uint64_t canonical_key) const {
     return hgcommon::transition_rank(canonical_key, random_seed_, 0u);
 }
 
-uint64_t ParallelEvolutionEngine::lineage_key(const MatchRecord& match) const {
+uint64_t ParallelEvolutionEngine::lineage_key(uint16_t rule, const EdgeId* edges,
+                                              uint8_t n) const {
     uint64_t labels[MAX_PATTERN_EDGES];
-    const uint8_t n = match.num_edges();
-    for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i)
-        labels[i] = *edge_labels_.find(match.matched_edges()[i]);
-    return hgcommon::lineage_transition_key(match.rule_index(), labels, n);
+    for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i) labels[i] = *edge_labels_.find(edges[i]);
+    return hgcommon::lineage_transition_key(rule, labels, n);
 }
 
 hgcommon::StepOrder ParallelEvolutionEngine::step_order(StateId state, const MatchRecord& match) {
-    if (lineage_on_) return hgcommon::StepOrder{*state_labels_.find(state), lineage_key(match)};
+    if (lineage_on_)
+        return hgcommon::StepOrder{*state_labels_.find(state),
+                                   lineage_key(match.rule_index(), match.matched_edges(),
+                                               match.num_edges())};
     return hgcommon::StepOrder{0u, canonical_transition_key(state, match)};
+}
+
+void ParallelEvolutionEngine::match_held(StateId state, const MatchContext& ctx) {
+    HeldMatches& held = *ctx.held;
+    auto get_edge = [this](EdgeId eid) -> const Edge& { return hg_->get_edge(eid); };
+    auto get_signature = [this](EdgeId eid) -> const EdgeSignature& {
+        return hg_->edge_signature(eid);
+    };
+    // The parent's matches that use a consumed edge go.
+    for (uint16_t i = 0; i < ctx.num_consumed; ++i) {
+        const Edge& e = hg_->get_edge(ctx.consumed_edges[i]);
+        held.drop_edge(ctx.consumed_edges[i]);
+        held.unlink(ctx.consumed_edges[i], e.vertices, e.arity);
+    }
+    for (uint16_t i = 0; i < ctx.num_produced; ++i) {
+        const Edge& e = hg_->get_edge(ctx.produced_edges[i]);
+        held.link(ctx.produced_edges[i], e.vertices, e.arity);
+    }
+    // The child's matches that use a produced edge, over the child's adjacency. A match on k
+    // produced edges is found k times and held once.
+    const State& s = hg_->get_state(state);
+    const AncestryCandidates in_child{hg_, state, &s.edges, &held.adjacency};
+    for (uint16_t r = 0; r < rules_.size(); ++r)
+        find_delta_matches(rules_[r], r, state, s.edges, in_child, get_edge, get_signature,
+                           [&](uint16_t rule, const EdgeId* edges, uint8_t n,
+                               const VariableBinding&, StateId) {
+                               held.add(lineage_key(rule, edges, n), rule, edges, n);
+                           },
+                           ctx.produced_edges, static_cast<uint8_t>(ctx.num_produced));
+    HG_STAT(stats_.mine().delta_pattern_matches.bump(1));
+    match_join_for(state)->held = ctx.held;
+}
+
+MatchRecord ParallelEvolutionEngine::held_record(const HeldMatches& set, uint32_t slot,
+                                                 StateId state, uint32_t step) {
+    MatchCore core;
+    core.rule_index = set.rule_at(slot);
+    core.num_edges = set.count_at(slot);
+    const EdgeId* edges = set.edges_at(slot);
+    for (uint8_t i = 0; i < core.num_edges; ++i) core.matched_edges[i] = edges[i];
+    const RewriteRule& rule = rules_[core.rule_index];
+    hgcommon::bind_matched_edges(
+        core.num_edges, [&](uint32_t p) { return uint32_t{rule.lhs[p].arity}; },
+        [&](uint32_t p, uint32_t i) { return rule.lhs[p].vars[i]; },
+        [&](uint32_t p) { return uint32_t{hg_->get_edge(edges[p]).arity}; },
+        [&](uint32_t p, uint32_t i) { return hg_->get_edge(edges[p]).vertices[i]; },
+        [&](uint32_t var, VertexId v) { core.binding.bind(static_cast<uint8_t>(var), v); });
+    MatchRecord m;
+    m.core = match_arena(step).template create<MatchCore>(core);
+    m.source_state = state;
+    return m;
 }
 
 uint64_t ParallelEvolutionEngine::selection_rank(StateId state, const MatchRecord& match,
@@ -2949,7 +3076,7 @@ void ParallelEvolutionEngine::label_root(StateId root) {
 
 void ParallelEvolutionEngine::label_rewrite(const MatchRecord& match, StateId child,
                                             const EdgeId* produced, uint8_t num_produced) {
-    const uint64_t key = lineage_key(match);
+    const uint64_t key = lineage_key(match.rule_index(), match.matched_edges(), match.num_edges());
     for (uint8_t j = 0; j < num_produced; ++j)
         edge_labels_.slot(produced[j], hg_->arena()) = hgcommon::lineage_edge(key, j);
     state_labels_.slot(child, hg_->arena()) =

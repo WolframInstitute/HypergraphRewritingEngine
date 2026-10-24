@@ -44,6 +44,21 @@ HG_HD inline uint8_t num_fresh_variables(uint32_t new_var_mask) {
     return static_cast<uint8_t>(popcount(new_var_mask));
 }
 
+// A match's binding from the edges it matched: variable i of left-hand-side edge p takes vertex
+// i of the edge matched at p. `lhs_arity(p)` and `lhs_var(p, i)` read the rule; `edge_arity(p)`
+// and `edge_vertex(p, i)` read the edge matched at p (arity 0 where position p matched none);
+// `bind(var, vertex)` records one binding. The device's bind_matched_vertices and the host's
+// held matches (ParallelEvolutionEngine::held_record) bind through this.
+template <class LhsArity, class LhsVar, class EdgeArity, class EdgeVertex, class Bind>
+HG_HD inline void bind_matched_edges(uint32_t num_lhs, LhsArity&& lhs_arity, LhsVar&& lhs_var,
+                                     EdgeArity&& edge_arity, EdgeVertex&& edge_vertex,
+                                     Bind&& bind) {
+    for (uint32_t p = 0; p < num_lhs; ++p) {
+        const uint32_t a = edge_arity(p);
+        for (uint32_t i = 0; i < lhs_arity(p) && i < a; ++i) bind(lhs_var(p, i), edge_vertex(p, i));
+    }
+}
+
 // Bind the rule's new variables to a consecutive block of fresh vertices, ascending by
 // variable index: the n-th new variable takes first_fresh + n. `fresh` is indexed BY VARIABLE
 // and must arrive filled with INVALID_ID; only the new variables' slots are written.

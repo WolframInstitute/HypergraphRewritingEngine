@@ -24,6 +24,10 @@
   rank that did not read the step, so a single history that returned to an isomorphic state took
   the same transition there again and repeated. `"MaxStatesPerStep"` ranks read the step as well.
   Every result of these two options changes.
+- A single history of `"UniformRandom" -> True` with `"MatchesPerStep" -> 1` under
+  `"CanonicalizeStates" -> None` costs, per step, the matches that touch the step's event rather
+  than a match of the whole state: 2.8e6 instead of 4.9e8 instructions per step on an 877-edge
+  state, 1.8e7 instead of 8.4e9 on a 3587-edge one.
 
 ## v1.0.0-rc2 (2026-10-09)
 

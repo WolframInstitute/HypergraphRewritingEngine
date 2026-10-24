@@ -12,6 +12,7 @@
 #include "hgcommon/namespace.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 #include "types.hpp"
 #include "signature.hpp"
 #include "bitset.hpp"
@@ -24,10 +25,19 @@ struct AncestryCandidates {
     const Hypergraph* hg;
     StateId state;
     const SparseBitset* edges;
+    // The state's edges at each vertex, when the caller keeps them (a held match set,
+    // HeldMatches::adjacency): read in place of the chain walk, whose cost grows with the
+    // chain's length.
+    const std::vector<std::vector<EdgeId>>* flat = nullptr;
 
     // Edges of the state containing `v`, each once, with the edge record.
     template <typename F>
     void for_each_edge_at(VertexId v, F&& visit) const {
+        if (flat) {
+            if (v < flat->size())
+                for (EdgeId e : (*flat)[v]) visit(e, hg->get_edge(e));
+            return;
+        }
         for (StateId s = state; s != INVALID_ID;) {
             const State& st = hg->get_state(s);
             const RootVertexEntry* b = st.vertex_index;
@@ -66,6 +76,10 @@ struct AncestryCandidates {
             if (edges->contains(eid) && signature_compatible(get_signature(eid), pattern_sig))
                 visit(eid);
         };
+        if (flat) {
+            edges->for_each(offer);
+            return;
+        }
         for (StateId s = state; s != INVALID_ID;) {
             const State& st = hg->get_state(s);
             if (st.parent_state == INVALID_ID) {

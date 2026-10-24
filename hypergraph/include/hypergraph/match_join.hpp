@@ -8,6 +8,8 @@
 namespace HG_NAMESPACE {
 namespace engine {
 
+struct HeldMatches;   // parallel_evolution.hpp
+
 // Per-state match-task join. See docs/ARCHITECTURE.md, Sampling.
 //
 // Matching one state is a tree of MATCH/SCAN/EXPAND tasks, so no single task sees all of that
@@ -56,6 +58,9 @@ struct MatchJoin {
     // forwarded draws; measured not to bite on the corpus.
     std::atomic<uint32_t> own_spawned{0};
     std::atomic<uint64_t> own_min_key{kNoSpine};
+    // The state's held match set (ParallelEvolutionEngine::match_held), written by its match
+    // task and read at its drain through note_completed's acq_rel chain. Null otherwise.
+    HeldMatches* held = nullptr;
 
     // Books a task before it can be seen.
     void note_pushed() { pushed.fetch_add(1, std::memory_order_release); }

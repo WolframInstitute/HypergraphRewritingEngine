@@ -79,6 +79,18 @@ __host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, b
             state_mode != CanonicalizationMode::Full) ? 1u : 0u;
 }
 
+// Whether the run reads transition keys, and so each state's exact hash and edge ranks: the
+// drain selections read them, except under "MatchesPerStep" with None states, whose order reads
+// lineage labels (DeviceState::edge_label) and a root's hash and ranks only for its labels; and
+// the coin of explore_reads_ranks reads them.
+__host__ __device__ inline uint32_t transition_keys_read(const DeviceState& ds, bool dedup,
+                                                         CanonicalizationMode state_mode) {
+    const uint32_t drain = hgcommon::drain_selects(ds.matches_per_state_rule,
+                                                   ds.max_successor_states_per_parent,
+                                                   ds.max_states_per_step);
+    return (ds.edge_label == nullptr ? drain : 0u) | explore_reads_ranks(ds, dedup, state_mode);
+}
+
 struct StepSelectScratch {
     uint64_t* rank;    // [cap] the step's candidate ranks
     uint32_t* idx;     // [cap] their candidate-pool indices
@@ -1274,15 +1286,11 @@ __global__ void k_persistent_evolve(
     // draw's key. One predicate answers it for the roots and for every child; see its note.
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                                  ds.transition_rate, ds.num_rule_weights,
-                                                 (hgcommon::drain_selects(ds.matches_per_state_rule,
-                                        ds.max_successor_states_per_parent,
-                                        ds.max_states_per_step) |
-                                         explore_reads_ranks(ds, dedup, state_mode)));
-    const bool need_exact = ds.record_invariants || run_needs_exact_hash(event_keys, ds.transition_rate,
-                                                 ds.num_rule_weights, (hgcommon::drain_selects(ds.matches_per_state_rule,
-                                        ds.max_successor_states_per_parent,
-                                        ds.max_states_per_step) |
-                                         explore_reads_ranks(ds, dedup, state_mode)));
+                                                 transition_keys_read(ds, dedup, state_mode));
+    const bool need_exact =
+        ds.record_invariants ||
+        run_needs_exact_hash(event_keys, ds.transition_rate, ds.num_rule_weights,
+                             transition_keys_read(ds, dedup, state_mode));
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -2598,11 +2606,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const DeviceState dsx = engine.device();
         const bool want_exact =
             state_mode != CanonicalizationMode::Full &&
-            (dsx.record_invariants || run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
-                                 (hgcommon::drain_selects(dsx.matches_per_state_rule,
-                                        dsx.max_successor_states_per_parent,
-                                        dsx.max_states_per_step) |
-                                         explore_reads_ranks(dsx, dedup, state_mode))));
+            (dsx.record_invariants || dsx.state_label != nullptr ||
+             run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
+                                  transition_keys_read(dsx, dedup, state_mode)));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -2616,10 +2622,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
         /*positional_events=*/false,
         hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,
-                                        (hgcommon::drain_selects(dsk.matches_per_state_rule,
-                                        dsk.max_successor_states_per_parent,
-                                        dsk.max_states_per_step) |
-                                         explore_reads_ranks(dsk, dedup, state_mode))));
+                                        transition_keys_read(dsk, dedup, state_mode)));
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
@@ -2858,16 +2861,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner->view(), state_mode,
-            dsv.record_invariants || run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
-                                 (hgcommon::drain_selects(dsv.matches_per_state_rule,
-                                        dsv.max_successor_states_per_parent,
-                                        dsv.max_states_per_step) |
-                                         explore_reads_ranks(dsv, dedup, state_mode))),
-            run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
-                                 dsv.num_rule_weights, (hgcommon::drain_selects(dsv.matches_per_state_rule,
-                                        dsv.max_successor_states_per_parent,
-                                        dsv.max_states_per_step) |
-                                         explore_reads_ranks(dsv, dedup, state_mode))),
+            // A root's lineage labels read its exact hash and edge ranks.
+            dsv.record_invariants || dsv.state_label != nullptr ||
+                run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
+                                     transition_keys_read(dsv, dedup, state_mode)),
+            dsv.state_label != nullptr ||
+                run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
+                                     dsv.num_rule_weights,
+                                     transition_keys_read(dsv, dedup, state_mode)),
             pool_v, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
 
