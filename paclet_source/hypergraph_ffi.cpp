@@ -1755,9 +1755,9 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             }
             }
             full_result.push_back({wxf::WXFValue("CausalEdges"),
-                                   hgmarshal::record_list(causal_edges,
-                                                          {"From", "To", "RawFrom", "RawTo"},
-                                                          on_workers)});
+                                   hgmarshal::relation_list(std::move(causal_edges),
+                                                            {"From", "To", "RawFrom", "RawTo"},
+                                                            on_workers)});
         }
 
         // BranchialEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
@@ -1801,8 +1801,8 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             }
             }
             full_result.push_back({wxf::WXFValue("BranchialEdges"),
-                                   hgmarshal::record_list(branchial_edges, {"From", "To"},
-                                                          on_workers)});
+                                   hgmarshal::relation_list(std::move(branchial_edges),
+                                                            {"From", "To"}, on_workers)});
         }
 
         // BranchialStateEdges / BranchialStateEdgesAllSiblings -> the state-endpoint projection

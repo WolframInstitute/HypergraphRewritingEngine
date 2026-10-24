@@ -919,8 +919,9 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     }
     if (job.include_causal_edges)
         full_result.push_back({wxf::WXFValue("CausalEdges"),
-                               hgmarshal::record_list(causal, {"From", "To", "RawFrom", "RawTo"},
-                                                      reply_jobs().parallel_for())});
+                               hgmarshal::relation_list(std::move(causal),
+                                                        {"From", "To", "RawFrom", "RawTo"},
+                                                        reply_jobs().parallel_for())});
 
     // BranchialEdges: no dedup (multiplicity matters).
     if (job.include_branchial_edges) {
@@ -933,8 +934,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 branchial.push_back({event_id_of(b.a), event_id_of(b.b)});
         }
         full_result.push_back({wxf::WXFValue("BranchialEdges"),
-                               hgmarshal::record_list(branchial, {"From", "To"},
-                                                      reply_jobs().parallel_for())});
+                               hgmarshal::relation_list(std::move(branchial), {"From", "To"},
+                                                        reply_jobs().parallel_for())});
     }
 
     // BranchialStateEdges / BranchialStateEdgesAllSiblings: the state-endpoint projection of the

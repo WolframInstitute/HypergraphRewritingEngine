@@ -53,8 +53,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"States"` | the state records, an association keyed by state id |
 | `"Events"` | the event records, an association keyed by event id |
 | `"EventClasses"` | for each event under `"CanonicalizeEvents"`, the ids of the rule applications it stands for |
-| `"CausalEdges"` | the causal relation, a list of records with the producer and consumer event of each pair |
-| `"BranchialEdges"` | the branchial relation, a list of records with the two events of each pair |
+| `"CausalEdges"` | the causal relation, a list of records with the producer and consumer event of each pair, in ascending order |
+| `"BranchialEdges"` | the branchial relation, a list of records with the two events of each pair, in ascending order |
 | `"NumStates"`, `"NumEvents"` | the number of states and of events |
 | `"NumCausalEdges"`, `"NumBranchialEdges"` | the number of causal and of branchial pairs |
 | `"GlobalEdges"` | every hyperedge the evolution created, each as its id followed by its vertices |

@@ -6959,6 +6959,56 @@ TEST(GraphMarshalIndex, U64IndexKeepsTheFirstValueOfEveryKey) {
     EXPECT_EQ(index.find(5001), nullptr);
 }
 
+namespace {
+// The rows of key `key`'s record list: each record's integer values in its key order.
+std::vector<std::vector<int64_t>> record_rows(const std::vector<uint8_t>& out,
+                                              const std::string& key) {
+    std::vector<std::vector<int64_t>> rows;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != key) { vp.skip_value(); return; }
+        vp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<int64_t> row;
+                ep.read_association([&](const std::string&, wxf::Parser& fp) {
+                    row.push_back(fp.read<int64_t>());
+                });
+                rows.push_back(std::move(row));
+            }
+        });
+    });
+    return rows;
+}
+}  // namespace
+
+// "CausalEdges" and "BranchialEdges" list their rows ascending, so a list's order is a function
+// of its pairs. Rule {{1,2},{1,3}} -> {{1,2},{1,3},{2,3}} from {{1,2},{1,3}}, 4 steps, 8 workers,
+// with and without the transitive reduction. The list order was the order the run registered the
+// pairs in: a consumer's pairs by descending producer, and the workers' interleaving.
+TEST(RelationLists, CausalAndBranchialEdgesListTheirRowsAscending) {
+    for (const char* reduction : {"True", "False"}) {
+        auto opts = [&](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"CausalEdges", "BranchialEdges"});
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string("Threads"));
+            ww.write(int64_t{8});
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string("CausalTransitiveReduction"));
+            ww.write_symbol(reduction);
+        };
+        HostBridge host;
+        const auto out =
+            run_rewriting_core(build_input(kBranchSeed, kBranchLhs, kBranchRhs, 4, opts, 3), host);
+        const auto causal = record_rows(out, "CausalEdges");
+        const auto branchial = record_rows(out, "BranchialEdges");
+        ASSERT_GT(causal.size(), 10u) << reduction;
+        ASSERT_GT(branchial.size(), 10u) << reduction;
+        EXPECT_TRUE(std::is_sorted(causal.begin(), causal.end())) << reduction;
+        EXPECT_TRUE(std::is_sorted(branchial.begin(), branchial.end())) << reduction;
+    }
+}
+
 #if defined(__linux__) && !defined(HG_GPU_BACKEND)
 // A run on the CPU engine that exhausts its memory returns the part it built, with the truncation
 // warning that HGEvolve reports as HGEvolve::overflow. The device's pools are sized up front and

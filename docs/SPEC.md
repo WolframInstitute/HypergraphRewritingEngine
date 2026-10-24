@@ -232,6 +232,8 @@ exact configuration. Sampling and capping options refine this as follows:
   successor is canonicalised for its cost only, and the identity in force still decides which
   successors are distinct. `MaxSuccessorStatesPerParent` and `MatchesPerStateRule` are not
   guided by the cost; they bound the candidates a step's cost is computed for.
+- **List order.** `"CausalEdges"` and `"BranchialEdges"` list their rows in ascending order
+  (`hgmarshal::relation_list`), so a list's order is a function of its pairs.
 - **A truncated run.** A run that reaches a container ceiling, or whose allocation fails, stops:
   the task that failed ends, the queued tasks are dropped unrun, and the states, events and
   relations already published are the result, with a warning marked `"Partial" -> 1`

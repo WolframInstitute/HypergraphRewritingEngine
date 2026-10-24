@@ -24,6 +24,9 @@
   rank that did not read the step, so a single history that returned to an isomorphic state took
   the same transition there again and repeated. `"MaxStatesPerStep"` ranks read the step as well.
   Every result of these two options changes.
+- `"CausalEdges"` and `"BranchialEdges"` list their records in ascending order, on both devices.
+  In rc2 the order was the order the run registered the pairs in, which two identical runs on
+  several threads could give differently.
 - An evolution on the CPU engine that runs out of memory gives the part it built and issues
   `HGEvolve::overflow`. It gave `$Failed` in rc2. When the memory left does not hold the whole
   result, the result has the counts, and its states, events, relations and graphs are empty.

@@ -576,6 +576,16 @@ wxf::WXFValue record_list(const std::vector<std::array<int64_t, N>>& rows,
     return wxf::WXFValue(wxf::Encoded{w.release_data()});
 }
 
+// A relation's record list ("CausalEdges", "BranchialEdges"), its rows ascending: the list's order
+// is a function of its pairs, where the order the run registered them in is a function of the
+// schedule. Both engines write their relation lists through this.
+template <size_t N>
+wxf::WXFValue relation_list(std::vector<std::array<int64_t, N>> rows,
+                            const std::array<const char*, N>& keys, const ParallelFor& par) {
+    std::sort(rows.begin(), rows.end());
+    return record_list(rows, keys, par);
+}
+
 // A job system of `threads` workers (0 is hgcommon::default_worker_count), for a reply whose run
 // had no host engine (the GPU backend). Started on construction, stopped on destruction.
 class HostJobs {
