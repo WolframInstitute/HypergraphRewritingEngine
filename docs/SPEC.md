@@ -232,6 +232,21 @@ exact configuration. Sampling and capping options refine this as follows:
   successor is canonicalised for its cost only, and the identity in force still decides which
   successors are distinct. `MaxSuccessorStatesPerParent` and `MatchesPerStateRule` are not
   guided by the cost; they bound the candidates a step's cost is computed for.
+- **`Generational`** (provisional name) is the Wolfram model's single-way update. The evolution
+  follows one history from each initial state, and each step is one generation. A state's
+  matches are ordered by the standard order (`hgcommon::standard_order_before`): first by the
+  match's edge ids sorted from newest to oldest, lexicographically (`"LeastRecentEdge"`: the
+  match whose newest edge is oldest comes first), then by its edge ids in pattern order
+  (`"RuleOrdering"`), then by rule index (`"RuleIndex"`). They are taken in that order, each
+  unless it shares an edge with a match taken before it (`hgcommon::greedy_disjoint`), so the
+  set is maximal. The matches taken are applied together (`Rewriter::apply_generation`): one
+  state, the input state less every consumed edge and with every produced edge, and one event
+  per match from the input state to it. An edge's id is its creation order: the initial edges
+  in input order, then each generation's produced edges in the order of its events and of each
+  right-hand side, with the fresh vertices in the same order. The caps, `TransitionRate`,
+  `RuleWeights`, `ExplorationProbability` and `StateCost` do not apply with it, and quotient
+  exploration is off. The device has no generational update: the GPU binary runs such a job on
+  the CPU engine it carries.
 - **List order.** `"CausalEdges"` and `"BranchialEdges"` list their rows in ascending order
   (`hgmarshal::relation_list`), so a list's order is a function of its pairs.
 - **A truncated run.** A run that reaches a container ceiling, or whose allocation fails, stops:

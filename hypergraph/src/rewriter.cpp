@@ -138,20 +138,29 @@ RewriteResult Rewriter::apply(
     // the canonical representative which may be a different state.
     // This is critical for ByStateAndEdges event canonicalization which needs
     // to find edge correspondence between the output_state and canonical_output.
-    auto event_result = hg_->create_event_at(
-        event_id,
-        input_state,
-        result.raw_state,  // Use raw state that contains produced edges
-        rule.index,
-        matched_edges,
-        num_matched,
-        result.produced_edges,
-        result.num_produced,
-        keyed_rewrite & ~hgcommon::REWRITE_TWIN_CANDIDATE
-    );
+    const auto event_result = record_event(
+        event_id, input_state, result.raw_state, rule, matched_edges, num_matched,
+        result.produced_edges, result.num_produced,
+        keyed_rewrite & ~hgcommon::REWRITE_TWIN_CANDIDATE);
     result.event = event_result.event_id;
     result.canonical_event = event_result.canonical_event_id;
     result.is_canonical_event = event_result.is_canonical;
+    result.success = true;
+    return result;
+}
+
+Hypergraph::CreateEventResult Rewriter::record_event(EventId event_id, StateId input_state,
+                                                     StateId output_state,
+                                                     const RewriteRule& rule,
+                                                     const EdgeId* matched_edges,
+                                                     uint8_t num_matched,
+                                                     const EdgeId* produced_edges,
+                                                     uint8_t num_produced,
+                                                     uint32_t rewrite_id) {
+    const auto event_result = hg_->create_event_at(event_id, input_state, output_state,
+                                                   rule.index, matched_edges, num_matched,
+                                                   produced_edges, num_produced, rewrite_id);
+    const EventId event = event_result.event_id;
 
     // =====================================================================
     // Online Causal/Branchial Tracking
@@ -164,7 +173,7 @@ RewriteResult Rewriter::apply(
     // capture are checked as separate harnesses.
 #if !defined(HG_HARNESS_DEFER_QUOTIENT_CAPTURE)
     if (hg_->quotient_causal()) {
-        hg_->register_quotient_transition(result.event);
+        hg_->register_quotient_transition(event);
     }
 #endif
 
@@ -179,15 +188,14 @@ RewriteResult Rewriter::apply(
     // rendezvous and by nothing else, so not filling it costs nothing else.
     if (!hg_->quotient_causal() && rec.causal) {
     // Register produced edges (set this event as producer). The produced edges live in
-    // result.raw_state (the output state); key each by its canonical edge identity so
+    // the output state; key each by its canonical edge identity so
     // that, under quotient, every parent producing the same canonical edge orbit meets its
     // consumers at one rendezvous key -- making the producer set the full, schedule-
     // independent attribution. Off quotient the key is just the raw edge id.
     CanonicalEdgeKey produced_keys[MAX_PATTERN_EDGES];
-    hg_->causal_edge_keys(result.raw_state, result.produced_edges, result.num_produced,
-                          produced_keys);
-    for (uint8_t i = 0; i < result.num_produced; ++i) {
-        hg_->set_edge_producer(produced_keys[i], result.event, result.produced_edges[i]);
+    hg_->causal_edge_keys(output_state, produced_edges, num_produced, produced_keys);
+    for (uint8_t i = 0; i < num_produced; ++i) {
+        hg_->set_edge_producer(produced_keys[i], event, produced_edges[i]);
     }
 
     // Register this event as a consumer of each consumed edge. The consumed edges live in
@@ -197,20 +205,83 @@ RewriteResult Rewriter::apply(
     // is decided in consume_edges.
     CanonicalEdgeKey consumed_keys[MAX_PATTERN_EDGES];
     hg_->causal_edge_keys(input_state, matched_edges, num_matched, consumed_keys);
-    hg_->causal_graph().consume_edges(consumed_keys, matched_edges, num_matched, result.event);
+    hg_->causal_graph().consume_edges(consumed_keys, matched_edges, num_matched, event);
     }  // end !quotient_causal (full-capture rendezvous)
 
     // Branchial, in two independent recordings. Grouping is by the RAW input state id: two
     // events branch when they consumed a common edge of the SAME actual state, not of a
     // canonically equivalent one, so event canonicalization does not enter either.
     if (rec.state_events) {
-        hg_->record_state_event(result.event, input_state);
+        hg_->record_state_event(event, input_state);
     }
     if (hgcommon::records_explored_branchial(rec, hg_->quotient_causal())) {
-        hg_->record_branchial_overlaps(result.event, input_state, matched_edges, num_matched);
+        hg_->record_branchial_overlaps(event, input_state, matched_edges, num_matched);
     }
+    return event_result;
+}
 
-    result.success = true;
+GenerationResult Rewriter::apply_generation(StateId input_state, const GenerationMatch* matches,
+                                            uint32_t num_matches, uint32_t output_step) {
+    GenerationResult result;
+    if (num_matches == 0 || input_state >= hg_->num_states()) return result;
+    const SparseBitset& input_edges = hg_->get_state_edges(input_state);
+    std::vector<EdgeId> consumed;
+    uint32_t num_produced = 0, num_fresh = 0;
+    for (uint32_t m = 0; m < num_matches; ++m) {
+        for (uint8_t i = 0; i < matches[m].num_edges; ++i) {
+            if (!input_edges.contains(matches[m].edges[i])) {
+                hg_->note_invalid_match();
+                return result;
+            }
+            consumed.push_back(matches[m].edges[i]);
+        }
+        num_produced += matches[m].rule->num_rhs_edges;
+        num_fresh += hgcommon::num_fresh_variables(matches[m].rule->new_var_mask());
+    }
+    SparseBitset new_edges = SparseBitset::derive(input_edges, consumed.data(), consumed.size(),
+                                                  nullptr, 0, hg_->arena());
+    EdgeId first_edge = 0;
+    VertexId fresh_base = 0;
+    if (num_produced || num_fresh)
+        hg_->alloc_edges_and_vertices(num_produced, num_fresh, first_edge, fresh_base);
+
+    // Each match's event id, produced edges and fresh vertices, in the order given.
+    std::vector<EventId> events(num_matches);
+    std::vector<EdgeId> produced(num_produced);
+    uint32_t edge_at = 0;
+    VertexId fresh_at = fresh_base;
+    for (uint32_t m = 0; m < num_matches; ++m) {
+        const RewriteRule& rule = *matches[m].rule;
+        events[m] = hg_->reserve_event_id();
+        VertexId fresh_by_var[MAX_VARS];
+        std::memset(fresh_by_var, 0xFF, sizeof(fresh_by_var));
+        hgcommon::assign_fresh_consecutive(rule.new_var_mask(), fresh_at, fresh_by_var);
+        fresh_at += hgcommon::num_fresh_variables(rule.new_var_mask());
+        for (uint8_t i = 0; i < rule.num_rhs_edges; ++i) {
+            VertexId vertices[MAX_ARITY];
+            if (!hgcommon::resolve_rhs_vertices(rule.rhs[i].vars, rule.rhs[i].arity,
+                                                matches[m].binding->bindings, fresh_by_var,
+                                                vertices))
+                return result;
+            const EdgeId eid = hg_->create_edge_at(first_edge + edge_at, vertices,
+                                                   rule.rhs[i].arity, events[m], output_step);
+            produced[edge_at++] = eid;
+            new_edges.set(eid, hg_->arena());
+        }
+    }
+    auto [canonical_id, raw_id, was_new] = hg_->create_or_get_canonical_state(
+        std::move(new_edges), output_step, events[0], INVALID_ID, nullptr, 0, nullptr, 0, 0);
+    result.new_state = canonical_id;
+    result.raw_state = raw_id;
+    result.was_new_state = was_new;
+    edge_at = 0;
+    for (uint32_t m = 0; m < num_matches; ++m) {
+        const RewriteRule& rule = *matches[m].rule;
+        record_event(events[m], input_state, raw_id, rule, matches[m].edges,
+                     matches[m].num_edges, &produced[edge_at], rule.num_rhs_edges, 0);
+        edge_at += rule.num_rhs_edges;
+    }
+    result.num_events = num_matches;
     return result;
 }
 

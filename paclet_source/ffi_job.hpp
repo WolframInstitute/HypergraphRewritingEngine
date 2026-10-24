@@ -108,9 +108,14 @@ struct ParsedJob {
     // "Threads" and "Tuning": the expert overrides of the derived tuning values
     // (hgcommon/tuning.hpp). Unset names take HG_TUNE_* or the derived value.
     hgcommon::TuningOverrides tuning;
-    // With matches_per_step, the N lowest-ranked transitions of each step ("MatchesPerStep"
-    // replaces "MaxStatesPerStep"); without it matches_per_step has no effect.
+    // With matches_per_step, N transitions of each step at positions drawn from the seed and the
+    // step ("MatchesPerStep" replaces "MaxStatesPerStep"); without it matches_per_step has no
+    // effect.
     bool uniform_random = false;
+    // "Generational": each step applies the disjoint matches in the standard order as one
+    // generation (ParallelEvolutionEngine::set_generational). The caps and draws do not apply
+    // with it.
+    bool generational = false;
     size_t matches_per_step = 0;  // The cap above (0 = all)
     // Keep k of a state's own matches per RULE, chosen at that state's drain by the transition's
     // own rank. 0 keeps all. Distinct from max_successor_states_per_parent, which keeps the

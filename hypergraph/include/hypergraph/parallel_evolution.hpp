@@ -1120,9 +1120,15 @@ public:
     // lowest-ranked distinct successor states (of a state, of a step), told apart by the state
     // identity in force (hgcommon::SuccessorIdentity).
     void set_max_states_per_step(size_t max);
-    // MatchesPerStep: the N lowest-ranked transitions of each step. Replaces a
-    // set_max_states_per_step cap; the two share the step's selection.
+    // MatchesPerStep: N transitions of each step at positions drawn from the seed and the step
+    // (select_positions). Replaces a set_max_states_per_step cap; the two share the step's
+    // selection.
     void set_matches_per_step(size_t max);
+    // "Generational": each state's next state applies, as one generation, the matches taken in
+    // the standard order that share no edge (hgcommon::standard_order_before, greedy_disjoint;
+    // Rewriter::apply_generation). The caps do not apply with it.
+    void set_generational(bool on);
+    bool generational() const { return generational_; }
     // "StateCost": the step cap (set_max_states_per_step, set_matches_per_step) keeps the
     // successors of lowest cost under `cost`, the successor rank breaking ties. A program with
     // n == 0 ranks by the successor rank alone.
@@ -1642,6 +1648,13 @@ private:
     // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under
     // MaxStatesPerStep added to their step's candidates (step_candidates_).
     void cap_at_drain(StateId state, uint32_t step);
+    // "Generational", at a state's drain: the generation's matches among the state's own, then
+    // one task applying them (submit_generation_task, execute_generation_task).
+    void generation_at_drain(StateId state, uint32_t step);
+    void submit_generation_task(StateId state, uint32_t step, std::vector<MatchRecord> matches);
+    void execute_generation_task(StateId state, uint32_t step,
+                                 const std::vector<MatchRecord>& matches);
+    bool generational_{false};
 
     // MaxStatesPerStep. Every transition the drains of step s keep is a candidate of step s, in
     // step s's depth slot; once the depth join reports step s complete, select_step submits the N

@@ -158,6 +158,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"MatchesPerStateRule"` | `0` | the most transitions kept per state and rule, chosen by the transitions' identities (`0` for no cap) |
 | `"UniformRandom"` | `False` | whether `"MatchesPerStep"` caps the transitions kept per step |
 | `"MatchesPerStep"` | `0` | the number of transitions kept per step with `"UniformRandom"`, drawn uniformly (`0` for no cap) |
+| `"Generational"` | `False` | whether each step applies, as one generation, every match that shares no hyperedge with a match before it in the standard order |
 | `"BranchialStep"` | `Automatic` | the step whose branchial pairs the branchial graph shows: `Automatic`, `All`, `-1` (the final step) or a step number from 1 |
 | `"EdgeDeduplication"` | `True` | whether a causal graph has one edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
@@ -1249,6 +1250,26 @@ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "NumStates", "MatchesPerStep" -> 2, "Random
 ```
 
 <!-- => 27 -->
+
+### "Generational"
+
+With `True`, the evolution follows one history, and each step is one generation of the Wolfram model's single-way update. The matches of the state are taken in the standard order, `"LeastRecentEdge"`, then `"RuleOrdering"`, then `"RuleIndex"`, each unless it shares a hyperedge with a match taken before it, and the matches taken are applied together. Each is an event from the state to the next state. On a path of four edges the first and the third of the three matches are taken, and the next step contracts the two edges they make:
+
+```wl
+Length /@ Lookup[Values @ HGEvolve[{{x, y}, {y, z}} -> {{x, z}}, {{1, 2}, {2, 3}, {3, 4}, {4, 5}}, 5, "States", "Generational" -> True], "Edges"]
+```
+
+<!-- => {4, 2, 1} -->
+
+Every hyperedge of a state is rewritten at each step of this growth rule, so six steps make 1 + 2 + ... + 32 events:
+
+```wl
+HGEvolve[{{x, y}} -> {{x, y}, {y, z}}, {{1, 2}}, 6, "NumEvents", "Generational" -> True]
+```
+
+<!-- => 63 -->
+
+The caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"StateCost"` do not apply with it. With `"TargetDevice" -> "GPU"` it runs on the CPU engine.
 
 ### "BranchialStep"
 

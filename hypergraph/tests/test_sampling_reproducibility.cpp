@@ -1529,3 +1529,49 @@ TEST(SamplingReproducibility, AHandedOnMatchSetGivesTheEventsOfAFullMatch) {
             EXPECT_EQ(run(n, threads, true), run(n, threads, false))
                 << n << " per step at " << threads << " workers";
 }
+
+// "Generational": each step applies the matches taken in the standard order that share no edge,
+// as one generation of one state. Rule {{x,y},{y,z}} -> {{x,z}} on the path 1-2-3-4-5 (edges 0 to
+// 3): the matches in standard order are (0,1), (1,2), (2,3); the first and the third are taken,
+// making {1,3} (edge 4) and {3,5} (edge 5); the next generation contracts those to {1,5}. Three
+// states, three events, at 1 and 8 workers.
+TEST(Generational, AGenerationAppliesTheDisjointMatchesInStandardOrder) {
+    for (size_t threads : {size_t(1), size_t(8)}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
+        e.set_generational(true);
+        e.evolve(std::vector<std::vector<VertexId>>{{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}}, 5);
+        EXPECT_EQ(hg.num_states(), 3u) << threads;
+        ASSERT_EQ(hg.num_events(), 3u) << threads;
+        std::vector<std::vector<EdgeId>> consumed;
+        for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+            const Event& x = hg.get_event(ev);
+            if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+            consumed.emplace_back(x.consumed_edges, x.consumed_edges + x.num_consumed);
+        }
+        std::sort(consumed.begin(), consumed.end());
+        EXPECT_EQ(consumed, (std::vector<std::vector<EdgeId>>{{0, 1}, {2, 3}, {4, 5}})) << threads;
+        const Edge& last = hg.get_edge(6);
+        EXPECT_EQ(std::vector<VertexId>(last.vertices, last.vertices + last.arity),
+                  (std::vector<VertexId>{1, 5}));
+    }
+}
+
+// Rule {{x,y}} -> {{x,y},{y,z}} from one edge: every edge is rewritten each generation, so
+// generation g has 2^g edges and 2^(g-1) events.
+TEST(Generational, EveryDisjointMatchIsApplied) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+    ParallelEvolutionEngine e(&hg, 4);
+    e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
+    e.set_generational(true);
+    e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}}, 6);
+    EXPECT_EQ(hg.num_states(), 7u);
+    EXPECT_EQ(hg.num_events(), 63u);
+    std::map<uint32_t, uint32_t> edges_at_step;
+    for (StateId s = 0; s < hg.num_states(); ++s)
+        edges_at_step[hg.get_state(s).step] = hg.get_state(s).edges.count();
+    for (uint32_t g = 0; g <= 6; ++g) EXPECT_EQ(edges_at_step[g], 1u << g) << g;
+}

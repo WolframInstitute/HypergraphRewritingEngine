@@ -145,6 +145,60 @@ HG_HD inline uint32_t step_positions(uint64_t random_seed, uint32_t step, uint64
     return k;
 }
 
+// THE STANDARD ORDER OF A GENERATION ("Generational"): the Wolfram model's default event order,
+// "LeastRecentEdge", then "RuleOrdering", then "RuleIndex". An edge's age is its id: under
+// "Generational" both engines issue edge ids in creation order, the initial edges in input order
+// and then each generation's produced edges in the order of its events and of each right-hand
+// side. Match a comes before match b when its edge ids sorted from newest to oldest are
+// lexicographically smaller (its newest edge is older), then when its edge ids in pattern order
+// are, then when its rule index is smaller.
+HG_HD inline bool standard_order_before(const uint32_t* a, uint32_t na, uint32_t rule_a,
+                                        const uint32_t* b, uint32_t nb, uint32_t rule_b) {
+    constexpr uint32_t kMax = 16;
+    uint32_t sa[kMax], sb[kMax];
+    const uint32_t ma = na < kMax ? na : kMax, mb = nb < kMax ? nb : kMax;
+    for (uint32_t i = 0; i < ma; ++i) sa[i] = a[i];
+    for (uint32_t i = 0; i < mb; ++i) sb[i] = b[i];
+    auto sort_desc = [](uint32_t* v, uint32_t n) {
+        for (uint32_t i = 1; i < n; ++i) {
+            const uint32_t x = v[i];
+            uint32_t j = i;
+            while (j > 0 && v[j - 1] < x) { v[j] = v[j - 1]; --j; }
+            v[j] = x;
+        }
+    };
+    sort_desc(sa, ma);
+    sort_desc(sb, mb);
+    auto lex = [](const uint32_t* x, uint32_t nx, const uint32_t* y, uint32_t ny) -> int {
+        for (uint32_t i = 0; i < nx && i < ny; ++i)
+            if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+        return nx == ny ? 0 : (nx < ny ? -1 : 1);
+    };
+    const int newest = lex(sa, ma, sb, mb);
+    if (newest != 0) return newest < 0;
+    const int pattern = lex(a, ma, b, mb);
+    if (pattern != 0) return pattern < 0;
+    return rule_a < rule_b;
+}
+
+// A GENERATION'S EVENTS: the matches taken in standard order, each unless it shares an edge with
+// one taken before it, so the set is maximal and its matches share no edge. `order[0..n)` lists
+// the matches in standard order; `edges_of(m, out)` writes match m's edge ids and returns their
+// count; `used(e)` and `use(e)` read and mark an edge; `take(m)` takes match m.
+template <class EdgesOf, class Used, class Use, class Take>
+HG_HD inline void greedy_disjoint(const uint32_t* order, uint32_t n, EdgesOf&& edges_of,
+                                  Used&& used, Use&& use, Take&& take) {
+    uint32_t edges[16];
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t k = edges_of(order[i], edges);
+        bool free = true;
+        for (uint32_t j = 0; j < k && free; ++j) free = !used(edges[j]);
+        if (!free) continue;
+        for (uint32_t j = 0; j < k; ++j) use(edges[j]);
+        take(order[i]);
+    }
+}
+
 // LINEAGE LABELS: the identities "MatchesPerStep" orders transitions by under None states.
 // An initial state's label comes from its canonical hash, and each of its edges' from the state's
 // label and the edge's canonical rank in it. A transition's key mixes the rule and the matched

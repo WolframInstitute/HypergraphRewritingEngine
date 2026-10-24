@@ -7009,6 +7009,27 @@ TEST(RelationLists, CausalAndBranchialEdgesListTheirRowsAscending) {
     }
 }
 
+// "Generational" through the job envelope: rule {{1,2},{2,3}} -> {{1,3}} on the path
+// {{1,2},{2,3},{3,4},{4,5}} takes the first and the third match, then contracts the two edges they
+// make: 3 states and 3 events. The GPU binary runs the job on its CPU engine and says so.
+TEST(GenerationalJob, AGenerationalJobGivesEachGenerationsEvents) {
+    auto opts = [](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents"});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Generational"));
+        ww.write_symbol("True");
+    };
+    HostBridge host;
+    const auto out = run_rewriting_core(
+        build_input({{{1, 2}, {2, 3}, {3, 4}, {4, 5}}}, {{1, 2}, {2, 3}}, {{1, 3}}, 5, opts, 2),
+        host);
+    EXPECT_EQ(read_int_key(out, "NumStates"), 3);
+    EXPECT_EQ(read_int_key(out, "NumEvents"), 3);
+#ifdef HG_GPU_BACKEND
+    EXPECT_TRUE(reply_mentions(out, "runs on the CPU engine"));
+#endif
+}
+
 #if defined(__linux__) && !defined(HG_GPU_BACKEND)
 // A run on the CPU engine that exhausts its memory returns the part it built, with the truncation
 // warning that HGEvolve reports as HGEvolve::overflow. The device's pools are sized up front and

@@ -24,6 +24,9 @@
   rank that did not read the step, so a single history that returned to an isomorphic state took
   the same transition there again and repeated. `"MaxStatesPerStep"` ranks read the step as well.
   Every result of these two options changes.
+- `"Generational" -> True` (provisional name) follows one history in which each step applies, as
+  one generation, every match that shares no hyperedge with a match before it in the Wolfram
+  model's standard order (`"LeastRecentEdge"`, `"RuleOrdering"`, `"RuleIndex"`).
 - `"CausalEdges"` and `"BranchialEdges"` list their records in ascending order, on both devices.
   In rc2 the order was the order the run registered the pairs in, which two identical runs on
   several threads could give differently.

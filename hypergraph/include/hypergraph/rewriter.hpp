@@ -34,6 +34,22 @@ struct RewriteResult {
     RewriteResult();
 };
 
+// One match of a generation (Rewriter::apply_generation).
+struct GenerationMatch {
+    const RewriteRule* rule;
+    const EdgeId* edges;
+    uint8_t num_edges;
+    const VariableBinding* binding;
+};
+
+// What a generation made: the state, and how many events it recorded.
+struct GenerationResult {
+    StateId new_state = INVALID_ID;
+    StateId raw_state = INVALID_ID;
+    uint32_t num_events = 0;
+    bool was_new_state = false;
+};
+
 // =============================================================================
 // Rewriter
 // =============================================================================
@@ -66,6 +82,23 @@ public:
         uint32_t output_step = 0,
         bool inherited = false
     );
+
+    // A generation ("Generational"): matches of `input_state` that share no edge, applied
+    // together. One state is made, the input state less every consumed edge and with every
+    // produced edge, and one event per match from the input state to it, in the order given.
+    // The produced edges and fresh vertices take consecutive ids in that order, so an edge's id
+    // is its creation order. The state indexes all of its edges (no ancestry chain).
+    GenerationResult apply_generation(StateId input_state, const GenerationMatch* matches,
+                                      uint32_t num_matches, uint32_t output_step);
+
+private:
+    // Stores event `event_id` (from reserve_event_id) and registers it in the causal and
+    // branchial relations. One body for apply and apply_generation.
+    Hypergraph::CreateEventResult record_event(EventId event_id, StateId input_state,
+                                               StateId output_state, const RewriteRule& rule,
+                                               const EdgeId* consumed, uint8_t num_consumed,
+                                               const EdgeId* produced, uint8_t num_produced,
+                                               uint32_t rewrite_id);
 };
 
 // =============================================================================

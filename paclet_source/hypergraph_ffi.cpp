@@ -449,8 +449,13 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 // Requires CanonicalizeStates -> Full to have any effect
                                 req.explore_from_canonical_states_only = value;
                             } else if (option_key == "UniformRandom") {
-                                // With MatchesPerStep, a step's N lowest-ranked transitions
+                                // With MatchesPerStep, N transitions of each step drawn at
+                                // positions from the seed and the step
                                 req.uniform_random = value;
+                            } else if (option_key == "Generational") {
+                                // Each step one generation: the disjoint matches in the
+                                // standard order
+                                req.generational = value;
                             } else {
                                 // AN OPTION THIS BUILD DOES NOT KNOW IS NAMED, NOT DROPPED.
                                 // Every branch above matches a specific key, so reaching here
@@ -752,6 +757,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     engine.set_state_cost(req.state_cost);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
+    engine.set_generational(req.generational);
 
     // Convert rules to unified format
     uint16_t rule_index = 0;
@@ -1013,11 +1019,15 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         const bool custom_keys = req.event_signature_keys != hypergraph::EVENT_SIG_NONE &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_FULL &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
-        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session;
+        const bool on_cpu =
+            req.positional_event_identity || custom_keys || cpu_session || req.generational;
         if (req.positional_event_identity && !cpu_session)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
                 "mode"});
+        else if (req.generational && !cpu_session)
+            req.ffi_warnings.push_back({"Engine", 1,
+                "\"Generational\" runs on the CPU engine: the device has no generational update"});
         else if (custom_keys && !cpu_session)
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
@@ -1091,6 +1101,24 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 "\"MaxStatesPerStep\" or with \"UniformRandom\" and \"MatchesPerStep\": every "
                 "state is expanded."});
             req.explore_from_canonical_states_only = false;
+        }
+        if (!held_session && req.generational &&
+            (req.matches_per_step != 0 || req.max_states_per_step != 0 ||
+             req.max_successor_states_per_parent != 0 || req.matches_per_state_rule != 0 ||
+             req.transition_rate < 1.0 || !req.rule_weights.empty() ||
+             req.exploration_probability < 1.0 || hgcommon::state_cost_active(req.state_cost))) {
+            req.ffi_warnings.push_back({"GenerationalCaps", 1,
+                "\"Generational\" applies every disjoint match of a state in the standard order: "
+                "the caps, \"TransitionRate\", \"RuleWeights\", \"ExplorationProbability\" and "
+                "\"StateCost\" do not apply with it."});
+            req.matches_per_step = 0;
+            req.max_states_per_step = 0;
+            req.max_successor_states_per_parent = 0;
+            req.matches_per_state_rule = 0;
+            req.transition_rate = 1.0;
+            req.rule_weights.clear();
+            req.exploration_probability = 1.0;
+            req.state_cost = hgcommon::StateCost{};
         }
         if (!held_session && hgcommon::state_cost_active(req.state_cost) &&
             effective_max_states_per_step(req) == 0) {

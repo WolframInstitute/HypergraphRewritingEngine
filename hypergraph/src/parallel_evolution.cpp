@@ -951,6 +951,10 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
 // (select_step). A transition not kept is not taken: no rewrite, no event, no state. Each is a
 // pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
+    if (generational_) {
+        generation_at_drain(state, step);
+        return;
+    }
     const size_t k = max_successor_states_per_parent_;
     const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
     if (max_states_per_step_ != 0 && step_cap_counts_matches_ && !costed) {
@@ -1195,6 +1199,76 @@ void ParallelEvolutionEngine::select_positions(uint32_t step, DepthExtra& x) {
     for (size_t i = 0; i < kept.size(); ++i)
         submit_rewrite_task(records[i], step, step + 1, handed[i]);
     if (!kept.empty()) HG_STAT(stats_.mine().spine_forced.bump(kept.size()));
+}
+
+void ParallelEvolutionEngine::generation_at_drain(StateId state, uint32_t step) {
+    std::vector<const MatchRecord*> own;
+    if (auto stored = state_matches_.lookup(id_key(state)); stored.has_value())
+        (*stored)->for_each([&](const MatchRecord& m) {
+            if (!m.is_forwarded) own.push_back(&m);
+        });
+    if (own.empty()) return;
+    std::vector<uint32_t> order(own.size());
+    for (uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) {
+        const MatchRecord& a = *own[x];
+        const MatchRecord& b = *own[y];
+        return hgcommon::standard_order_before(a.matched_edges(), a.num_edges(), a.rule_index(),
+                                               b.matched_edges(), b.num_edges(), b.rule_index());
+    });
+    std::unordered_set<EdgeId> used;
+    std::vector<MatchRecord> taken;
+    hgcommon::greedy_disjoint(
+        order.data(), static_cast<uint32_t>(order.size()),
+        [&](uint32_t m, uint32_t* out) {
+            const uint8_t n = own[m]->num_edges();
+            for (uint8_t i = 0; i < n; ++i) out[i] = own[m]->matched_edges()[i];
+            return static_cast<uint32_t>(n);
+        },
+        [&](uint32_t e) { return used.count(e) != 0; }, [&](uint32_t e) { used.insert(e); },
+        [&](uint32_t m) { taken.push_back(*own[m]); });
+    submit_generation_task(state, step, std::move(taken));
+}
+
+void ParallelEvolutionEngine::submit_generation_task(StateId state, uint32_t step,
+                                                     std::vector<MatchRecord> matches) {
+    // A generation past the budget, or after a stop, is the state's matching again when a
+    // continuation resumes it: the generation is a function of the state.
+    if (should_stop_.load(std::memory_order_relaxed) || step > step_budget()) {
+        defer_match_task(state, step);
+        return;
+    }
+    note_depth_task_pushed(step);
+    auto job = job_system::make_job<EvolutionJobType>(
+        [this, state, step, matches = std::move(matches)]() {
+            DepthTaskGuard depth_guard(*this, step);
+            execute_generation_task(state, step, matches);
+        },
+        EvolutionJobType::REWRITE);
+    job_system_->submit(std::move(job));
+}
+
+void ParallelEvolutionEngine::execute_generation_task(StateId state, uint32_t step,
+                                                      const std::vector<MatchRecord>& matches) {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
+    if (should_stop_.load(std::memory_order_relaxed)) { defer_match_task(state, step); return; }
+    if ((max_states_ > 0 && hg_->num_states() >= max_states_) ||
+        (max_events_ > 0 && hg_->num_events() + matches.size() > max_events_)) {
+        should_stop_.store(true, std::memory_order_relaxed);
+        defer_match_task(state, step);
+        return;
+    }
+    std::vector<GenerationMatch> g;
+    g.reserve(matches.size());
+    for (const MatchRecord& m : matches)
+        g.push_back(GenerationMatch{&rules_[m.rule_index()], m.matched_edges(), m.num_edges(),
+                                    &m.binding()});
+    const GenerationResult r = rewriter_.apply_generation(
+        state, g.data(), static_cast<uint32_t>(g.size()), step);
+    if (r.raw_state == INVALID_ID) return;
+    total_rewrites_.fetch_add(r.num_events, std::memory_order_relaxed);
+    total_events_.fetch_add(r.num_events, std::memory_order_relaxed);
+    submit_match_task(r.raw_state, step + 1);
 }
 
 void ParallelEvolutionEngine::drop_blocks(DepthExtra& x) {
@@ -1732,6 +1806,8 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // reports it (QuotientNeedsFull, QuotientStepCap).
     explore_from_canonical_states_only_ = hgcommon::quotient_exploration_applies(
         explore_from_canonical_states_only_, full_states, max_states_per_step_);
+    // "Generational" expands every state of its history.
+    if (generational_) explore_from_canonical_states_only_ = false;
     const bool qc = full_states &&
                     hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
                                                        hg_->positional_event_identity(),
@@ -2699,10 +2775,13 @@ void ParallelEvolutionEngine::set_rule_weights(std::vector<double> w) { rule_wei
 const std::vector<double>& ParallelEvolutionEngine::rule_weights() const { return rule_weights_; }
 
 bool ParallelEvolutionEngine::defers_to_drain() const {
-    return hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
+    return generational_ ||
+           hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
                                    static_cast<uint32_t>(max_successor_states_per_parent_),
                                    static_cast<uint32_t>(max_states_per_step_)) != 0;
 }
+
+void ParallelEvolutionEngine::set_generational(bool on) { generational_ = on; }
 
 bool ParallelEvolutionEngine::records_own_matches() const { return enable_match_forwarding_ || sampling_active(); }
 
