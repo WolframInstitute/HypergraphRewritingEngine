@@ -1021,8 +1021,10 @@ public:
     // cache_state_edge_ranks, skipped when the table is already there. cache_ runs a full IR
     // pass every call and only then discards the result on a losing insert, so a caller that
     // may ask repeatedly for the same state -- a sampler keyed on canonical ranks does, once
-    // per match -- must ask through this instead.
-    void ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges);
+    // per match -- must ask through this instead. Returns the state's canonical hash
+    // (get_or_compute_canonical_hash). A state with no stored hash takes the hash of the pass
+    // that builds its table, so a state needing both runs one IR pass.
+    uint64_t ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges);
 
     // The canonical rank table of `state_id`, or nullptr when the state has none. One map
     // lookup; look the table up once per state and each edge's rank in it.

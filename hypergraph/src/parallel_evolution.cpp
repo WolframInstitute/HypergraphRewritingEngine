@@ -850,7 +850,6 @@ MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
 uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
                                                           const MatchRecord& match) {
     const State& s = hg_->get_state(state);
-    const uint64_t input_hash = hg_->get_or_compute_canonical_hash(state);
     uint32_t ranks[MAX_PATTERN_EDGES];
     const uint8_t n = match.num_edges();
 
@@ -863,16 +862,17 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
         if (const EdgeOrbitTable* orb = hg_->edge_orbits(state)) {
             for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i)
                 ranks[i] = orb->orbit_of(match.matched_edges()[i]);
-            return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION, input_hash,
+            return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,
+                                             hg_->get_or_compute_canonical_hash(state),
                                              /*output_state_hash=*/0, /*step=*/0,
                                              match.rule_index(), ranks, n,
                                              /*produced_ranks=*/nullptr, 0);
         }
     }
 
-    // Ranks come from the same individualization-refinement pass as the state's canonical
-    // hash, so asking for them costs one IR pass per state and nothing per match after that.
-    hg_->ensure_state_edge_ranks(state, s.edges);
+    // The ranks and the state's canonical hash come from one IR pass per state
+    // (ensure_state_edge_ranks), and nothing per match after that.
+    const uint64_t input_hash = hg_->ensure_state_edge_ranks(state, s.edges);
     const EdgeRankTable* table = hg_->edge_rank_table(state);
     for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i) {
         ranks[i] = Hypergraph::edge_rank_in(table, match.matched_edges()[i]);
@@ -3152,9 +3152,9 @@ uint64_t ParallelEvolutionEngine::selection_rank(StateId state, const MatchRecor
 void ParallelEvolutionEngine::label_root(StateId root) {
     if (!lineage_on_) return;
     const State& s = hg_->get_state(root);
-    const uint64_t label = hgcommon::lineage_initial_state(hg_->get_or_compute_canonical_hash(root));
+    const uint64_t label =
+        hgcommon::lineage_initial_state(hg_->ensure_state_edge_ranks(root, s.edges));
     state_labels_.slot(root, hg_->arena()) = label;
-    hg_->ensure_state_edge_ranks(root, s.edges);
     const EdgeRankTable* table = hg_->edge_rank_table(root);
     s.edges.for_each([&](EdgeId e) {
         edge_labels_.slot(e, hg_->arena()) =

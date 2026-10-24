@@ -1569,6 +1569,39 @@ TEST(SamplingReproducibility, AHandedOnMatchSetGivesTheEventsOfAFullMatch) {
                 << n << " per step at " << threads << " workers";
 }
 
+#if HG_ENGINE_STATS
+// Under None states a run computes a state's canonical hash only where a transition key reads
+// it, and a key reads the hash and the edge ranks of one IR pass. Rule {{x,y}} -> {{x,y},{x,z}}
+// from {{0,0},{0,0}}. Without a draw or a cap no key is read: no pass. "MatchesPerStep" reads
+// the root's hash and ranks for its lineage labels: one pass. "MatchesPerStateRule" reads the
+// key of every state it chooses from: one pass per state, 20 over 20 steps.
+TEST(SamplingReproducibility, NoneStatesRunOneIrPassPerStateWhoseKeyIsRead) {
+    enum class Mode { kPlain, kPerStep, kPerRule };
+    for (Mode mode : {Mode::kPlain, Mode::kPerStep, Mode::kPerRule}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+        ParallelEvolutionEngine e(&hg, 1);
+        e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({0, 2}).build());
+        if (mode == Mode::kPerStep) e.set_matches_per_step(1);
+        if (mode == Mode::kPerRule) e.set_matches_per_state_rule(1);
+        e.set_random_seed(1);
+        const size_t steps = mode == Mode::kPlain ? 5 : 20;
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 0u}, {0u, 0u}}, steps);
+        const Hypergraph::IrWorkTotals ir = hg.ir_work();
+        const uint64_t passes = ir.calls - ir.retries;
+        const int m = static_cast<int>(mode);
+        if (mode == Mode::kPlain) {
+            EXPECT_EQ(hg.num_events(), 2u * 3u * 4u * 5u * 6u + 2u * 3u * 4u * 5u + 2u * 3u * 4u +
+                                           2u * 3u + 2u);
+            EXPECT_EQ(passes, 0u) << m;
+        } else {
+            EXPECT_EQ(hg.num_events(), 20u) << m;
+            EXPECT_EQ(passes, mode == Mode::kPerStep ? 1u : 20u) << m;
+        }
+    }
+}
+#endif
+
 // "Generational": each step applies the matches taken in the standard order that share no edge,
 // as one generation of one state. Rule {{x,y},{y,z}} -> {{x,z}} on the path 1-2-3-4-5 (edges 0 to
 // 3): the matches in standard order are (0,1), (1,2), (2,3); the first and the third are taken,

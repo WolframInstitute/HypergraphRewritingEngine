@@ -1172,9 +1172,10 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
     return hash;
 }
 
-void Hypergraph::ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges) {
-    if (read_table(states_[state_id].edge_ranks)) return;
-    cache_state_edge_ranks(state_id, edges);
+uint64_t Hypergraph::ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges) {
+    if (read_table(states_[state_id].edge_ranks)) return get_or_compute_canonical_hash(state_id);
+    const uint64_t ranked = cache_state_edge_ranks(state_id, edges);
+    return publish_canonical_hash(state_id, ranked);
 }
 
 // The state whose class resolves the event path's representative: under Full the class's
