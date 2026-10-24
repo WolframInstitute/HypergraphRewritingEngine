@@ -311,6 +311,17 @@ HG_HD inline uint32_t drain_selects(uint32_t matches_per_state_rule,
             states_per_step != 0u) ? 1u : 0u;
 }
 
+// Whether a step's selection hands each kept transition's state's matches to the child it makes,
+// which updates them by the rewrite's consumed and produced edges: "MatchesPerStep" under None
+// states (lineage labels) without "StateCost", with no other drain selection and no exploration
+// coin. One rule for the host's HeldMatches and the device's held sets.
+HG_HD inline bool held_matches_apply(bool lineage, bool state_cost, uint32_t matches_per_state_rule,
+                                     uint32_t successors_per_parent,
+                                     double exploration_probability) {
+    return lineage && !state_cost && matches_per_state_rule == 0u && successors_per_parent == 0u &&
+           exploration_probability >= 1.0;
+}
+
 // How many candidates a cap of k keeps from `total` in rank order: k, extended over every
 // candidate after the k-th that ties it. `tied(i, j)` is whether candidates i and j have equal
 // (rank, key). Tied candidates are automorphic transitions of one class, and list order decides

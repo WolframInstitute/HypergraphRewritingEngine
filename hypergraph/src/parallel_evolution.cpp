@@ -9,6 +9,7 @@
 
 #include "hgcommon/quotient_route.hpp"
 #include "hgcommon/sampling_core.hpp"
+#include "hgcommon/step_select_core.hpp"
 #include "hgcommon/rewrite_core.hpp"   // num_fresh_variables
 #include "hypergraph/rule_analysis.hpp"
 
@@ -1121,60 +1122,43 @@ void ParallelEvolutionEngine::select_positions(uint32_t step, DepthExtra& x) {
     const uint32_t n = hgcommon::step_positions(random_seed_, step, total,
                                                 static_cast<uint32_t>(pos.size()), pos.data());
     struct Kept {
-        size_t block;
+        uint32_t block;
         uint32_t slot;
     };
     std::vector<Kept> kept;
-    uint32_t next = 0;   // the first position not yet taken
-    uint64_t offset = 0;
-    for (size_t g = 0; g < blocks.size();) {
-        size_t h = g + 1;
-        while (h < blocks.size() && blocks[h].group == blocks[g].group) ++h;
-        uint64_t size = 0;
-        for (size_t i = g; i < h; ++i) size += blocks[i].set->order.size();
-        if (h == g + 1) {
-            const HeldMatches& set = *blocks[g].set;
-            uint64_t taken_hi = 0;
-            for (; next < n && pos[next] < offset + size; ++next) {
-                const uint64_t p = pos[next] - offset;
-                if (p < taken_hi) continue;   // in the tie run already kept
-                uint64_t lo = 0, hi = 0;
-                set.order.select(p, &lo, &hi);
-                for (uint64_t q = lo; q < hi; ++q) {
-                    uint64_t l2, h2;
-                    kept.push_back(Kept{g, set.order.select(q, &l2, &h2).value});
-                }
-                taken_hi = hi;
-            }
-        } else if (next < n && pos[next] < offset + size) {
-            // Equal groups: the blocks' entries merged by key.
-            struct Merged {
-                uint64_t key;
-                size_t block;
-                uint32_t slot;
-            };
-            std::vector<Merged> run;
-            run.reserve(size);
-            for (size_t i = g; i < h; ++i)
-                blocks[i].set->order.for_each([&](const KeyOrderIndex<uint32_t>::Entry& e) {
-                    run.push_back(Merged{e.key, i, e.value});
-                });
-            std::sort(run.begin(), run.end(),
-                      [](const Merged& a, const Merged& b) { return a.key < b.key; });
-            uint64_t taken_hi = 0;
-            for (; next < n && pos[next] < offset + size; ++next) {
-                const uint64_t p = pos[next] - offset;
-                if (p < taken_hi) continue;
-                uint64_t lo = p, hi = p + 1;
-                while (lo > 0 && run[lo - 1].key == run[p].key) --lo;
-                while (hi < run.size() && run[hi].key == run[p].key) ++hi;
-                for (uint64_t q = lo; q < hi; ++q) kept.push_back(Kept{run[q].block, run[q].slot});
-                taken_hi = hi;
-            }
+    struct Merged {
+        uint64_t key;
+        uint32_t block;
+        uint32_t slot;
+    };
+    struct Run {
+        std::vector<Merged> entries;
+        uint64_t key(uint64_t q) const { return entries[q].key; }
+        uint32_t block(uint64_t q) const { return entries[q].block; }
+        uint32_t value(uint64_t q) const { return entries[q].slot; }
+    };
+    struct Blocks {
+        const std::vector<OrderBlock>& b;
+        uint32_t count() const { return static_cast<uint32_t>(b.size()); }
+        uint64_t group(uint32_t i) const { return b[i].group; }
+        uint64_t size(uint32_t i) const { return b[i].set->order.size(); }
+        uint32_t select(uint32_t i, uint64_t p, uint64_t* lo, uint64_t* hi) const {
+            return b[i].set->order.select(p, lo, hi).value;
         }
-        offset += size;
-        g = h;
-    }
+        Run merged(uint32_t g, uint32_t h) const {
+            Run run;
+            for (uint32_t i = g; i < h; ++i)
+                b[i].set->order.for_each([&](const KeyOrderIndex<uint32_t>::Entry& e) {
+                    run.entries.push_back(Merged{e.key, i, e.value});
+                });
+            std::sort(run.entries.begin(), run.entries.end(),
+                      [](const Merged& x, const Merged& y) { return x.key < y.key; });
+            return run;
+        }
+    } view{blocks};
+    hgcommon::step_select_blocks(view, pos.data(), n, [&](uint32_t block, uint32_t slot) {
+        kept.push_back(Kept{block, slot});
+    });
     // Every record is read before any set is handed on, since a rewrite updates the set it is
     // handed. Under inherit_matches_ a block's set goes to its last kept transition and a copy
     // to each of the others; a set no rewrite takes is deleted.
@@ -1796,9 +1780,12 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
                   hg_->state_canonicalization_mode() == StateCanonicalizationMode::None;
     // A step's selection hands each kept transition's state's matches to its child when nothing
     // else chooses among a state's matches at its drain.
-    inherit_matches_ = lineage_on_ && !hgcommon::state_cost_active(state_cost_) &&
-                       matches_per_state_rule_ == 0 && max_successor_states_per_parent_ == 0 &&
-                       exploration_probability_ >= 1.0 && !validate_match_forwarding_;
+    inherit_matches_ =
+        hgcommon::held_matches_apply(lineage_on_, hgcommon::state_cost_active(state_cost_),
+                                     static_cast<uint32_t>(matches_per_state_rule_),
+                                     static_cast<uint32_t>(max_successor_states_per_parent_),
+                                     exploration_probability_) &&
+        !validate_match_forwarding_;
     max_lhs_edges_ = 0;
     for (const RewriteRule& r : rules_)
         max_lhs_edges_ = std::max<uint32_t>(max_lhs_edges_, r.num_lhs_edges);
