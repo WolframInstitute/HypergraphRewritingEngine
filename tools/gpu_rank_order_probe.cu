@@ -69,7 +69,7 @@ std::map<uint64_t, std::vector<StateShot>> run_once(
     DeviceArena arena(64ull << 20);
 
     run_persistent_evolve(engine, rules, /*roots=*/{0u}, steps, matches, arena,
-                          /*dedup=*/true, 0xFFFFFFFFu, 0,
+                          /*dedup=*/true,
                           CanonicalizationMode::Full,
                           hgcommon::EVENT_SIG_AUTOMATIC, blocks);
 
@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
         matches.reset();
         DeviceArena arena(64ull << 20);
         run_persistent_evolve(engine, rules, /*roots=*/{0u}, steps, matches, arena,
-                              /*dedup=*/true, 0xFFFFFFFFu, 0,
+                              /*dedup=*/true,
                               CanonicalizationMode::Full,
                               hgcommon::EVENT_SIG_AUTOMATIC, blocks);
 
