@@ -23,6 +23,7 @@
 #include "hgcommon/canonical_form_core.hpp"
 #include "hgcommon/token_core.hpp"
 #include "hgcommon/state_invariants_core.hpp"
+#include "hgcommon/state_cost_core.hpp"
 #include "hgcommon/depth_join.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
@@ -1382,6 +1383,10 @@ public:
     // left the hash to its claimer.
     const hgcommon::StateInvariantRecord* record_state_invariants(
         StateId sid, uint64_t hash, const std::vector<uint32_t>* form, bool fill_pending = false);
+    // The record (hgcommon::state_record) of the state with IR canonical form `form`, under the
+    // run's statistics graph and measures, in the arena.
+    const hgcommon::StateInvariantRecord* invariant_record_of_form(
+        const std::vector<uint32_t>& form);
     // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
     // stored before the call; a key hit compares against the class's first event. The claim's
     // key is the event's reported signature.
@@ -1892,9 +1897,16 @@ public:
     // (hgcommon::SuccessorIdentity).
     uint64_t successor_content_hash(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
                                     const RewriteRule& rule, const VertexId* binding) const;
+    // `out_form`, when given, receives the successor's IR canonical form.
     uint64_t successor_canonical_hash(StateId parent, const EdgeId* consumed,
                                       uint8_t num_consumed, const RewriteRule& rule,
-                                      const VertexId* binding) const;
+                                      const VertexId* binding,
+                                      std::vector<uint32_t>* out_form = nullptr) const;
+
+    // The cost (hgcommon::state_cost_eval) of the state with IR canonical form `form`, from a
+    // record of only the measures the program reads, in the worker's scratch. A kept successor's
+    // reply record is computed when the state is created (record_state_invariants).
+    double state_cost_of_form(const hgcommon::StateCost& cost, const std::vector<uint32_t>& form);
 
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const;

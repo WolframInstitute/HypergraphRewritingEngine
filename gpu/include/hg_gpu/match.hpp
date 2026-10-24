@@ -5,6 +5,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/types.hpp"
+#include "hg_gpu/work_log.hpp"
 #include "hgcommon/sampling_core.hpp"  // SuccessorIdentity
 
 #include <cuda/atomic>
@@ -151,6 +152,13 @@ __device__ __forceinline__ bool match_published(const MatchRecord& m) {
 // What the successor caps (MaxSuccessorStatesPerParent, MaxStatesPerStep) need to tell a
 // transition's successor state apart (hgcommon::SuccessorIdentity): the run's state mode, and
 // for a Full successor the block's IR arena and slot (successor_exact_hash_device).
+// "StateCost": candidate `cand` of step `step` needs its successor's cost (step_cost_one).
+struct CostEntry {
+    uint32_t cand;
+    uint32_t step;
+    uint32_t published;
+};
+
 struct SuccessorCtx {
     CanonicalizationMode mode;
     DeviceArena::View    arena;
@@ -160,7 +168,21 @@ struct SuccessorCtx {
     // candidates of a cap whose pair or state has more than kDrainCapBuffer of them.
     uint32_t**           spill = nullptr;
     uint64_t*            spill_words = nullptr;
+    // Under a step cap that counts successor states or reads a cost, indexed by candidate-pool
+    // index: each candidate's successor identity and cost key, and 1 once both are written
+    // (step_cost_one). Null otherwise.
+    uint64_t*                    cand_cost = nullptr;
+    hgcommon::SuccessorIdentity* cand_id = nullptr;
+    uint32_t*                    cand_ready = nullptr;
+    // The candidates whose cost an idle block computes (CostEntry), each booked on its step.
+    WorkLogView<CostEntry>       cost_log{};
 };
+
+// Step d gains n units of work: its selection runs when the count returns to zero
+// (step_release, persistent.cu).
+__device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
+    if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
+}
 
 // Per-block scratch of MaxSuccessorStatesPerParent: kDrainCapBuffer candidates of one state, each
 // with its matched edges (kMaxPatternEdges, by pattern position), its successor identity, its
@@ -183,6 +205,24 @@ __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRul
                                           StateId parent, const EdgeId* matched,
                                           const SuccessorCtx& ctx,
                                           hgcommon::SuccessorIdentity& out);
+
+// "StateCost": the cost key (hgcommon::state_cost_key) of the same successor, from its IR
+// canonical form (state_cost_of_form_device), on the warp as successor_identity_device runs.
+// `full_id`, when non-null, receives the successor's identity under Full states (its canonical
+// hash), which the form's pass also gives. False when the form or the record could not be
+// computed; the error is recorded and `out` is the key of +Infinity.
+__device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& rule,
+                                      StateId parent, const EdgeId* matched,
+                                      const SuccessorCtx& ctx, uint64_t& out,
+                                      hgcommon::SuccessorIdentity* full_id = nullptr);
+
+// The successor identity of the candidate out[i] (when the step cap counts successor states)
+// and, under "StateCost", its cost, into ctx.cand_id, ctx.cand_cost and ctx.cand_ready, on the
+// calling warp. A candidate whose form or record could
+// not be computed is left unready, and the step's selection computes it.
+__device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
+                              typename Pool<MatchRecord>::DeviceView out, const SuccessorCtx& ctx,
+                              uint32_t i);
 
 // One (state, rule) pair, matched by ONE BLOCK of kMatchBlockThreads threads. Exposed so a
 // scheduler in another translation unit drives this implementation rather than growing a

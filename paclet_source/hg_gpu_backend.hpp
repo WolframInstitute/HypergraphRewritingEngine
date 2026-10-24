@@ -127,6 +127,8 @@ struct GpuJob {
     uint32_t statistics_graph = 0;
     // "StepStatisticsMeasures" (stats::measure_bits). Set after the job is built.
     uint32_t statistics_measures = 0;
+    // "StateCost" (hgcommon/state_cost_core.hpp); n == 0 is no cost. Set after the job is built.
+    hgcommon::StateCost state_cost{};
     // "Delivery" -> "Delta": a held session's graphs carry what the session has not been sent.
     // Set after the job is built.
     bool delivery_delta = false;

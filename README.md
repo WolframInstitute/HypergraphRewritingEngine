@@ -39,6 +39,7 @@ Wolfram Physics Project*](paper/main.pdf). To cite it:
 - **Parallel Pattern Matching**: match-by-hyperedge join with signature-partitioned candidates and work-stealing scheduling.
 - **Incremental Match Forwarding**: re-use parent-state matches in child states; only find new matches that involve newly produced edges (selected per rule set by static analysis).
 - **Lock-free Data Structures**: concurrent hash map, key set, lock-free list, lock-free deque, thread-safe arena — the shared protocols model-checked under RC11/scoped-RC11 (GenMC, GPUMC) and TLA+ at their recorded bounds, sanitizer-gated in CI.
+- **Cost-Guided Evolution**: a beam search over the multiway system. `"StateCost"` takes a function of a state's statistics, and with `"MaxStatesPerStep" -> N` each step keeps its N successor states of lowest cost, on the CPU and the GPU, with the same states at any thread count and on either device.
 - **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, per-step statistics (`"StepStatistics"`), and topology / initial-condition generators.
 
 ## Installation
@@ -94,6 +95,12 @@ HGEvolve[rule, init, 5, "StatesGraph"]
 HGEvolve[rule, init, 5, "CausalGraph"]
 HGEvolve[rule, init, 5, "BranchialGraph"]
 HGEvolve[rule, init, 5, "EvolutionCausalBranchialGraph"]
+
+(* Cost-guided evolution: each step keeps the 4 successor states whose ball dimension is
+   closest to 2. *)
+HGEvolve[rule, init, 10, "StepStatistics", "CanonicalizeStates" -> Full,
+  "MaxStatesPerStep" -> 4, "StateCost" -> (Abs[#BallDimension - 2] &),
+  "StepStatisticsMeasures" -> {"VolumeGrowth"}]
 ```
 
 See `paclet_source/README.md` for the full option list (hash strategy, canonicalisation modes, pruning limits, dimension / curvature / geodesic analyses, topology and initial-condition generators).

@@ -117,6 +117,11 @@ struct ParsedJob {
     // transitions into a state's k lowest-ranked successor states whichever rule makes them, and
     // from matches_per_step, which counts a step's transitions.
     size_t matches_per_state_rule = 0;
+    // "StateCost": the step cap keeps the lowest-cost successors (hgcommon/state_cost_core.hpp).
+    // n == 0 is no cost. A program that did not compile leaves its message in state_cost_error,
+    // and the job is refused.
+    hgcommon::StateCost state_cost{};
+    std::string state_cost_error;
 
     // Data selection flags - which components to include in output
     // By default all are included for backward compatibility

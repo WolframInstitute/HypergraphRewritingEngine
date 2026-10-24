@@ -383,6 +383,24 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 bits |= bit;
                             }
                             req.statistics_measures = bits;
+                        } else if (option_key == "StateCost") {
+                            // <|"Code" -> {tokens}, "Constants" -> {reals}|>, the paclet's
+                            // postfix form of the expression (hgStateCostProgram). A program
+                            // that does not compile refuses the job (refuse_invalid_input).
+                            std::vector<std::string> code;
+                            std::vector<double> constants;
+                            option_parser.read_association(
+                                [&](const std::string& k, wxf::Parser& p) {
+                                    if (k == "Code") code = p.read<std::vector<std::string>>();
+                                    else if (k == "Constants")
+                                        constants = p.read<std::vector<double>>();
+                                    else p.skip_value();
+                                });
+                            try {
+                                req.state_cost = hg::stats::compile_state_cost(code, constants);
+                            } catch (const std::exception& e) {
+                                req.state_cost_error = e.what();
+                            }
                         } else if (option_key == "StepStatisticsBranchial") {
                             uint32_t bits = 0;
                             for (const auto& k : option_parser.read<std::vector<std::string>>()) {
@@ -516,6 +534,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
 // An edge of arity 0 is refused rather than dropped: dropping it evolves a different
 // hypergraph or rule than the caller wrote.
 static void refuse_invalid_input(const hgffi::ParsedJob& req) {
+    if (!req.state_cost_error.empty()) throw std::runtime_error(req.state_cost_error);
     if (req.initial_states_raw.empty())
         throw std::runtime_error("InitialStates is empty; give at least one state with at least one edge");
     for (size_t si = 0; si < req.initial_states_raw.size(); ++si) {
@@ -681,6 +700,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.include_vertex_curvature = req.include_vertex_curvature;
         job.statistics_graph = req.statistics_graph;
         job.statistics_measures = req.statistics_measures;
+        job.state_cost = req.state_cost;
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
@@ -731,6 +751,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     if (step_cap_counts_matches(req)) engine.set_matches_per_step(req.matches_per_step);
     else engine.set_max_states_per_step(req.max_states_per_step);
     engine.set_matches_per_state_rule(req.matches_per_state_rule);
+    engine.set_state_cost(req.state_cost);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
 
@@ -969,6 +990,13 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 "\"MaxStatesPerStep\" or with \"UniformRandom\" and \"MatchesPerStep\": every "
                 "state is expanded."});
             req.explore_from_canonical_states_only = false;
+        }
+        if (!held_session && hgcommon::state_cost_active(req.state_cost) &&
+            effective_max_states_per_step(req) == 0) {
+            req.ffi_warnings.push_back({"StateCostNeedsStepCap", 1,
+                "\"StateCost\" applies with \"MaxStatesPerStep\" or with \"UniformRandom\" and "
+                "\"MatchesPerStep\": the evolution is not guided by the cost."});
+            req.state_cost = hgcommon::StateCost{};
         }
 
 #ifdef HG_GPU_BACKEND

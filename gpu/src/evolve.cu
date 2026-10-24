@@ -418,6 +418,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // clears the two counters every call so a session's later Step does not inherit the
     // tallies of its first.
     engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
+    engine.set_state_cost(in.max_states_per_step != 0 ? in.state_cost : hgcommon::StateCost{});
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
                         static_cast<uint32_t>(in.rule_weights.size()),
@@ -605,6 +606,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                          st.cycles_match * pct, st.cycles_rewrite * pct,
                          st.cycles_canon * pct, st.cycles_idle * pct,
                          st.cycles_wait * pct, st.keyed_twins);
+            if (in.max_states_per_step != 0)
+                std::fprintf(stderr, "[persistent select] cycles=%llu\n",
+                             (unsigned long long)st.cycles_select);
             const double rw = double(st.cycles_rw_sub[0]) + double(st.cycles_rw_sub[1]) +
                               double(st.cycles_rw_sub[2]) + double(st.cycles_rw_sub[3]) +
                               double(st.cycles_rw_sub[4]) + double(st.cycles_rw_sub[5]);

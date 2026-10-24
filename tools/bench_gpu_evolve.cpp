@@ -169,6 +169,35 @@ int main(int argc, char** argv) {
     if (const char* v = std::getenv("HG_BENCH_RAWEVENTS"))  in.record.raw_events = v[0] != '0';
     // HG_BENCH_TR=0: causal edges without the online transitive reduction.
     if (const char* v = std::getenv("HG_BENCH_TR"))         in.transitive_reduction = v[0] != '0';
+    // HG_BENCH_STEP_CAP=N: "MaxStatesPerStep" N, or with HG_BENCH_MATCHES=1 "MatchesPerStep" N.
+    // HG_BENCH_COST=inv|geo guides it by -IncidenceMeanDistance + 0.01 VertexCount or by
+    // |BallDimension - 2| + 0.1 BallScalarCurvature (the costs of sampling_cost_smoke).
+    // HG_BENCH_PER_RULE=M: "MatchesPerStateRule" M. HG_GPU_DBG_TIME=1 prints the selections'
+    // cycles.
+    if (const char* v = std::getenv("HG_BENCH_STEP_CAP")) {
+        in.max_states_per_step = static_cast<uint32_t>(std::atoi(v));
+        const char* m = std::getenv("HG_BENCH_MATCHES");
+        in.step_cap_counts_matches = m && m[0] == '1';
+    }
+    if (const char* v = std::getenv("HG_BENCH_PER_RULE"))
+        in.matches_per_state_rule = static_cast<uint32_t>(std::atoi(v));
+    if (const char* v = std::getenv("HG_BENCH_COST")) {
+        using namespace hgcommon;
+        StateCost& c = in.state_cost;
+        auto op = [&c](uint8_t o, double a) {
+            c.op[c.n] = o;
+            c.arg[c.n] = a;
+            ++c.n;
+        };
+        if (v[0] == 'i') {
+            op(SC_STAT, 9); op(SC_NEG, 0); op(SC_CONST, 0.01); op(SC_STAT, 0); op(SC_MUL, 0);
+            op(SC_ADD, 0);
+        } else if (v[0] == 'g') {
+            op(SC_STAT, 25); op(SC_CONST, 2); op(SC_SUB, 0); op(SC_ABS, 0); op(SC_CONST, 0.1);
+            op(SC_STAT, 26); op(SC_MUL, 0); op(SC_ADD, 0);
+        }
+        state_cost_validate(c);
+    }
 
     auto r0 = hg_gpu::evolve(in);   // warmup (CUDA context, allocations)
 

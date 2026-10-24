@@ -459,6 +459,41 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     return true;
 }
 
+// Bytes state_record_of_form takes ahead of state_record's scratch: the form's CSR, 8-byte
+// aligned.
+HG_HD inline uint64_t si_form_csr_bytes(uint32_t words) {
+    return (4 * (2 * uint64_t{words} + 3) + 7) & ~uint64_t{7};
+}
+
+// state_record of the state whose IR canonical form is `form` (`words` words), from the form
+// alone: its CSR (si_form_csr) is laid out at the start of `scratch` and serves as both the
+// state and its canonical labelling. False when the scratch is short, with `needed` set to a
+// size to retry with. Every lane of the policy calls it with the same arguments.
+template <class Par = IrSerial>
+HG_HD inline bool state_record_of_form(const uint32_t* form, uint32_t words,
+                                       unsigned char* scratch, uint64_t capacity,
+                                       uint64_t& needed, SiResult& r, Par par = Par{},
+                                       uint32_t graph = SG_GRAPH_CONSECUTIVE,
+                                       uint32_t want = SG_MEASURES_ALL) {
+    const uint64_t head = si_form_csr_bytes(words);
+    uint32_t* goff = reinterpret_cast<uint32_t*>(scratch);
+    uint32_t* gverts = goff + words + 2;
+    if (head > capacity) {
+        needed = head + si_record_bytes_hint(words, words, par.width());
+        return false;
+    }
+    uint32_t gm = 0;
+    if (par.leader()) gm = si_form_csr(form, words, goff, gverts);
+    par.sync();
+    gm = par.bcast(gm);
+    uint64_t inner = 0;
+    if (state_record(goff, gverts, gm, goff, gverts, gm, scratch + head, capacity - head, inner, r,
+                     par, graph, want))
+        return true;
+    needed = head + inner;
+    return false;
+}
+
 // `r` written as a record into `mem`, r.bytes() bytes, 8-byte aligned.
 HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r) {
     auto* rec = reinterpret_cast<StateInvariantRecord*>(mem);

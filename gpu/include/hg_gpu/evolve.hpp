@@ -11,6 +11,7 @@
 #include "hgcommon/explore_depth_core.hpp"  // kExploreNoDepth
 #include "hgcommon/quotient_replay_core.hpp"  // QR_ID_LIMIT
 #include "hgcommon/state_invariants_core.hpp"  // StateInvariantRecord
+#include "hgcommon/state_cost_core.hpp"        // StateCost
 
 #include <set>
 #include <utility>
@@ -113,6 +114,9 @@ struct EvolveInput {
     // (MatchesPerStep) its N lowest-ranked transitions.
     uint32_t max_states_per_step = 0;
     bool     step_cap_counts_matches = false;
+    // "StateCost": the step cap keeps the lowest-cost successors (hgcommon/state_cost_core.hpp).
+    // n == 0 ranks by the successor rank alone.
+    hgcommon::StateCost state_cost;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
 

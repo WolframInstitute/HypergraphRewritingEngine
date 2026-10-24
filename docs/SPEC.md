@@ -198,6 +198,21 @@ exact configuration. Sampling and capping options refine this as follows:
 - **Ties at a cap's cut are kept.** Every cap (per rule, per state, per step) keeps all the
   transitions, or successor states, tied with the k-th kept one (`hgcommon::cap_keep_count`,
   `hgcommon::rank_cut`), so the kept set does not depend on list order.
+- **`StateCost`** orders the successors of a step cap (`MaxStatesPerStep`, or `MatchesPerStep`)
+  by cost. The cost of a state is a function of its `"Invariants"` statistics (the per-state
+  values `"StepStatistics"` summarises), given as a pure function such as
+  `Abs[#BallDimension - 3] &`. The step keeps the transitions into its N successors of lowest
+  cost, and the successor rank orders successors of equal cost. A successor's cost is computed
+  from its IR canonical form, so isomorphic successors have one cost and the kept set is a
+  function of the inputs alone. The cost is an IEEE double computed by one interpreter on both
+  devices (`hgcommon::state_cost_eval`; products through `dm_mul`, logarithms, exponentials and
+  non-integer powers through `det_math.hpp`). A state that has no value for a statistic the
+  cost reads (for example `"BallDimension"` of a state with no ball-growth fit), or whose cost
+  is NaN, has cost +Infinity and ranks after every state with a finite cost. The cost applies
+  under every `CanonicalizeStates` mode: under `None` and `Automatic` each transition's
+  successor is canonicalised for its cost only, and the identity in force still decides which
+  successors are distinct. `MaxSuccessorStatesPerParent` and `MatchesPerStateRule` are not
+  guided by the cost; they bound the candidates a step's cost is computed for.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*

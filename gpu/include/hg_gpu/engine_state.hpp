@@ -92,6 +92,9 @@ struct DeviceState {
     uint32_t  max_states_per_step;
     // The step cap counts transitions (MatchesPerStep) rather than successor states.
     uint32_t  step_cap_counts_matches;
+    // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
+    // (select_step, state_cost_of_form_device).
+    const hgcommon::StateCost* state_cost = nullptr;
     uint32_t* step_pending;                     // [step_slots] = [max_steps + 2]
     uint32_t  step_slots;
     uint32_t  max_successor_states_per_parent;
@@ -451,6 +454,8 @@ public:
     void set_transition_orbits(bool enabled) { transition_orbits_ = enabled; }
     // The step cap counts transitions (MatchesPerStep) rather than successor states.
     void set_step_cap_counts_matches(bool on) { step_cap_counts_matches_ = on; }
+    // "StateCost": copied to the device when n != 0; DeviceState::state_cost is null otherwise.
+    void set_state_cost(const hgcommon::StateCost& cost);
 
     uint32_t config_slice_scan_max_edges() const;
     void set_maintain_indices(bool on);
@@ -519,7 +524,7 @@ public:
         DeviceRule*         rules        = nullptr;  uint32_t rules_cap  = 0;
         StateId*            states       = nullptr;  uint32_t states_cap = 0;
         uint32_t*           cursor       = nullptr;  // 2 slots
-        unsigned long long* phase_cycles = nullptr;  // 16 slots
+        unsigned long long* phase_cycles = nullptr;  // 17 slots
     };
     // The persistent launch's match ring, dedup maps and termination detector, kept with the
     // engine and reused by every later launch of the same sizes (each is cleared per launch).
@@ -666,6 +671,8 @@ private:
     bool                               quotient_causal_ = false;
     bool                               transition_orbits_ = false;
     bool                               step_cap_counts_matches_ = false;
+    hgcommon::StateCost*               state_cost_dev_          = nullptr;
+    bool                               state_cost_on_           = false;
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

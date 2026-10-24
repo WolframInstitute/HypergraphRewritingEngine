@@ -3,7 +3,13 @@
 // One configuration per invocation, unbuffered, so a hang is attributable rather than inferred
 // from an empty output file.
 //
-// Run: /tmp/smoke <arm: off|cap|rate|ratenofwd|fwdon|fwdoff> <rule> <edges> <steps> <threads> <k> <canon: full|automatic|none>
+// Run: /tmp/smoke <arm: off|cap|rate|ratenofwd|fwdon|fwdoff|step|stepcost|stepgeo|match|matchcost|matchgeo> <rule> <edges> <steps> <threads> <k> <canon: full|automatic|none> [per-rule cap M]
+//
+// The step arms are "MaxStatesPerStep" -> k: `step` ranks by the successor rank, `stepcost` by a
+// "StateCost" over the "Invariants" statistics below 11 (-IncidenceMeanDistance + 0.01
+// VertexCount), `stepgeo` by one over the volume-growth statistics (|BallDimension - 2| + 0.1
+// BallScalarCurvature). The match arms are the same three with "MatchesPerStep" -> k. The
+// optional eighth argument is "MatchesPerStateRule", which bounds the candidates of each state.
 //
 // `off` and the canon mode exist to answer what sampling COSTS, which is a different question
 // from what it PRESERVES. The sampling draw is keyed on canonical_transition_key, whose first
@@ -83,6 +89,7 @@ static int run(int argc, char** argv) {
     const size_t threads   = (argc > 5) ? std::stoul(argv[5]) : 4;
     const size_t k         = (argc > 6) ? std::stoul(argv[6]) : 4;
     const std::string canon = (argc > 7) ? argv[7] : "full";
+    const size_t per_rule   = (argc > 8) ? std::stoul(argv[8]) : 0;
 
     std::printf("arm=%s rule=%s edges=%zu steps=%zu threads=%zu k=%zu canon=%s\n",
                 arm.c_str(), rule.c_str(), edges, steps, threads, k, canon.c_str());
@@ -291,6 +298,28 @@ static int run(int argc, char** argv) {
         e.set_transition_rate(1.0 / static_cast<double>(k));
         e.set_match_forwarding(false);
     }
+    else if (arm == "step" || arm == "stepcost" || arm == "stepgeo" || arm == "match" ||
+             arm == "matchcost" || arm == "matchgeo") {
+        if (arm.rfind("match", 0) == 0) e.set_matches_per_step(k);
+        else e.set_max_states_per_step(k);
+        using namespace hgcommon;
+        StateCost c;
+        auto op = [&c](uint8_t o, double a) {
+            c.op[c.n] = o;
+            c.arg[c.n] = a;
+            ++c.n;
+        };
+        if (arm == "stepcost" || arm == "matchcost") {
+            op(SC_STAT, 9); op(SC_NEG, 0); op(SC_CONST, 0.01); op(SC_STAT, 0); op(SC_MUL, 0);
+            op(SC_ADD, 0);
+        } else if (arm == "stepgeo" || arm == "matchgeo") {
+            op(SC_STAT, 25); op(SC_CONST, 2); op(SC_SUB, 0); op(SC_ABS, 0); op(SC_CONST, 0.1);
+            op(SC_STAT, 26); op(SC_MUL, 0); op(SC_ADD, 0);
+        }
+        state_cost_validate(c);
+        e.set_state_cost(c);
+    }
+    if (per_rule) e.set_matches_per_state_rule(per_rule);
 
     std::printf("evolving...\n");
     const auto t0 = std::chrono::steady_clock::now();

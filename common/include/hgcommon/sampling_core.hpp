@@ -237,5 +237,21 @@ HG_HD inline void successor_ranks(const uint64_t* rank, const SuccessorIdentity*
     }
 }
 
+// v[i] for every candidate i becomes v at the lead candidate of i's successor. `order`, `lead`
+// and `id` are as successor_ranks leaves them (order sorted by successor).
+HG_HD inline void successor_spread(const SuccessorIdentity* id, const uint32_t* order,
+                                   const uint8_t* lead, uint32_t n, uint64_t* v) {
+    uint32_t s = 0;
+    while (s < n) {
+        uint32_t e = s + 1;
+        while (e < n && same_successor(id[order[s]], id[order[e]])) ++e;
+        uint64_t x = v[order[s]];
+        for (uint32_t j = s; j < e; ++j)
+            if (lead[order[j]]) x = v[order[j]];
+        for (uint32_t j = s; j < e; ++j) v[order[j]] = x;
+        s = e;
+    }
+}
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

@@ -3885,6 +3885,73 @@ TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
     worker_stop(w);
 }
 
+// "StateCost" keeps the same states on both devices: a cost over the incidence mean distance, one
+// over the ball dimension and one over RotationCurveExponent, under each state identity, with
+// "MaxStatesPerStep" 2 and with "UniformRandom" and "MatchesPerStep" 2. Counts of states, events, causal and branchial pairs
+// equal the host's.
+TEST(GpuBinaryGate, StateCostKeepsTheSameStatesOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    HostBridge host;
+    const StateList seed = {{{1, 2}, {1, 3}, {2, 3}}};
+    const EdgeList lhs = {{1, 2}, {1, 3}};
+    const EdgeList rhs = {{1, 2}, {1, 4}, {2, 4}, {3, 4}};
+    struct Cost { std::vector<std::string> code; std::vector<double> k; const char* measures; };
+    const Cost costs[] = {{{"IncidenceMeanDistance", "Minus"}, {}, nullptr},
+                          {{"BallDimension", "Const", "Plus", "Abs"}, {-2.0}, "VolumeGrowth"},
+                          {{"RotationCurveExponent"}, {}, "GeodesicAnalysis"}};
+    for (const char* mode : {"None", "Automatic", "Full"}) {
+        for (bool matches : {false, true}) {
+            for (const Cost& c : costs) {
+                auto job = [&](uint64_t seed_value) {
+                    return build_input(seed, lhs, rhs, 4, [&](wxf::Writer& ww) {
+                        put_str_list_option(ww, "RequestedData",
+                                            {"NumStates", "NumEvents", "NumCausalEdges",
+                                             "NumBranchialEdges"});
+                        put_str_option(ww, "CanonicalizeStates", mode);
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string(matches ? "MatchesPerStep" : "MaxStatesPerStep"));
+                        ww.write(int64_t{2});
+                        put_str_option(ww, "UniformRandom", matches ? "True" : "False");
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("RandomSeed"));
+                        ww.write(static_cast<int64_t>(seed_value));
+                        put_str_list_option(ww, "StepStatisticsMeasures",
+                                            c.measures ? std::vector<std::string>{c.measures}
+                                                       : std::vector<std::string>{});
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("StateCost"));
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                        ww.write_varint(2);
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("Code"));
+                        ww.write(c.code);
+                        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                        ww.write(std::string("Constants"));
+                        ww.write(c.k);
+                    }, 7);
+                };
+                const auto cpu = run_rewriting_core(job(5), host);
+                const auto gpu = worker_call(w, job(5));
+                ASSERT_FALSE(gpu.empty()) << mode;
+                for (const char* key :
+                     {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"})
+                    EXPECT_EQ(read_int_key(gpu, key), read_int_key(cpu, key))
+                        << mode << (matches ? " matches " : " states ") << c.code[0] << " " << key;
+            }
+        }
+    }
+    worker_stop(w);
+}
+
+
 // The worker's fd 1 is stderr once it serves: the CUDA runtime writes device printf (the
 // persistent kernel's progress and stall lines) to the process's standard output, and the
 // replies go through a duplicate of the fd the parent gave, so those lines cannot enter a frame.
@@ -6340,6 +6407,70 @@ TEST(FfiInput, QuotientExplorationIsNotAppliedWithAStepCap) {
     EXPECT_TRUE(warning_contexts(full).empty());
     for (const char* k : {"NumStates", "NumEvents", "NumCausalEdges"})
         EXPECT_EQ(read_int_key(quotient, k), read_int_key(full, k)) << k;
+}
+
+// "StateCost": the paclet's postfix program (hg::stats::compile_state_cost), and its refusals.
+TEST(FfiInput, StateCostCompilesNamesAndRefusesTheRest) {
+    const hgcommon::StateCost c = hg::stats::compile_state_cost(
+        {"BallDimension", "Const", "Plus", "Abs", "VertexCount", "Power", "Plus"}, {-3.0, 2.0});
+    ASSERT_EQ(c.n, 7u);
+    EXPECT_EQ(c.op[0], hgcommon::SC_STAT);
+    EXPECT_EQ(c.arg[0], 25.0);
+    EXPECT_EQ(c.op[1], hgcommon::SC_CONST);
+    EXPECT_EQ(c.arg[1], -3.0);
+    EXPECT_EQ(c.op[5], hgcommon::SC_POW);
+    EXPECT_EQ(c.arg[5], 2.0);
+    EXPECT_EQ(c.measures, hgcommon::SG_VOLUME_GROWTH);
+    // Every "Invariants" name compiles, up to the last slot.
+    const hgcommon::StateCost h =
+        hg::stats::compile_state_cost({"HolonomyTriangle", "AlignmentMoment3", "Plus"}, {});
+    ASSERT_EQ(h.n, 3u);
+    EXPECT_EQ(h.arg[0], 47.0);
+    EXPECT_EQ(h.arg[1], 51.0);
+    EXPECT_EQ(h.measures, hgcommon::SG_HOLONOMY | hgcommon::SG_BRANCH_ALIGNMENT);
+    EXPECT_EQ(hg::stats::compile_state_cost({}, {}).n, 0u);
+    EXPECT_THROW(hg::stats::compile_state_cost({"NoSuchStatistic"}, {}), std::runtime_error);
+    EXPECT_THROW(hg::stats::compile_state_cost({"Const"}, {}), std::runtime_error);
+    EXPECT_THROW(hg::stats::compile_state_cost({"VertexCount"}, {1.0}), std::runtime_error);
+    EXPECT_THROW(hg::stats::compile_state_cost({"VertexCount", "EdgeCount"}, {}),
+                 std::runtime_error);
+}
+
+// "StateCost" through the job: an unknown name refuses the job, a cost without a step cap is
+// dropped with a warning, and a cost with one evolves.
+TEST(FfiInput, StateCostRefusesABadProgramAndNeedsAStepCap) {
+    auto put_cost = [](wxf::Writer& w, const std::vector<std::string>& code,
+                       const std::vector<double>& k) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("StateCost"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Code"));
+        w.write(code);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Constants"));
+        w.write(k);
+    };
+    EXPECT_NE(run_error(job_with_option([&](wxf::Writer& w) { put_cost(w, {"Nope"}, {}); }))
+                  .find("\"Nope\" is not a statistic"),
+              std::string::npos);
+    HostBridge host;
+    const auto uncapped = run_rewriting_core(
+        job_with_option([&](wxf::Writer& w) { put_cost(w, {"VertexCount"}, {}); }), host);
+    const auto ctx = warning_contexts(uncapped);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("\"StateCost\" applies with \"MaxStatesPerStep\""), std::string::npos);
+    const auto capped = run_rewriting_core(
+        build_input(kSeed, kLhs, kRhs, 3, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates"});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("MaxStatesPerStep"));
+            w.write(int64_t{1});
+            put_cost(w, {"VertexCount", "Minus"}, {});
+        }, 3), host);
+    EXPECT_TRUE(warning_contexts(capped).empty());
+    EXPECT_EQ(read_int_key(capped, "NumStates"), 4);
 }
 
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
