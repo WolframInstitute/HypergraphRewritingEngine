@@ -95,6 +95,11 @@ struct DeviceState {
     // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
     // (select_step, state_cost_of_form_device).
     const hgcommon::StateCost* state_cost = nullptr;
+    // "MatchesPerStep" under None states: each edge's and each state's lineage label
+    // (hgcommon::lineage_edge, lineage_state), written when the edge or the state is made; null
+    // in every other run. [max_edges], [max_states].
+    uint64_t* edge_label = nullptr;
+    uint64_t* state_label = nullptr;
     uint32_t* step_pending;                     // [step_slots] = [max_steps + 2]
     uint32_t  step_slots;
     uint32_t  max_successor_states_per_parent;
@@ -360,6 +365,10 @@ public:
     // Take the "StepStatistics" arrays (DeviceState::state_invariant_at, invariant_pool), which
     // only a run recording RecordSet::state_invariants reads. Idempotent; call before launching.
     void ensure_state_invariants();
+    // Whether the run labels edges and states by lineage (DeviceState::edge_label, state_label):
+    // on, the arrays are taken on first use. They need no clearing: a label is written when its
+    // edge or state is made. Call before launching.
+    void set_lineage(bool on);
     // The capacity of invariant_pool in 8-byte words: EngineConfig::state_invariant_words, and at
     // least half a record's fixed bytes per state slot (49 words), so a run that grows its states
     // grows the pool with them.
@@ -623,6 +632,9 @@ private:
     uint64_t*                          state_exact_hash_       = nullptr;
     hgcommon::RecordSet                record_{};
     uint32_t*                          state_edge_rank_        = nullptr;
+    uint64_t*                          edge_label_             = nullptr;
+    uint64_t*                          state_label_            = nullptr;
+    bool                               lineage_                = false;
     uint32_t*                          tr_scratch_             = nullptr;
     uint32_t*                          tr_scratch_busy_        = nullptr;
     uint32_t                           tr_scratch_slots_       = 0;

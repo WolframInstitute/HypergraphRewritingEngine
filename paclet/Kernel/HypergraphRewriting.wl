@@ -42,7 +42,7 @@ Options[HGEvolve] = {
   "StepStatisticsMatrixLimit" -> Automatic,  (* the most bytes a step's "StateMatrices" may take while they are built; a step that needs more warns and has none. Automatic: a quarter of the available memory *)
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
-  "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, the lowest-ranked: "MaxStatesPerStep" under another name. "TransitionRate" is the uniform sampler. *)
+  "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, drawn uniformly without replacement from "RandomSeed" and the step. It replaces "MaxStatesPerStep". *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
   "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps a state's transitions regardless of rule, and "MaxStatesPerStep" a step's. Applies on both devices. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the

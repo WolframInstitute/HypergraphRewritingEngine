@@ -264,9 +264,9 @@ __device__ __noinline__ MatchStage stage_state_edges(const DeviceState& ds, cons
 //   kParentCount  record each match's rank, rule and edges, emit    } the per-state cap: the
 //                 nothing                                           } transitions into the k
 //   kParentEmit   emit a kept match, once                           } lowest-ranked successors
-// The rank is hgcommon::transition_rank and the draw hgcommon::transition_survives, both keyed
-// on transition_key_device: the host's cap_at_drain, transition_survives and spine_at_drain
-// call the same functions on the same key.
+// The caps' rank is selection_rank_device, the spine's hgcommon::transition_rank of
+// transition_key_device, and the draw hgcommon::transition_survives of that key: the host's
+// cap_at_drain, spine_at_drain and transition_survives compute the same values.
 enum class EmitMode : uint8_t {
     kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit
 };
@@ -297,12 +297,19 @@ struct EmitCtl {
 // instantiated per rule shape, and inlined there ptxas ran out of memory assembling this file.
 __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id, RuleId rid,
                                         const uint8_t* pattern, const EdgeId* matched,
-                                        uint8_t depth, const EmitCtl& c) {
+                                        uint8_t depth, uint32_t step, const EmitCtl& c) {
     EdgeId edges[kMaxPatternEdges];
     for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
     for (uint8_t d = 0; d < depth; ++d) edges[pattern[d]] = matched[d];
-    const uint64_t key = transition_key_device(ds, state_id, rid, edges, depth);
-    const uint64_t r = hgcommon::transition_rank(key, ds.sampling_seed);
+    // The draw keys on the transition key; the caps and the spine order by selection rank, which
+    // without a step cap is transition_rank of the same key at step 0.
+    uint64_t key = 0, r = 0;
+    if (c.mode == EmitMode::kDraw || c.mode == EmitMode::kSpineEmit) {
+        key = transition_key_device(ds, state_id, rid, edges, depth);
+        r = hgcommon::transition_rank(key, ds.sampling_seed, 0u);
+    } else {
+        r = selection_rank_device(ds, state_id, rid, edges, depth, step + 1u);
+    }
 
     switch (c.mode) {
     case EmitMode::kCapCount: {
@@ -366,7 +373,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
 // ran out of memory. `ctl` null emits every match. `stage` is the state's edges in shared memory
 // or an empty stage. The pass anchors part `part` of `parts` equal ranges of the state's slice
 // (match_split_root_begin). A non-null `out_rank` receives each emitted record's
-// transition_rank_device at the record's index in `out`. `costs`, when given, receives a
+// step_candidate_word_device at the record's index in `out`. `costs`, when given, receives a
 // CostEntry for each emission, booked on the step (step_cost_one).
 __device__ __noinline__ void match_state_rule_pass(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
@@ -381,7 +388,7 @@ __device__ __noinline__ void match_state_rule_pass(
 
     // A completed match. matched_edges is indexed by PATTERN position, not by depth.
     auto emit = [&] (const MatchJoinState& st) {
-        if (ctl && !emit_admit(ds, state_id, rid, st.pattern, st.matched, st.depth, *ctl)) {
+        if (ctl && !emit_admit(ds, state_id, rid, st.pattern, st.matched, st.depth, step, *ctl)) {
             return;
         }
         const uint32_t idx = out.claim();
@@ -393,8 +400,9 @@ __device__ __noinline__ void match_state_rule_pass(
         for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
         for (uint8_t d = 0; d < st.depth; ++d) edges[st.pattern[d]] = st.matched[d];
         if (out_rank)
-            out_rank[idx] = transition_rank_device(ds, state_id, rid, edges, st.depth,
-                                                   stage.count ? stage.ids : nullptr, stage.count);
+            out_rank[idx] = step_candidate_word_device(ds, state_id, rid, edges, st.depth,
+                                                       step + 1u, stage.count ? stage.ids : nullptr,
+                                                       stage.count);
         MatchRecord& m = out.at(idx);
         m.rule_id   = rid;
         m.state_id  = state_id;

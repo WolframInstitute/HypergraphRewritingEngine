@@ -418,6 +418,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // clears the two counters every call so a session's later Step does not inherit the
     // tallies of its first.
     engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
+    // Under None states "MatchesPerStep" orders transitions by lineage (hgcommon::StepOrder).
+    engine.set_lineage(in.step_cap_counts_matches && in.max_states_per_step != 0 &&
+                       in.canonicalization == CanonicalizationMode::None);
     engine.set_state_cost(in.max_states_per_step != 0 ? in.state_cost : hgcommon::StateCost{});
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),

@@ -541,6 +541,16 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     for (uint8_t i = 0; i < rule.num_lhs_edges && i < ds.event_consumed_stride; ++i)
         ds.event_consumed[ev.consumed_at + i] = m.matched_edges[i];
 
+    // "MatchesPerStep" under None states: the produced edges' and the new state's lineage labels,
+    // as the host's label_rewrite.
+    if (ds.edge_label) {
+        const uint64_t key =
+            step_order_device(ds, m.state_id, m.rule_id, m.matched_edges, rule.num_lhs_edges).key;
+        for (uint8_t r = 0; r < rule.num_rhs_edges; ++r)
+            ds.edge_label[first_eid + r] = hgcommon::lineage_edge(key, r);
+        ds.state_label[new_sid] = hgcommon::lineage_state(ds.state_label[m.state_id], key);
+    }
+
     __threadfence();  // make the event visible before any rendezvous reads it
     const uint32_t keyed =
         ds.keyed.enabled

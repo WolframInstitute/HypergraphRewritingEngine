@@ -64,11 +64,109 @@ HG_HD inline bool transition_survives(uint64_t transition_key, uint64_t random_s
 // A DIFFERENT MIX FROM transition_survives, deliberately: the same key must not produce a rank
 // correlated with whether it survived a rate draw, or the two controls would compound instead
 // of composing.
-HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_seed) {
-    uint64_t x = transition_key ^ (random_seed * 0x9E3779B97F4A7C15ULL) ^ 0xA5A5A5A5A5A5A5A5ULL;
+//
+// `step` is rank_step's value: the transition's step under a step cap, 0 otherwise. At step 0 the
+// rank is the step-free rank.
+HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_seed,
+                                      uint32_t step) {
+    uint64_t x = transition_key ^ (random_seed * 0x9E3779B97F4A7C15ULL) ^ 0xA5A5A5A5A5A5A5A5ULL ^
+                 (static_cast<uint64_t>(step) * 0xC2B2AE3D27D4EB4FULL);
     x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
     return x ^ (x >> 31);
+}
+
+// The step a transition's rank reads. Under a step cap ("MaxStatesPerStep", "MatchesPerStep")
+// quotient exploration is off and every state is matched at one step, so the rank mixes that
+// step in: a history that returns to an isomorphic state draws a new order there. Without a step
+// cap a class is matched once, at a depth a shorter path can still lower, and the rank reads 0.
+// `step` is the step of the transition's event, the step its source state is matched at.
+HG_HD inline uint32_t rank_step(uint32_t step, uint32_t states_per_step) {
+    return states_per_step != 0u ? step : 0u;
+}
+
+// THE "MatchesPerStep" SELECTION. Without "StateCost" a step keeps n of its T transitions, drawn
+// uniformly without replacement from the seed and the step. The step's transitions are ordered
+// by (group, key) (step_order_before), and the kept transitions are those at the drawn
+// positions, each with every transition of equal (group, key).
+//
+// The key is fixed when the transition is found and does not change from one step to the next,
+// and the group is its source state's. Under None states the key is lineage_transition_key and
+// the group the state's lineage label. Under Automatic and Full states the key is the canonical
+// transition key and the group 0: two transitions with equal keys are automorphic, in one state
+// or in two isomorphic states.
+struct StepOrder {
+    uint64_t group;
+    uint64_t key;
+};
+
+HG_HD inline bool step_order_before(StepOrder a, StepOrder b) {
+    return a.group != b.group ? a.group < b.group : a.key < b.key;
+}
+
+HG_HD inline bool step_order_equal(StepOrder a, StepOrder b) {
+    return a.group == b.group && a.key == b.key;
+}
+
+// A transition's rank under "MatchesPerStep": the order of the drain caps and, under "StateCost",
+// of successors of equal cost.
+HG_HD inline uint64_t step_order_rank(StepOrder o, uint64_t random_seed, uint32_t step) {
+    return transition_rank(o.key ^ o.group, random_seed, step);
+}
+
+// The j-th draw of a step's selection.
+HG_HD inline uint64_t step_position_draw(uint64_t random_seed, uint32_t step, uint64_t j) {
+    constexpr uint64_t kPositionStream = 0x8EBC6AF09C88C6E3ULL;
+    return splitmix64(splitmix64((random_seed * 0x9E3779B97F4A7C15ULL) ^ kPositionStream ^
+                                 (static_cast<uint64_t>(step) * 0xC2B2AE3D27D4EB4FULL)) ^ j);
+}
+
+// The positions in [0, total) a step keeps: min(n, total) of them in out[], ascending, drawn by
+// Floyd's algorithm. O(n^2) in n, independent of `total`. Returns how many.
+HG_HD inline uint32_t step_positions(uint64_t random_seed, uint32_t step, uint64_t total,
+                                     uint32_t n, uint64_t* out) {
+    if (total <= n) {
+        for (uint64_t i = 0; i < total; ++i) out[i] = i;
+        return static_cast<uint32_t>(total);
+    }
+    uint32_t k = 0;
+    for (uint64_t j = total - n; j < total; ++j) {
+        const uint64_t t = step_position_draw(random_seed, step, j) % (j + 1u);
+        bool have = false;
+        for (uint32_t i = 0; i < k && !have; ++i) have = out[i] == t;
+        out[k++] = have ? j : t;
+    }
+    for (uint32_t i = 1; i < k; ++i) {
+        const uint64_t v = out[i];
+        uint32_t j = i;
+        while (j > 0 && out[j - 1] > v) { out[j] = out[j - 1]; --j; }
+        out[j] = v;
+    }
+    return k;
+}
+
+// LINEAGE LABELS: the identities "MatchesPerStep" orders transitions by under None states.
+// An initial state's label comes from its canonical hash, and each of its edges' from the state's
+// label and the edge's canonical rank in it. A transition's key mixes the rule and the matched
+// edges' labels in pattern order. A rewrite's produced edge at right-hand-side position j has
+// lineage_edge(key, j), and the state it makes has lineage_state(parent label, key). Every label
+// is a function of the inputs, so both engines and every schedule compute the same ones.
+HG_HD inline uint64_t lineage_initial_state(uint64_t canonical_hash) {
+    return splitmix64(canonical_hash ^ 0x5851F42D4C957F2DULL);
+}
+
+HG_HD inline uint64_t lineage_edge(uint64_t origin, uint32_t index) {
+    return splitmix64(origin ^ (static_cast<uint64_t>(index) + 1u) * 0x9E3779B97F4A7C15ULL);
+}
+
+HG_HD inline uint64_t lineage_transition_key(uint32_t rule, const uint64_t* labels, uint32_t n) {
+    uint64_t h = splitmix64(0x2545F4914F6CDD1DULL ^ rule);
+    for (uint32_t i = 0; i < n; ++i) h = splitmix64(h ^ labels[i]);
+    return h;
+}
+
+HG_HD inline uint64_t lineage_state(uint64_t parent_label, uint64_t transition_key) {
+    return splitmix64(parent_label * 0xBF58476D1CE4E5B9ULL ^ transition_key);
 }
 
 // Whether a cap of k keeps a candidate that `below` candidates rank strictly below. Over a

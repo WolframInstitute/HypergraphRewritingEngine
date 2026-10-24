@@ -186,9 +186,28 @@ exact configuration. Sampling and capping options refine this as follows:
   and every transition into a kept successor is kept (`hgcommon::SuccessorIdentity`,
   `hgcommon::successor_ranks`). Successors are told apart by their 64-bit identity hash (the
   content hash under `Automatic`, the canonical hash under `Full`), computed before the rewrite
-  runs (`hgcommon::SuccessorCursor`). **`MatchesPerStep`** (with `UniformRandom -> True`) keeps
-  the N lowest-ranked transitions of a step and replaces `MaxStatesPerStep`. All three are
+  runs (`hgcommon::SuccessorCursor`). **`MatchesPerStep`** (with `UniformRandom -> True`)
+  replaces `MaxStatesPerStep` and keeps N transitions of a step, drawn uniformly without
+  replacement: the step's transitions are ordered by (group, key), the seed and the step draw N
+  positions in that order (`hgcommon::step_positions`), and the transitions at those positions
+  are kept, each with every transition of equal (group, key). Under `None` states the key is the
+  transition's lineage key and the group its state's lineage label (below); under `Automatic`
+  and `Full` states the key is the transition key and the group 0. With `MatchesPerStep -> 1`
+  each step applies one transition to one state, so the run is a single history. All three are
   schedule-independent, and a transition not kept is not taken (no event, no state).
+- **The step in a step cap.** Under `MaxStatesPerStep` and `MatchesPerStep` every state is
+  matched at one step, and every rank and every draw of positions mixes in the step of the
+  events the transitions make (`hgcommon::rank_step`). A history that returns to an isomorphic
+  state chooses again there instead of repeating its earlier choice.
+- **Lineage labels.** Under `None` states with `MatchesPerStep` every edge and state carries a
+  64-bit label fixed when it is made (`hgcommon::lineage_*`). An initial state's label is a hash
+  of its canonical hash, and its edges' labels hash that label with each edge's canonical rank.
+  A transition's lineage key hashes the rule and the matched edges' labels in pattern order. A
+  rewrite labels its produced edges by that key and their right-hand-side positions, and the
+  state it makes by its input state's label and that key. A transition's key and its position
+  in a state's order stay fixed while the state's later rewrites leave its edges in place, and
+  the labels are a function of the inputs, so the selection is the same at every worker count
+  and on both devices.
 - **The key.** A transition's key is the input state's canonical hash, the rule, and one
   coordinate per matched edge: under `Full` states the edge's automorphism orbit, otherwise its
   canonical rank (`canonical_transition_key`, `transition_key_device`). Under `Full` states

@@ -12,7 +12,7 @@ RelatedTutorials: [GettingStarted]
 
 The number of states of a multiway system grows quickly with the number of steps. [HGEvolve]() has two kinds of options that limit it:
 
-- caps, `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, and `"MatchesPerStateRule"`, which keep the lowest-ranked successor states or transitions;
+- caps, `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, and `"MatchesPerStateRule"`, which keep a given number of successor states or transitions;
 - samples, `"TransitionRate"` with `"RuleWeights"`, and `"ExplorationProbability"`, which keep each transition or state with a probability.
 
 Both draw from the identity of each transition or state and the `"RandomSeed"`, so they keep the same states on every run with the same seed, at any thread count.
@@ -78,7 +78,7 @@ A run that sets no `"RandomSeed"` and is capped by arrival order or thinned by `
 
 ## Caps
 
-`"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` keep the lowest-ranked successor states, with every transition into them: of each state, once its matching is complete, or of each step, once the step's matching is complete. Successor states are the states as `"CanonicalizeStates"` identifies them; under the default `None` every transition makes its own state. `"UniformRandom"` with `"MatchesPerStep"` keeps the lowest-ranked transitions of each step. A transition not kept is not taken.
+`"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` keep the lowest-ranked successor states, with every transition into them: of each state, once its matching is complete, or of each step, once the step's matching is complete. Successor states are the states as `"CanonicalizeStates"` identifies them; under the default `None` every transition makes its own state. `"UniformRandom"` with `"MatchesPerStep"` keeps transitions of each step drawn uniformly from the seed and the step. A transition not kept is not taken.
 
 ### Successors per parent
 
@@ -134,13 +134,13 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[rule, init, 4, "States", "MaxS
 
 ### Matches per step
 
-`"UniformRandom" -> True` with `"MatchesPerStep" -> 3` keeps the three lowest-ranked transitions of each step. Under the default `"CanonicalizeStates" -> None` every transition makes its own state, so it keeps what `"MaxStatesPerStep" -> 3` keeps:
+`"UniformRandom" -> True` with `"MatchesPerStep" -> 3` keeps three transitions of each step, drawn uniformly from the seed and the step. `"MaxStatesPerStep" -> 3` keeps the three lowest-ranked successor states and every successor tied with the third, so it can keep more:
 
 ```wl
 {HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3], HGEvolve[rule, init, 4, "NumStates", "UniformRandom" -> True, "MatchesPerStep" -> 3, "RandomSeed" -> 3]}
 ```
 
-<!-- => {15, 15} -->
+<!-- => {15, 12} -->
 
 ## Reproducible selections
 

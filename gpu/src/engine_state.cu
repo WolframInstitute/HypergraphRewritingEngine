@@ -129,7 +129,8 @@ void ClearBatch::flush() {
     X(state_edge_slices_) X(state_edge_ids_) X(rule_weights_dev_) X(states_per_step_)          \
     X(launch_scratch_.rules) X(launch_scratch_.states) X(launch_scratch_.cursor)               \
     X(launch_scratch_.phase_cycles) X(state_canonical_hash_) X(state_exact_hash_)              \
-    X(state_edge_rank_) X(tr_scratch_) X(tr_scratch_busy_) X(survivor_scratch_)                \
+    X(state_edge_rank_) X(edge_label_) X(state_label_) X(tr_scratch_) X(tr_scratch_busy_)       \
+    X(survivor_scratch_)                                                                       \
     X(state_edge_orbit_) X(state_num_orbits_) X(state_invariant_at_) X(invariant_pool_)        \
     X(invariant_pool_used_) X(keyed_token_sum_) X(keyed_first_new_edge_)                      \
     X(keyed_follow_head_) X(keyed_follow_next_) X(edge_producer_) X(event_consumed_)          \
@@ -263,6 +264,15 @@ void EngineState::ensure_edge_ranks() {
               "EngineState init state_edge_rank");
         HG_CUDA_CHECK(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
               "EngineState init event_sig_raw_fallbacks");
+    }
+
+void EngineState::set_lineage(bool on) {
+        lineage_ = on;
+        if (!on || edge_label_) return;
+        HG_CUDA_CHECK(cudaMalloc(&edge_label_, sizeof(uint64_t) * cfg_.max_edges),
+              "EngineState edge_label alloc");
+        HG_CUDA_CHECK(cudaMalloc(&state_label_, sizeof(uint64_t) * cfg_.max_states),
+              "EngineState state_label alloc");
     }
 
 void EngineState::ensure_edge_orbits() {
@@ -430,6 +440,8 @@ DeviceState EngineState::device() const {
         d.max_states_per_step              = max_states_per_step_;
         d.step_cap_counts_matches          = step_cap_counts_matches_ ? 1u : 0u;
         d.state_cost                       = state_cost_on_ ? state_cost_dev_ : nullptr;
+        d.edge_label                       = lineage_ ? edge_label_ : nullptr;
+        d.state_label                      = lineage_ ? state_label_ : nullptr;
         d.step_pending                     = states_per_step_;
         d.step_slots                       = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;

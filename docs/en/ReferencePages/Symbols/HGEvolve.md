@@ -157,7 +157,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"ExploreFromCanonicalStatesOnly"` | `False` | whether to expand each isomorphism class once, at its shortest depth |
 | `"MatchesPerStateRule"` | `0` | the most transitions kept per state and rule, chosen by the transitions' identities (`0` for no cap) |
 | `"UniformRandom"` | `False` | whether `"MatchesPerStep"` caps the transitions kept per step |
-| `"MatchesPerStep"` | `0` | the number of transitions kept per step with `"UniformRandom"`, the lowest-ranked (`0` for no cap) |
+| `"MatchesPerStep"` | `0` | the number of transitions kept per step with `"UniformRandom"`, drawn uniformly (`0` for no cap) |
 | `"BranchialStep"` | `Automatic` | the step whose branchial pairs the branchial graph shows: `Automatic`, `All`, `-1` (the final step) or a step number from 1 |
 | `"EdgeDeduplication"` | `True` | whether a causal graph has one edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
@@ -1031,7 +1031,7 @@ The same beam ranked without a cost:
 meanDistance[]
 ```
 
-<!-- => {1.33, 1.6, 1.83, 2.18, 2.42, 2.63, 2.81} -->
+<!-- => {1.33, 1.6, 1.83, 2.18, 2.42, 2.62, 2.82} -->
 
 A cost may read any statistic of `"Invariants"`. This beam of one state per step follows rule A of [Science with Step Statistics](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/ScienceWithStepStatistics) from a torus and keeps the state whose ball dimension is closest to 1.5:
 
@@ -1220,7 +1220,7 @@ Sort @ Tally @ Lookup["RuleIndex"] @ Values @ HGEvolve[extend, {{1, 1}, {1, 1}},
 
 ### "UniformRandom"
 
-With `True`, `"MatchesPerStep"` caps the transitions kept per step: the lowest-ranked, by a rank drawn from each transition's identity and `"RandomSeed"`. With a cap of 1 the evolution follows one history:
+With `True`, `"MatchesPerStep"` caps the transitions kept per step. The transitions are drawn uniformly without replacement from `"RandomSeed"` and the step, so a history that returns to an isomorphic state can take a different transition there. With a cap of 1 the evolution follows one history:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
@@ -1233,7 +1233,7 @@ The same seed keeps the same transitions at any thread count and on either devic
 
 ### "MatchesPerStep"
 
-The number of transitions kept per step with `"UniformRandom" -> True`, the lowest-ranked; it replaces `"MaxStatesPerStep"`:
+The number of transitions kept per step with `"UniformRandom" -> True`, drawn uniformly; it replaces `"MaxStatesPerStep"`:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};

@@ -268,10 +268,12 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   state. The CPU twin of the device's `TerminationDetector`, deliberately the same shape; a join
   over one state's own tasks, not a barrier. The per-depth quiescence signal composes from it.
 - **Ranked caps.** `MaxSuccessorStatesPerParent` keeps the k lowest-ranked of a state's own
-  transitions at its drain. `MaxStatesPerStep` (and `UniformRandom`+`MatchesPerStep`) adds each
-  drain's kept transitions to its step's candidates, and the depth join's report of the step
-  submits the N lowest-ranked; step s + 1 holds a token until that selection is in, so a capped
-  run's steps complete in order. On the device the block that finishes a step's last piece of work
+  transitions at its drain. `MaxStatesPerStep` adds each drain's kept transitions to its step's
+  candidates, and the depth join's report of the step submits the N lowest-ranked;
+  `UniformRandom`+`MatchesPerStep` adds each drain's kept transitions as one block in step order
+  (`KeyOrderIndex`), and the report submits the transitions at N positions drawn from the seed
+  and the step (`select_positions`). Step s + 1 holds a token until that selection is in, so a
+  capped run's steps complete in order. On the device the block that finishes a step's last piece of work
   makes the same selection. A transition not kept is not taken.
 
 Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;

@@ -90,17 +90,65 @@ __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState&
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }
 
-// The transition's rank: hgcommon::transition_rank of transition_key_device under the run's
-// sampling seed.
-__device__ inline uint64_t transition_rank_device(const DeviceState& ds, StateId state_id,
-                                                  RuleId rule_id, const EdgeId* matched_edges,
-                                                  uint8_t num_edges,
-                                                  const EdgeId* staged_ids = nullptr,
-                                                  uint32_t staged_count = 0) {
+// The transition's order under "MatchesPerStep" (hgcommon::StepOrder), as the host's
+// ParallelEvolutionEngine::step_order: the source state's lineage label and the lineage key of
+// the matched edges' labels under None states, 0 and transition_key_device otherwise.
+__device__ inline hgcommon::StepOrder step_order_device(const DeviceState& ds, StateId state_id,
+                                                        RuleId rule_id,
+                                                        const EdgeId* matched_edges,
+                                                        uint8_t num_edges,
+                                                        const EdgeId* staged_ids = nullptr,
+                                                        uint32_t staged_count = 0) {
+    if (ds.edge_label) {
+        uint64_t labels[kMaxPatternEdges];
+        uint32_t n = 0;
+        for (uint8_t i = 0; i < num_edges && n < kMaxPatternEdges; ++i)
+            if (matched_edges[i] != INVALID_ID) labels[n++] = ds.edge_label[matched_edges[i]];
+        return hgcommon::StepOrder{ds.state_label[state_id],
+                                   hgcommon::lineage_transition_key(rule_id, labels, n)};
+    }
+    return hgcommon::StepOrder{0u, transition_key_device(ds, state_id, rule_id, matched_edges,
+                                                         num_edges, staged_ids, staged_count)};
+}
+
+// The rank the drain selections order a state's transitions by, as the host's
+// ParallelEvolutionEngine::selection_rank. `event_step` is the step of the event the transition
+// makes (a match record's step plus one).
+__device__ inline __noinline__ uint64_t selection_rank_device(const DeviceState& ds, StateId state_id,
+                                                 RuleId rule_id, const EdgeId* matched_edges,
+                                                 uint8_t num_edges, uint32_t event_step,
+                                                 const EdgeId* staged_ids = nullptr,
+                                                 uint32_t staged_count = 0) {
+    const uint32_t rs = hgcommon::rank_step(event_step, ds.max_states_per_step != 0u ? 1u : 0u);
+    if (ds.max_states_per_step != 0u && ds.step_cap_counts_matches)
+        return hgcommon::step_order_rank(
+            step_order_device(ds, state_id, rule_id, matched_edges, num_edges, staged_ids,
+                              staged_count),
+            ds.sampling_seed, rs);
     return hgcommon::transition_rank(
         transition_key_device(ds, state_id, rule_id, matched_edges, num_edges, staged_ids,
                               staged_count),
-        ds.sampling_seed);
+        ds.sampling_seed, rs);
+}
+
+// Whether the step selection draws positions ("MatchesPerStep" without "StateCost"), the host's
+// select_positions.
+__device__ inline bool step_selects_positions(const DeviceState& ds) {
+    return ds.max_states_per_step != 0u && ds.step_cap_counts_matches && ds.state_cost == nullptr;
+}
+
+// What the step selection reads per candidate: the step-order key when it draws positions,
+// selection_rank_device otherwise.
+__device__ inline __noinline__ uint64_t step_candidate_word_device(const DeviceState& ds, StateId state_id,
+                                                      RuleId rule_id, const EdgeId* matched_edges,
+                                                      uint8_t num_edges, uint32_t event_step,
+                                                      const EdgeId* staged_ids = nullptr,
+                                                      uint32_t staged_count = 0) {
+    if (step_selects_positions(ds))
+        return step_order_device(ds, state_id, rule_id, matched_edges, num_edges, staged_ids,
+                                 staged_count).key;
+    return selection_rank_device(ds, state_id, rule_id, matched_edges, num_edges, event_step,
+                                 staged_ids, staged_count);
 }
 
 // Publish state `sid`'s canonical hash. A keyed twin reads it while it is written

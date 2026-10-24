@@ -853,12 +853,15 @@ SuccessorCapRun run_successor_cap(StateCanonicalizationMode mode,
     if (per_step) e.set_max_states_per_step(per_step);
     e.set_random_seed(seed);
     e.evolve(init, steps);
-    std::map<StateId, std::set<StateId>> by_parent;
-    std::map<uint32_t, std::set<StateId>> by_step;
+    // Successors are counted by isomorphism class. A cap keeps every transition tied with its
+    // cut, and tied transitions are automorphic: under Automatic states two isomorphic states
+    // of one step make isomorphic successors of different content.
+    std::map<StateId, std::set<uint64_t>> by_parent;
+    std::map<uint32_t, std::set<uint64_t>> by_step;
     for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
         const Event& x = hg.get_event(ev);
         if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
-        const StateId out = hg.get_canonical_state(x.output_state);
+        const uint64_t out = hg.get_or_compute_canonical_hash(x.output_state);
         by_parent[x.input_state].insert(out);
         by_step[hg.get_state(x.output_state).step].insert(out);
     }
@@ -1376,4 +1379,112 @@ TEST(SamplingReproducibility, StepCapByCostDoesNotDependOnTheRecordedMeasures) {
     EXPECT_EQ(run(4, false), one);
     EXPECT_EQ(run(1, true), one);
     EXPECT_EQ(run(4, true), one);
+}
+
+// hgcommon::step_positions draws min(n, total) distinct positions below `total`, ascending, as a
+// function of the seed and the step; over many steps each position is drawn about n / total of
+// the time.
+TEST(SamplingReproducibility, StepPositionsAreDistinctAscendingAndUniform) {
+    std::vector<uint64_t> counts(10, 0);
+    for (uint32_t step = 1; step <= 20000; ++step) {
+        uint64_t pos[3];
+        const uint32_t n = hgcommon::step_positions(5, step, 10, 3, pos);
+        ASSERT_EQ(n, 3u);
+        for (uint32_t i = 0; i < n; ++i) {
+            ASSERT_LT(pos[i], 10u);
+            if (i) ASSERT_LT(pos[i - 1], pos[i]);
+            ++counts[pos[i]];
+        }
+        uint64_t again[3];
+        hgcommon::step_positions(5, step, 10, 3, again);
+        ASSERT_TRUE(std::equal(pos, pos + 3, again));
+    }
+    for (uint64_t c : counts) {
+        EXPECT_GT(c, 5600u);
+        EXPECT_LT(c, 6400u);
+    }
+    uint64_t all[4];
+    ASSERT_EQ(hgcommon::step_positions(5, 1, 4, 9, all), 4u);
+    for (uint64_t i = 0; i < 4; ++i) EXPECT_EQ(all[i], i);
+}
+
+// KeyOrderIndex against a sorted vector: select, the tie range, and erase.
+TEST(SamplingReproducibility, KeyOrderIndexSelectsInKeyOrder) {
+    hypergraph::KeyOrderIndex<uint32_t> index;
+    std::vector<std::pair<uint64_t, uint32_t>> ref;
+    uint64_t x = 1;
+    for (uint32_t i = 0; i < 3000; ++i) {
+        x = hgcommon::splitmix64(x);
+        const uint64_t key = (i % 7 == 0 && !ref.empty()) ? ref[i / 2].first : x;
+        index.insert(key, i);
+        ref.emplace_back(key, i);
+    }
+    for (uint32_t i = 0; i < 3000; i += 3) {
+        ASSERT_TRUE(index.erase(ref[i].first, [&](uint32_t v) { return v == ref[i].second; }));
+        ref[i].second = UINT32_MAX;
+    }
+    ref.erase(std::remove_if(ref.begin(), ref.end(),
+                             [](const auto& e) { return e.second == UINT32_MAX; }),
+              ref.end());
+    std::sort(ref.begin(), ref.end());
+    ASSERT_EQ(index.size(), ref.size());
+    for (uint64_t p = 0; p < ref.size(); ++p) {
+        uint64_t lo = 0, hi = 0;
+        EXPECT_EQ(index.select(p, &lo, &hi).key, ref[p].first);
+        EXPECT_EQ(ref[lo].first, ref[p].first);
+        EXPECT_TRUE(lo == 0 || ref[lo - 1].first != ref[p].first);
+        EXPECT_TRUE(hi == ref.size() || ref[hi].first != ref[p].first);
+    }
+}
+
+// "MatchesPerStep" 1 under None states is a single history. Its choice at a step reads the step,
+// so a history that returns to an isomorphic state can take a different transition there. Rule
+// {{x,y}} -> {{y,x}} on the path {{0,1},{1,2},{2,3}} returns to its few classes within a few
+// steps; over 120 steps some class is left by at least two transitions, told apart by the
+// consumed edge's canonical rank in the class.
+TEST(SamplingReproducibility, AHistoryThatReturnsToAClassDrawsAgainThere) {
+    for (size_t threads : {size_t(1), size_t(4)}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 0}).build());
+        e.set_matches_per_step(1);
+        e.set_random_seed(1);
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 120);
+        ASSERT_EQ(hg.num_events(), 120u) << threads;
+        std::map<uint64_t, std::set<uint32_t>> chosen;
+        for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+            const Event& x = hg.get_event(ev);
+            if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+            const State& in = hg.get_state(x.input_state);
+            hg.ensure_state_edge_ranks(x.input_state, in.edges);
+            chosen[hg.get_or_compute_canonical_hash(x.input_state)].insert(
+                Hypergraph::edge_rank_in(hg.edge_rank_table(x.input_state), x.consumed_edges[0]));
+        }
+        size_t most = 0;
+        for (const auto& c : chosen) most = std::max(most, c.second.size());
+        EXPECT_GE(most, 2u) << threads << " threads";
+    }
+}
+
+// "MatchesPerStep" under None states chooses the same transitions at 1, 4 and 32 workers, for
+// one and for three transitions per step.
+TEST(SamplingReproducibility, MatchesPerStepUnderNoneStatesIsTheSameAtEveryWorkerCount) {
+    for (size_t n : {size_t(1), size_t(3)}) {
+        auto run = [&](size_t threads) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
+                           .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
+            e.set_matches_per_step(n);
+            e.set_random_seed(9);
+            e.evolve(std::vector<std::vector<VertexId>>{{1u, 2u}, {1u, 3u}, {1u, 4u}}, 6);
+            EXPECT_EQ(hg.num_events(), 6 * n);
+            return causal_fingerprint(hg);
+        };
+        const auto one = run(1);
+        for (size_t threads : {size_t(4), size_t(32)})
+            EXPECT_EQ(run(threads), one) << n << " per step at " << threads << " workers";
+    }
 }

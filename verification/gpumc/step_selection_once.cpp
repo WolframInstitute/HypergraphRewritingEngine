@@ -20,7 +20,7 @@
 // the record's child is registered; the release that brings step 2 to zero runs step 2's selection.
 //
 // THE PROPERTY. `found` holds two records: the lower-ranked of states 1 and 2
-// (hgcommon::transition_rank over transition_key_device, computed in main after the joins) and
+// (selection_rank_device, computed in main after the joins) and
 // state 3. Every published flag is set. Step 3's count is 1: the kept record's unit, booked, plus
 // step 2's token, released. No access races.
 //
@@ -120,10 +120,8 @@ int main() {
     for (int i = 0; i < 3; ++i) pthread_join(t[i], nullptr);
 
     uint64_t rank[3];
-    for (uint32_t s = 1; s <= 2; ++s) {
-        const uint64_t key = g::transition_key_device(*g_ds, s, 0, nullptr, 0);
-        rank[s] = hgcommon::transition_rank(key, kSeed);
-    }
+    // The candidates are records of step 1, whose events are at step 2.
+    for (uint32_t s = 1; s <= 2; ++s) rank[s] = g::selection_rank_device(*g_ds, s, 0, nullptr, 0, 2u);
     const uint32_t lowest = rank[1] < rank[2] ? 1u : 2u;
     assert(g_found_n == 2 && "the selections kept a number of records other than two");
     bool kept_lowest = false, kept_later = false;

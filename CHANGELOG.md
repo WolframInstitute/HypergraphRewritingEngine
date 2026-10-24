@@ -19,6 +19,11 @@
   a quarter of the available memory) has none and warns.
 - `"IncludeVertexCurvature" -> True` adds `"VertexCurvature"` to each state record: each vertex
   with a neighbour and its Ollivier-Ricci curvature.
+- `"UniformRandom" -> True` with `"MatchesPerStep" -> n` keeps n transitions of each step drawn
+  uniformly from `"RandomSeed"` and the step. In rc2 it kept the n lowest-ranked transitions by a
+  rank that did not read the step, so a single history that returned to an isomorphic state took
+  the same transition there again and repeated. `"MaxStatesPerStep"` ranks read the step as well.
+  Every result of these two options changes.
 
 ## v1.0.0-rc2 (2026-10-09)
 

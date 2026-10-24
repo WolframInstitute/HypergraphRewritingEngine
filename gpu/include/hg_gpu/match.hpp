@@ -230,7 +230,7 @@ __device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
 // Full states; a scheduler that passes null for them records kScratchOverflow when the cap
 // needs them. When match_state_rule_splits(ds) holds, the call matches part `part` of `parts`
 // (match_split_root_begin), and the parts of a pair together emit each of its matches once,
-// each with its transition_rank_device at its index in `out` when `out_rank` is non-null;
+// each with its step_candidate_word_device at its index in `out` when `out_rank` is non-null;
 // otherwise `parts` must be 1 and `out_rank` is not written.
 __device__ void match_state_rule(const DeviceState& ds, const DeviceRule* rules,
                                  StateId state_id, uint32_t rid, uint32_t step,

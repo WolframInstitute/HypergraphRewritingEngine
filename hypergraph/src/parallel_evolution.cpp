@@ -144,6 +144,7 @@ void ParallelEvolutionEngine::evolve(
     // Create or get the canonical state (canonical hash computed inside, mode-aware).
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), 0, INVALID_ID);
+    label_root(raw_state);
 
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -244,6 +245,7 @@ void ParallelEvolutionEngine::evolve(
     roots.reserve(initial_states.size());
     for (const auto& state_edges : initial_states) {
         roots.push_back(create_and_register_initial_state(state_edges));
+        label_root(roots.back());
         note_initial_class(roots.back());
     }
     std::sort(initial_classes_.begin(), initial_classes_.end());
@@ -317,6 +319,8 @@ void ParallelEvolutionEngine::finalize_evolution() {
     // The steps the run ended on never settle past their successor, so their epochs go here.
     if (match_epochs_on_)
         depth_join_.storage().for_each_extra([this](DepthExtra& x) { drop_match_epoch(x); });
+    else
+        depth_join_.storage().for_each_extra([this](DepthExtra& x) { drop_blocks(x); });
 
     // Emit visualization event for evolution completion
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -862,12 +866,6 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     // skeleton, which is what lets repeated sampling recover the graph. Still a pure
     // function of (transition, seed): schedule-stable, device-stable.
     join->fold_own_rank(spine_rank(canonical_key));
-    // A k-of-M cap needs M, and M is complete only at this state's drain. So the answer here is
-    // NO for every own-found match and cap_at_drain submits the winners. Capping by arrival
-    // instead is what max_states_per_step_ already does, and it clips the offspring distribution
-    // to a point mass.
-    if (defers_to_drain()) return false;
-
     if (transition_survives(canonical_key, site, rule)) {
         join->mark_own_spawned();
         return true;
@@ -875,21 +873,23 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     return false;
 }
 
-// The state's own matches, in the order the drain selections take them: by transition_rank, ties
-// by canonical transition key. Under MatchesPerStateRule only the k lowest-ranked of each rule.
+// The state's own matches, in the order the drain selections take them: by selection_rank, ties
+// by key. Under MatchesPerStateRule only the k lowest-ranked of each rule.
 //
 // Under either drain selection the run turns match forwarding off (configure), so a state's own
 // matching finds all of its matches and this list is the whole population. A forwarded record is
 // still skipped: it would have arrived after the drain, and counting it would choose a different
 // set at a different worker count.
-void ParallelEvolutionEngine::drain_candidates(StateId state, std::vector<RankedMatch>& out) {
+void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
+                                               std::vector<RankedMatch>& out) {
     out.clear();
     auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
     (*stored)->for_each([&](const MatchRecord& m) {
         if (m.is_forwarded) return;
-        const uint64_t key = canonical_transition_key(state, m);
-        out.push_back(RankedMatch{spine_rank(key), key, &m});
+        uint64_t key = 0;
+        const uint64_t rank = selection_rank(state, m, step, &key);
+        out.push_back(RankedMatch{rank, key, &m});
     });
     std::sort(out.begin(), out.end(), ranked_before);
     const size_t k = matches_per_state_rule_;
@@ -921,9 +921,25 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, std::vector<Ranked
 // pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     std::vector<RankedMatch> cands;
-    drain_candidates(state, cands);
+    drain_candidates(state, step, cands);
     const size_t k = max_successor_states_per_parent_;
     const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
+    if (max_states_per_step_ != 0 && step_cap_counts_matches_ && !costed) {
+        // MatchesPerStep: the state's kept transitions go to the step as one block in step
+        // order.
+        if (k != 0) {
+            for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
+            keep_lowest_successors(cands, k);
+        }
+        DepthExtra* x = depth_join_.storage().find_extra(step);
+        if (!x) return;
+        auto* index = new OrderIndex();
+        for (const RankedMatch& c : cands) index->insert(c.key, c.match);
+        const uint64_t group = lineage_on_ ? *state_labels_.find(state) : 0u;
+        x->blocks.push(OrderBlock{group, state, index}, match_arena(step));
+        HG_STAT(step_candidates_offered_.fetch_add(cands.size(), std::memory_order_relaxed));
+        return;
+    }
     if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_) || costed)
         for (RankedMatch& c : cands)
             c.succ = successor_identity(state, *c.match, costed ? &c.cost : nullptr);
@@ -1026,14 +1042,95 @@ void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& c
 // settle. A successor's rank is the smallest rank into it, ties at the cut are kept, and the
 // kept set does not depend on the candidates' list order.
 void ParallelEvolutionEngine::select_step(uint32_t step) {
-    auto* list = step_candidates(step);
-    if (!list) return;
+    DepthExtra* x = depth_join_.storage().find_extra(step);
+    if (!x) return;
+    if (step_cap_counts_matches_ && !hgcommon::state_cost_active(state_cost_)) {
+        select_positions(step, *x);
+        return;
+    }
+    auto* list = &x->candidates;
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
     keep_lowest_successors(cands, max_states_per_step_, hgcommon::state_cost_active(state_cost_));
     for (const RankedMatch& c : cands) submit_rewrite_task(*c.match, step, step + 1);
     if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
+}
+
+void ParallelEvolutionEngine::select_positions(uint32_t step, DepthExtra& x) {
+    std::vector<OrderBlock> blocks;
+    x.blocks.for_each([&](const OrderBlock& b) { blocks.push_back(b); });
+    x.blocks.reset();
+    // Blocks in group order; blocks of one group form one merged run. Under None states every
+    // group is one state's.
+    std::sort(blocks.begin(), blocks.end(),
+              [](const OrderBlock& a, const OrderBlock& b) { return a.group < b.group; });
+    uint64_t total = 0;
+    for (const OrderBlock& b : blocks) total += b.index->size();
+    std::vector<uint64_t> pos(std::min<uint64_t>(max_states_per_step_, total));
+    const uint32_t n = hgcommon::step_positions(random_seed_, step, total,
+                                                static_cast<uint32_t>(pos.size()), pos.data());
+    uint64_t kept = 0;
+    auto submit = [&](const MatchRecord* rec, StateId state) {
+        MatchRecord m = *rec;
+        m.is_forwarded = m.source_state != state ? 1u : 0u;
+        m.source_state = state;
+        submit_rewrite_task(m, step, step + 1);
+        ++kept;
+    };
+    uint32_t next = 0;   // the first position not yet taken
+    uint64_t offset = 0;
+    for (size_t g = 0; g < blocks.size();) {
+        size_t h = g + 1;
+        while (h < blocks.size() && blocks[h].group == blocks[g].group) ++h;
+        uint64_t size = 0;
+        for (size_t i = g; i < h; ++i) size += blocks[i].index->size();
+        if (h == g + 1) {
+            const OrderBlock& b = blocks[g];
+            uint64_t taken_hi = 0;
+            for (; next < n && pos[next] < offset + size; ++next) {
+                const uint64_t p = pos[next] - offset;
+                if (p < taken_hi) continue;   // in the tie run already kept
+                uint64_t lo = 0, hi = 0;
+                b.index->select(p, &lo, &hi);
+                for (uint64_t q = lo; q < hi; ++q) {
+                    uint64_t l2, h2;
+                    submit(b.index->select(q, &l2, &h2).value, b.state);
+                }
+                taken_hi = hi;
+            }
+        } else if (next < n && pos[next] < offset + size) {
+            // Equal groups: the blocks' entries merged by key.
+            struct Merged { uint64_t key; const MatchRecord* rec; StateId state; };
+            std::vector<Merged> run;
+            run.reserve(size);
+            for (size_t i = g; i < h; ++i)
+                blocks[i].index->for_each([&](const OrderIndex::Entry& e) {
+                    run.push_back(Merged{e.key, e.value, blocks[i].state});
+                });
+            std::sort(run.begin(), run.end(),
+                      [](const Merged& a, const Merged& b) { return a.key < b.key; });
+            uint64_t taken_hi = 0;
+            for (; next < n && pos[next] < offset + size; ++next) {
+                const uint64_t p = pos[next] - offset;
+                if (p < taken_hi) continue;
+                uint64_t lo = p, hi = p + 1;
+                while (lo > 0 && run[lo - 1].key == run[p].key) --lo;
+                while (hi < run.size() && run[hi].key == run[p].key) ++hi;
+                for (uint64_t q = lo; q < hi; ++q) submit(run[q].rec, run[q].state);
+                taken_hi = hi;
+            }
+        }
+        offset += size;
+        g = h;
+    }
+    for (const OrderBlock& b : blocks) delete b.index;
+    if (kept) HG_STAT(stats_.mine().spine_forced.bump(kept));
+}
+
+void ParallelEvolutionEngine::drop_blocks(DepthExtra& x) {
+    x.blocks.for_each([](const OrderBlock& b) { delete b.index; });
+    x.blocks.reset();
 }
 
 void ParallelEvolutionEngine::depth_settled(uint32_t depth) {
@@ -1442,6 +1539,7 @@ void ParallelEvolutionEngine::retire_match_epoch(uint32_t step) {
 
 bool ParallelEvolutionEngine::drop_match_epoch(DepthExtra& x) {
     x.candidates.reset();
+    drop_blocks(x);
     MatchEpoch* e = x.epoch.exchange(nullptr, std::memory_order_acq_rel);
     if (!e) return false;
     delete e;
@@ -1548,6 +1646,9 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // causal, where None with a non-Automatic key set gives 4 events and 32 causal edges.
     const bool full_states =
         hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full;
+    // Under None states "MatchesPerStep" orders transitions by lineage (hgcommon::StepOrder).
+    lineage_on_ = max_states_per_step_ != 0 && step_cap_counts_matches_ &&
+                  hg_->state_canonicalization_mode() == StateCanonicalizationMode::None;
     // Quotient exploration is defined over Full classes (docs/SPEC.md §5.4) and is not applied
     // under None or Automatic states or under MaxStatesPerStep: every state is expanded. The FFI
     // reports it (QuotientNeedsFull, QuotientStepCap).
@@ -1732,6 +1833,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     );
 
     if (rr.new_state == INVALID_ID) return;
+    if (lineage_on_) label_rewrite(match, rr.raw_state, rr.produced_edges, rr.num_produced);
 
     total_rewrites_.fetch_add(1, std::memory_order_relaxed);
     total_events_.fetch_add(1, std::memory_order_relaxed);
@@ -1966,6 +2068,8 @@ void ParallelEvolutionEngine::execute_match_task(
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
         // transition (S -> S') does not drop the match, and the same match at a different
         // source state is a DIFFERENT transition that gets its own independent draw.
+        // A drain selection chooses at the state's drain.
+        if (defers_to_drain()) return;
         if (sampling_active() &&
             !transition_survives_spined(state, canonical_transition_key(state, match), 3,
                                         match.rule_index())) return;
@@ -2361,7 +2465,9 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     if (records_own_matches()) store_match_for_state(data.state, match, data.step);
 
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
-    // -- it is "not yours to rewrite", which is the same instruction to the caller.
+    // -- it is "not yours to rewrite", which is the same instruction to the caller. A drain
+    // selection chooses at the state's drain.
+    if (defers_to_drain()) return false;
     if (sampling_active() &&
         !transition_survives_spined(data.state, canonical_transition_key(data.state, match), 4,
                                     match.rule_index())) return false;
@@ -2799,7 +2905,55 @@ bool ParallelEvolutionEngine::sampling_active() const {
 }
 
 uint64_t ParallelEvolutionEngine::spine_rank(uint64_t canonical_key) const {
-    return hgcommon::transition_rank(canonical_key, random_seed_);
+    return hgcommon::transition_rank(canonical_key, random_seed_, 0u);
+}
+
+uint64_t ParallelEvolutionEngine::lineage_key(const MatchRecord& match) const {
+    uint64_t labels[MAX_PATTERN_EDGES];
+    const uint8_t n = match.num_edges();
+    for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i)
+        labels[i] = *edge_labels_.find(match.matched_edges()[i]);
+    return hgcommon::lineage_transition_key(match.rule_index(), labels, n);
+}
+
+hgcommon::StepOrder ParallelEvolutionEngine::step_order(StateId state, const MatchRecord& match) {
+    if (lineage_on_) return hgcommon::StepOrder{*state_labels_.find(state), lineage_key(match)};
+    return hgcommon::StepOrder{0u, canonical_transition_key(state, match)};
+}
+
+uint64_t ParallelEvolutionEngine::selection_rank(StateId state, const MatchRecord& match,
+                                                 uint32_t step, uint64_t* key) {
+    const uint32_t rs =
+        hgcommon::rank_step(step, static_cast<uint32_t>(max_states_per_step_ != 0));
+    if (max_states_per_step_ != 0 && step_cap_counts_matches_) {
+        const hgcommon::StepOrder o = step_order(state, match);
+        *key = o.key;
+        return hgcommon::step_order_rank(o, random_seed_, rs);
+    }
+    *key = canonical_transition_key(state, match);
+    return hgcommon::transition_rank(*key, random_seed_, rs);
+}
+
+void ParallelEvolutionEngine::label_root(StateId root) {
+    if (!lineage_on_) return;
+    const State& s = hg_->get_state(root);
+    const uint64_t label = hgcommon::lineage_initial_state(hg_->get_or_compute_canonical_hash(root));
+    state_labels_.slot(root, hg_->arena()) = label;
+    hg_->ensure_state_edge_ranks(root, s.edges);
+    const EdgeRankTable* table = hg_->edge_rank_table(root);
+    s.edges.for_each([&](EdgeId e) {
+        edge_labels_.slot(e, hg_->arena()) =
+            hgcommon::lineage_edge(label, Hypergraph::edge_rank_in(table, e));
+    });
+}
+
+void ParallelEvolutionEngine::label_rewrite(const MatchRecord& match, StateId child,
+                                            const EdgeId* produced, uint8_t num_produced) {
+    const uint64_t key = lineage_key(match);
+    for (uint8_t j = 0; j < num_produced; ++j)
+        edge_labels_.slot(produced[j], hg_->arena()) = hgcommon::lineage_edge(key, j);
+    state_labels_.slot(child, hg_->arena()) =
+        hgcommon::lineage_state(*state_labels_.find(match.source_state), key);
 }
 
 void ParallelEvolutionEngine::set_on_state_matches_complete(

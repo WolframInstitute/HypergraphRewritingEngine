@@ -103,7 +103,7 @@ int main() {
         for (uint32_t i = 0; i < g::kMaxPatternEdges; ++i) edges[i] = g::INVALID_ID;
         edges[0] = e;
         const uint64_t r = hgcommon::transition_rank(
-            g::transition_key_device(*g_ds, 0, 0, edges, 1), g_ds->sampling_seed);
+            g::transition_key_device(*g_ds, 0, 0, edges, 1), g_ds->sampling_seed, 0u);
         if (r < best_rank) { best_rank = r; best = e; }
     }
     assert(g_records_n == 1 && "the block did not emit exactly one transition");

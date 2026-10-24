@@ -35,6 +35,7 @@
 #include "concurrent_map.hpp"
 #include "concurrent_key_set.hpp"
 #include "lock_free_list.hpp"
+#include "key_order_index.hpp"
 #include "match_join.hpp"
 #include "segmented_array.hpp"
 #include "hypergraph/debug_log.hpp"
@@ -785,6 +786,29 @@ private:
         uint64_t cost = 0;
     };
 
+    // "MatchesPerStep" without "StateCost": the transitions a state's drain keeps, by their
+    // step-order key, and the state's step-order group (hgcommon::StepOrder). select_positions
+    // reads the step's blocks and deletes their indices; drop_blocks deletes the indices of
+    // blocks no selection read.
+    using OrderIndex = KeyOrderIndex<const MatchRecord*>;
+    struct OrderBlock {
+        uint64_t group;
+        StateId state;
+        OrderIndex* index;
+    };
+    // Under None states with "MatchesPerStep": each edge's and each state's lineage label
+    // (hgcommon::lineage_edge, lineage_state), written once when the edge or state is made and
+    // read after the job that publishes it.
+    bool lineage_on_{false};
+    SegmentedArray<uint64_t> edge_labels_;
+    SegmentedArray<uint64_t> state_labels_;
+    // Labels a root and its edges from its canonical hash and edge ranks.
+    void label_root(StateId root);
+    // Labels the edges and the state a rewrite of `match` made.
+    void label_rewrite(const MatchRecord& match, StateId child, const EdgeId* produced,
+                       uint8_t num_produced);
+    uint64_t lineage_key(const MatchRecord& match) const;
+
     // MATCH STORAGE BY STEP. When match_epochs_on_ is set, everything a match task at step t
     // allocates for its matches -- each new match's MatchCore and stable MatchRecord, the dedup
     // entry, the state's stored list and its nodes, the step's MaxStatesPerStep candidates and a
@@ -803,6 +827,7 @@ private:
     // epoch, created by the first task that needs it.
     struct DepthExtra {
         LockFreeList<RankedMatch> candidates;
+        LockFreeList<OrderBlock> blocks;
         std::atomic<MatchEpoch*> epoch{nullptr};
         ~DepthExtra() { delete epoch.load(std::memory_order_acquire); }
     };
@@ -821,6 +846,7 @@ private:
     // Empty a depth's candidate list and delete its epoch; true when there was one. Quiescent
     // for that depth: no task reads or allocates in it.
     bool drop_match_epoch(DepthExtra& x);
+    void drop_blocks(DepthExtra& x);
     // Stats builds: epochs created, epochs deleted at their successor's settle, and the most
     // alive at once.
     std::atomic<size_t> match_epochs_created_{0};
@@ -1013,6 +1039,16 @@ public:
     // by per-transition survival. Seeding the spine attacks reachability directly: each seed
     // keeps a different one-per-state skeleton.
     uint64_t spine_rank(uint64_t canonical_key) const;
+
+    // The order of a transition under "MatchesPerStep" (hgcommon::StepOrder): under None states
+    // the source state's lineage label and the transition's lineage key, otherwise 0 and the
+    // canonical transition key.
+    hgcommon::StepOrder step_order(StateId state, const MatchRecord& match);
+    // The rank the drain selections order a state's transitions by at `step`: under
+    // "MatchesPerStep" hgcommon::step_order_rank of step_order, otherwise transition_rank of the
+    // canonical transition key; the step enters under a step cap (hgcommon::rank_step).
+    uint64_t selection_rank(StateId state, const MatchRecord& match, uint32_t step,
+                            uint64_t* key);
 
     // Called once per state, after that state's last match task and before any of its matches
     // could be superseded. Anything keyed on "the matches of one state" as a set belongs here.
@@ -1444,7 +1480,7 @@ private:
     static bool ranked_tied(const RankedMatch& x, const RankedMatch& y) {
         return x.rank == y.rank && x.key == y.key;
     }
-    void drain_candidates(StateId state, std::vector<RankedMatch>& out);
+    void drain_candidates(StateId state, uint32_t step, std::vector<RankedMatch>& out);
     // The identity of the state `match` makes from `state` (hgcommon::SuccessorIdentity).
     // With `cost`, also the successor's cost (successor_cost) into *cost.
     hgcommon::SuccessorIdentity successor_identity(StateId state, const MatchRecord& match,
@@ -1474,6 +1510,10 @@ private:
         return x ? &x->candidates : nullptr;
     }
     void select_step(uint32_t step);
+    // "MatchesPerStep" without "StateCost": the transitions of step `step` at the positions
+    // hgcommon::step_positions draws in the step's order over its blocks, each with every
+    // transition of equal order.
+    void select_positions(uint32_t step, DepthExtra& x);
     // The join's report of a settled depth: the per-step selection, then the caller's hook.
     void depth_settled(uint32_t depth);
 

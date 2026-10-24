@@ -84,6 +84,10 @@ struct StepSelectScratch {
     uint32_t* idx;     // [cap] their candidate-pool indices
     uint32_t* words;   // [2] candidates gathered, scan start
     uint32_t  cap;
+    // "MatchesPerStep" without "StateCost" (select_positions): each candidate's step-order group,
+    // and the drawn positions. Null otherwise.
+    uint64_t* group = nullptr;   // [cap]
+    uint64_t* pos = nullptr;     // [cap]
     // MaxStatesPerStep under Automatic or Full states, where the cap counts successor states:
     // each candidate's successor, its successor rank, the sort scratch and a lead bit per
     // successor (hgcommon::successor_ranks). Null when the cap counts transitions.
@@ -166,6 +170,120 @@ __global__ void k_step_release_empty(const __grid_constant__ DeviceState ds) {
         ds.step_pending[s + 1] -= 1u;
 }
 
+// The k-th smallest (1-based) 128-bit key (hi, lo) over the entries i < m with take(i), on the
+// calling block, into every thread's out_hi and out_lo. A byte at a time from the top: each pass
+// counts the entries under the prefix found so far by their next byte and takes the byte whose
+// bin holds the k-th of them. With `wide` the passes read hi's 8 bytes and then lo's; without
+// it hi_at returns 0 for every entry and the passes read lo's 8 bytes. k is at most the number
+// of entries taken.
+template <class Hi, class Lo, class Take>
+__device__ void radix_kth(uint32_t m, uint32_t k, bool wide, Hi&& hi_at, Lo&& lo_at, Take&& take,
+                          uint64_t& out_hi, uint64_t& out_lo) {
+    const uint32_t tid = threadIdx.x, nt = blockDim.x;
+    __shared__ uint32_t s_hist[256];
+    __shared__ uint64_t s_prefix_hi, s_prefix_lo;
+    __shared__ uint32_t s_remaining;
+    if (tid == 0) { s_prefix_hi = 0; s_prefix_lo = 0; s_remaining = k; }
+    uint64_t mask_hi = 0, mask_lo = 0;
+    for (int shift = wide ? 120 : 56; shift >= 0; shift -= 8) {
+        const bool high = shift >= 64;
+        const int sh = shift & 63;
+        for (uint32_t b = tid; b < 256u; b += nt) s_hist[b] = 0u;
+        __syncthreads();
+        const uint64_t prefix_hi = s_prefix_hi, prefix_lo = s_prefix_lo;
+        for (uint32_t i = tid; i < m; i += nt) {
+            if (!take(i)) continue;
+            const uint64_t h = hi_at(i);
+            if (high) {
+                if ((h & mask_hi) == prefix_hi) atomicAdd(&s_hist[(h >> sh) & 0xFFu], 1u);
+            } else {
+                const uint64_t l = lo_at(i);
+                if (h == prefix_hi && (l & mask_lo) == prefix_lo)
+                    atomicAdd(&s_hist[(l >> sh) & 0xFFu], 1u);
+            }
+        }
+        __syncthreads();
+        if (tid == 0) {
+            uint32_t b = 0;
+            while (b < 255u && s_remaining > s_hist[b]) s_remaining -= s_hist[b++];
+            if (high) s_prefix_hi |= uint64_t{b} << sh;
+            else s_prefix_lo |= uint64_t{b} << sh;
+        }
+        if (high) mask_hi |= uint64_t{0xFFu} << sh;
+        else mask_lo |= uint64_t{0xFFu} << sh;
+        __syncthreads();
+    }
+    out_hi = s_prefix_hi;
+    out_lo = s_prefix_lo;
+    __syncthreads();
+}
+
+// Appends candidate `ci` of step s to the rewrite pool. Its rewrite was booked on step s + 1; a
+// full pool records the overflow and releases that booking.
+__device__ inline void append_selected(const DeviceState& ds, uint32_t s,
+                                       typename Pool<MatchRecord>::DeviceView cand,
+                                       typename Pool<MatchRecord>::DeviceView found, uint32_t ci) {
+    const uint32_t k = found.claim();
+    if (k == Pool<MatchRecord>::kInvalid) {
+        ds.errors.record(ErrorKind::kMatchPoolFull);
+        step_release(ds, s + 1u, 1u);   // the token is still held, so this is not the last
+        return;
+    }
+    const MatchRecord& src = cand.at(ci);
+    MatchRecord& dst = found.at(k);
+    dst.rule_id = src.rule_id;
+    dst.state_id = src.state_id;
+    dst.step = src.step;
+    dst.num_edges = src.num_edges;
+    for (uint32_t e = 0; e < kMaxPatternEdges; ++e) dst.matched_edges[e] = src.matched_edges[e];
+    publish_match(dst);
+}
+
+// A candidate the position selection keeps, marked in the top bit of its StepSelectScratch::idx.
+constexpr uint32_t kPositionKept = 0x80000000u;
+
+// "MatchesPerStep" without "StateCost" (step_selects_positions), the host's select_positions:
+// the m candidates of step s, with their step-order keys in sel.rank and groups in sel.group,
+// are kept at the positions hgcommon::step_positions draws for the step's event step s + 1,
+// each with every candidate of equal (group, key). Each position is found by radix_kth; the kept
+// candidates are booked on step s + 1 and appended to `found`.
+__device__ void select_positions(const DeviceState& ds, uint32_t s, uint32_t m,
+                                 typename Pool<MatchRecord>::DeviceView cand,
+                                 typename Pool<MatchRecord>::DeviceView found,
+                                 StepSelectScratch sel) {
+    const uint32_t tid = threadIdx.x, nt = blockDim.x;
+    __shared__ uint32_t s_npos;
+    __shared__ uint32_t s_kept;
+    if (tid == 0) {
+        const uint32_t want = ds.max_states_per_step < m ? ds.max_states_per_step : m;
+        s_npos = hgcommon::step_positions(ds.sampling_seed, s + 1u, m, want, sel.pos);
+        s_kept = 0u;
+    }
+    __syncthreads();
+    const uint32_t npos = s_npos;
+    const bool wide = ds.state_label != nullptr;
+    for (uint32_t p = 0; p < npos; ++p) {
+        uint64_t g = 0, k = 0;
+        radix_kth(m, static_cast<uint32_t>(sel.pos[p]) + 1u, wide,
+                  [&](uint32_t i) { return sel.group[i]; },
+                  [&](uint32_t i) { return sel.rank[i]; }, [](uint32_t) { return true; }, g, k);
+        for (uint32_t i = tid; i < m; i += nt)
+            if (sel.group[i] == g && sel.rank[i] == k) sel.idx[i] |= kPositionKept;
+        __syncthreads();
+    }
+    uint32_t local = 0;
+    for (uint32_t i = tid; i < m; i += nt)
+        if (sel.idx[i] & kPositionKept) ++local;
+    atomicAdd(&s_kept, local);
+    __syncthreads();
+    if (tid == 0) step_book(ds, s + 1u, s_kept);
+    __syncthreads();
+    for (uint32_t i = tid; i < m; i += nt)
+        if (sel.idx[i] & kPositionKept)
+            append_selected(ds, s, cand, found, sel.idx[i] & ~kPositionKept);
+    __syncthreads();
+}
+
 // Selection of step s on the calling block: rank the step's candidates; when the cap counts
 // successor states, replace each rank by its successor's (the smallest rank into it,
 // hgcommon::successor_ranks); under "StateCost" each candidate also carries its successor's
@@ -183,8 +301,6 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     const uint32_t tid = threadIdx.x, nt = blockDim.x;
     const unsigned long long t_select = tid == 0 ? clock64() : 0;
     __shared__ uint32_t s_cnt;
-    __shared__ uint32_t s_remaining;
-    __shared__ uint64_t s_prefix;
     // THE SCAN STARTS AT sel.words[1]: below it every candidate belongs to a step already
     // selected. A candidate of step s + 1 or later is produced from a state step s's selection
     // creates, after this scan reads the counter, or was seeded before the run (a session
@@ -216,17 +332,24 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
         } else {
             EdgeId edges[kMaxPatternEdges];
             for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
-            rank = transition_rank_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
+            rank = step_candidate_word_device(ds, r.state_id, r.rule_id, edges, r.num_edges,
+                                              s + 1u);
         }
         const uint32_t at = atomicAdd(&sel.words[0], 1u);
         if (at < sel.cap) {
             sel.rank[at] = rank;
             sel.idx[at] = i;
+            if (sel.group) sel.group[at] = ds.state_label ? ds.state_label[r.state_id] : 0u;
         }
     }
     __syncthreads();
     if (tid == 0) sel.words[1] = s_next_start;
     const uint32_t m = min(sel.words[0], sel.cap);
+    if (step_selects_positions(ds)) {
+        select_positions(ds, s, m, cand, found, sel);
+        if (tid == 0 && sel.cycles) atomicAdd(sel.cycles, clock64() - t_select);
+        return;
+    }
     const uint32_t cap_n = ds.max_states_per_step;
     // Successor states, on the whole warp (a Full successor's hash runs on it).
     const bool by_succ = !ds.step_cap_counts_matches && sel.id != nullptr && succ != nullptr &&
@@ -307,44 +430,12 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     hgcommon::CostCut cut{0u, ~0ULL, true};
     uint32_t take = m;
     if (groups > cap_n) {
-        // The N-th smallest key, a byte at a time from the top: each pass counts the entries
-        // under the prefix found so far by their next byte, and takes the byte whose bin holds
-        // the N-th of them. The key is 16 bytes under "StateCost" (the cost's 8, then the
-        // rank's) and the rank's 8 without it.
-        __shared__ uint32_t s_hist[256];
-        __shared__ uint64_t s_prefix_cost;
-        if (tid == 0) { s_prefix = 0; s_prefix_cost = 0; s_remaining = cap_n; }
-        uint64_t mask = 0, mask_cost = 0;
-        for (int shift = costed ? 120 : 56; shift >= 0; shift -= 8) {
-            const bool high = shift >= 64;
-            const int sh = shift & 63;
-            for (uint32_t b = tid; b < 256u; b += nt) s_hist[b] = 0u;
-            __syncthreads();
-            const uint64_t prefix = s_prefix, prefix_cost = s_prefix_cost;
-            for (uint32_t i = tid; i < m; i += nt) {
-                if (by_succ && !sel.lead[i]) continue;   // one entry per successor
-                const uint64_t c = cost_at(i);
-                if (high) {
-                    if ((c & mask_cost) == prefix_cost)
-                        atomicAdd(&s_hist[(c >> sh) & 0xFFu], 1u);
-                } else {
-                    const uint64_t r = sel.rank[i];
-                    if (c == prefix_cost && (r & mask) == prefix)
-                        atomicAdd(&s_hist[(r >> sh) & 0xFFu], 1u);
-                }
-            }
-            __syncthreads();
-            if (tid == 0) {
-                uint32_t b = 0;
-                while (b < 255u && s_remaining > s_hist[b]) s_remaining -= s_hist[b++];
-                if (high) s_prefix_cost |= uint64_t{b} << sh;
-                else s_prefix |= uint64_t{b} << sh;
-            }
-            if (high) mask_cost |= uint64_t{0xFFu} << sh;
-            else mask |= uint64_t{0xFFu} << sh;
-            __syncthreads();
-        }
-        cut = hgcommon::CostCut{s_prefix_cost, s_prefix, false};   // the N-th smallest key
+        // The N-th smallest key: 16 bytes under "StateCost" (the cost's 8, then the rank's) and
+        // the rank's 8 without it. One entry per successor.
+        uint64_t cut_cost = 0, cut_rank = 0;
+        radix_kth(m, cap_n, costed, cost_at, [&](uint32_t i) { return sel.rank[i]; },
+                  [&](uint32_t i) { return !by_succ || sel.lead[i] != 0u; }, cut_cost, cut_rank);
+        cut = hgcommon::CostCut{cut_cost, cut_rank, false};   // the N-th smallest key
         // The candidates kept, the N lowest and the ties with the N-th, counted for the booking.
         if (tid == 0) s_cnt = 0;
         __syncthreads();
@@ -357,23 +448,9 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     }
     if (tid == 0) step_book(ds, s + 1u, take);
     __syncthreads();
-    for (uint32_t i = tid; i < m; i += nt) {
-        if (!hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i])) continue;
-        const uint32_t k = found.claim();
-        if (k == Pool<MatchRecord>::kInvalid) {
-            ds.errors.record(ErrorKind::kMatchPoolFull);
-            step_release(ds, s + 1u, 1u);   // the token is still held, so this is not the last
-            continue;
-        }
-        const MatchRecord& src = cand.at(sel.idx[i]);
-        MatchRecord& dst = found.at(k);
-        dst.rule_id = src.rule_id;
-        dst.state_id = src.state_id;
-        dst.step = src.step;
-        dst.num_edges = src.num_edges;
-        for (uint32_t e = 0; e < kMaxPatternEdges; ++e) dst.matched_edges[e] = src.matched_edges[e];
-        publish_match(dst);
-    }
+    for (uint32_t i = tid; i < m; i += nt)
+        if (hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i]))
+            append_selected(ds, s, cand, found, sel.idx[i]);
     __syncthreads();
     if (tid == 0 && sel.cycles) atomicAdd(sel.cycles, clock64() - t_select);
 }
@@ -557,6 +634,16 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
                 ds.errors.record(ErrorKind::kStateInvariantsFull);
         }
         ds.state_exact_hash[sid] = exact;
+        // "MatchesPerStep" under None states: the root's lineage labels from its exact hash and
+        // its edges' ranks, as the host's label_root.
+        if (ds.state_label) {
+            const uint64_t label = hgcommon::lineage_initial_state(exact);
+            ds.state_label[sid] = label;
+            const StateEdgeSlice sl = ds.state_edge_slices[sid];
+            for (uint32_t i = 0; i < sl.count; ++i)
+                ds.edge_label[ds.state_edge_ids[sl.offset + i]] =
+                    hgcommon::lineage_edge(label, ds.state_edge_rank[sl.offset + i]);
+        }
     }
 
     // The class's root instance: every slot's edge came with the initial state, so no event
@@ -2158,6 +2245,10 @@ struct EngineState::PersistentScratch {
     uint32_t* step_words = nullptr;
     uint32_t* step_progress = nullptr;
     uint32_t  step_cap = 0;
+    // StepSelectScratch::group and pos, step_pos_cap entries each.
+    uint64_t* step_group = nullptr;
+    uint64_t* step_pos = nullptr;
+    uint32_t  step_pos_cap = 0;
     // MaxStatesPerStep counting successor states: StepSelectScratch's id, srank, order and lead,
     // step_succ_cap entries each.
     hgcommon::SuccessorIdentity* step_id = nullptr;
@@ -2209,6 +2300,8 @@ struct EngineState::PersistentScratch {
         if (step_cand_rank) cudaFree(step_cand_rank);
         if (step_words) cudaFree(step_words);
         if (step_progress) cudaFree(step_progress);
+        if (step_group) cudaFree(step_group);
+        if (step_pos) cudaFree(step_pos);
         if (explore_frames) cudaFree(explore_frames);
         if (keyed_words) cudaFree(keyed_words);
     }
@@ -2635,6 +2728,19 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         step_sel.progress = ps.step_progress;
         step_sel.cand_rank = ps.step_cand_rank;
         const bool costed = dsk.state_cost != nullptr;
+        if (dsk.step_cap_counts_matches && !costed) {
+            if (ps.step_pos_cap != cap) {
+                if (ps.step_group) cudaFree(ps.step_group);
+                if (ps.step_pos) cudaFree(ps.step_pos);
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_group, sizeof(uint64_t) * cap),
+                              "step candidate groups");
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_pos, sizeof(uint64_t) * cap),
+                              "step positions");
+                ps.step_pos_cap = cap;
+            }
+            step_sel.group = ps.step_group;
+            step_sel.pos = ps.step_pos;
+        }
         if ((!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) ||
             costed) {
             if (ps.step_succ_cap != cap) {
