@@ -376,7 +376,9 @@ void EngineState::set_sampling(double transition_rate, const double* weights, ui
         max_succ_per_parent_ = max_successor_states_per_parent;
         matches_per_state_rule_ = matches_per_state_rule;
 
-        if (weights && num_weights) {
+        // Weights that set every rule's rate to 1 are not stored: no draw reads them, and
+        // num_rule_weights is hgcommon::effective_rule_weights.
+        if (weights && hgcommon::effective_rule_weights(transition_rate, weights, num_weights) != 0u) {
             if (num_rule_weights_ < num_weights) {
                 if (rule_weights_dev_) cudaFree(rule_weights_dev_);
                 HG_CUDA_CHECK(cudaMalloc(&rule_weights_dev_, sizeof(double) * num_weights),

@@ -71,25 +71,19 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
 // reaches zero once, after the last of them. Whichever block releases the last unit runs the
 // selection, before it reports its own work done, so termination cannot be detected while
 // candidates are held. Nothing waits.
-// A full-capture run that explores with a probability below 1 under None or Automatic states keys
-// its coin on the creating transition (explore_key), so it reads the parent's ranks and exact
-// hash. Under Full states the coin reads the child's class hash.
-__host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, bool dedup,
-                                                        CanonicalizationMode state_mode) {
-    return (ds.exploration_probability < 1.0 && !dedup &&
-            state_mode != CanonicalizationMode::Full) ? 1u : 0u;
-}
-
-// Whether the run reads transition keys, and so each state's exact hash and edge ranks: the
-// drain selections read them, except under "MatchesPerStep" with None states, whose order reads
-// lineage labels (DeviceState::edge_label) and a root's hash and ranks only for its labels; and
-// the coin of explore_reads_ranks reads them.
-__host__ __device__ inline uint32_t transition_keys_read(const DeviceState& ds, bool dedup,
-                                                         CanonicalizationMode state_mode) {
-    const uint32_t drain = hgcommon::drain_selects(ds.matches_per_state_rule,
-                                                   ds.max_successor_states_per_parent,
-                                                   ds.max_states_per_step);
-    return (ds.edge_label == nullptr ? drain : 0u) | explore_reads_ranks(ds, dedup, state_mode);
+// hgcommon::run_reads_transition_keys for the run `ds` describes: whether it reads each state's
+// exact hash and edge ranks for transition keys. DeviceState::edge_label is set when lineage
+// applies, and num_rule_weights is effective_rule_weights (EngineState::set_sampling). A root's
+// hash and ranks for its lineage labels are asked for separately.
+__host__ __device__ inline bool transition_keys_read(const DeviceState& ds, bool dedup,
+                                                     CanonicalizationMode state_mode) {
+    return hgcommon::run_reads_transition_keys(
+        ds.transition_rate, ds.num_rule_weights,
+        hgcommon::drain_selects(ds.matches_per_state_rule, ds.max_successor_states_per_parent,
+                                ds.max_states_per_step),
+        ds.edge_label != nullptr,
+        hgcommon::explore_coin_reads_transition_key(ds.exploration_probability, dedup,
+                                                    state_mode == CanonicalizationMode::Full));
 }
 
 struct StepSelectScratch {
@@ -1601,13 +1595,9 @@ __global__ void k_persistent_evolve(
 
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
-    const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
-                                                 ds.transition_rate, ds.num_rule_weights,
-                                                 transition_keys_read(ds, dedup, state_mode));
-    const bool need_exact =
-        ds.record_invariants ||
-        run_needs_exact_hash(event_keys, ds.transition_rate, ds.num_rule_weights,
-                             transition_keys_read(ds, dedup, state_mode));
+    const bool reads_keys = transition_keys_read(ds, dedup, state_mode);
+    const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0, reads_keys);
+    const bool need_exact = ds.record_invariants || run_needs_exact_hash(event_keys, reads_keys);
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -2956,8 +2946,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const bool want_exact =
             state_mode != CanonicalizationMode::Full &&
             (dsx.record_invariants || dsx.state_label != nullptr ||
-             run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
-                                  transition_keys_read(dsx, dedup, state_mode)));
+             run_needs_exact_hash(event_keys, transition_keys_read(dsx, dedup, state_mode)));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -2967,12 +2956,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // fills (a rewrite per event, a twin claim per state), and the state words. A session keeps its
     // own across calls; a one-shot run starts empty and ARMED.
     DeviceState dsk = engine.device();
-    // A generation's rewrite is many matches, which no rewrite key names.
-    const bool keyed = dsk.generational == 0u && hgcommon::keyed_rewrites_apply(
+    const bool keyed = hgcommon::keyed_rewrites_apply(
         engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
         /*positional_events=*/false,
-        hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,
-                                        transition_keys_read(dsk, dedup, state_mode)));
+        hgcommon::run_reads_rank_tuples(event_keys, transition_keys_read(dsk, dedup, state_mode)),
+        dsk.generational != 0u);
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
@@ -3286,11 +3274,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             session ? sess_v.states : canonical_owner->view(), state_mode,
             // A root's lineage labels read its exact hash and edge ranks.
             dsv.record_invariants || dsv.state_label != nullptr ||
-                run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
-                                     transition_keys_read(dsv, dedup, state_mode)),
+                run_needs_exact_hash(event_keys, transition_keys_read(dsv, dedup, state_mode)),
             dsv.state_label != nullptr ||
-                run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
-                                     dsv.num_rule_weights,
+                run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                      transition_keys_read(dsv, dedup, state_mode)),
             pool_v, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }

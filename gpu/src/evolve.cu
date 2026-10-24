@@ -284,11 +284,22 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                           hgcommon::quotient_route_requested(
                               explore, /*positional=*/false,
                               event_keys_for(in.event_canonicalization));
-    const bool sampling = hgcommon::sampling_active(
-        in.transition_rate, in.rule_weights.data(), static_cast<uint32_t>(in.rule_weights.size()),
+    // ExplorationProbability, clamped to [0, 1] as the host clamps it.
+    double clamped_p = in.exploration_probability;
+    if (!(clamped_p > 0.0)) clamped_p = 0.0;
+    if (clamped_p > 1.0)    clamped_p = 1.0;
+    // Under None states "MatchesPerStep" orders transitions by lineage (hgcommon::StepOrder).
+    const bool lineage = hgcommon::lineage_applies(
+        in.step_cap_counts_matches, in.max_states_per_step,
+        in.canonicalization == CanonicalizationMode::None);
+    const bool reads_keys = hgcommon::run_reads_transition_keys(
+        in.transition_rate,
+        hgcommon::effective_rule_weights(in.transition_rate, in.rule_weights.data(),
+                                         static_cast<uint32_t>(in.rule_weights.size())),
         hgcommon::drain_selects(in.matches_per_state_rule, in.max_successor_states_per_parent,
-                                in.max_states_per_step));
-    const bool transition_orbits = hgcommon::transition_key_reads_orbits(full_states, sampling);
+                                in.max_states_per_step),
+        lineage, hgcommon::explore_coin_reads_transition_key(clamped_p, explore, full_states));
+    const bool transition_orbits = hgcommon::transition_key_reads_orbits(full_states, reads_keys);
     engine.set_quotient_causal(qc_route);
     engine.set_transition_orbits(transition_orbits);
     engine.set_record_set(in.record);
@@ -359,10 +370,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // array. A buffer owned by Engine::Impl would have made the assembly private to the host.
     uint64_t* d_state_hashes  = engine.device().state_canonical_hash;
 
-    // ExplorationProbability, clamped to [0, 1] as the host clamps it.
-    double clamped_p = in.exploration_probability;
-    if (!(clamped_p > 0.0)) clamped_p = 0.0;
-    if (clamped_p > 1.0)    clamped_p = 1.0;
     // The quotient route flag: on the route every state also computes its edge orbits.
     auto t_qcsetup_start = std::chrono::steady_clock::now();
     if (!qc_state_ || qc_state_->enabled() != qc_route)
@@ -424,9 +431,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
     engine.set_generational(in.generational);
     engine.set_rank_reads_step(hgcommon::rank_reads_step(full_states, in.max_states_per_step));
-    // Under None states "MatchesPerStep" orders transitions by lineage (hgcommon::StepOrder).
-    engine.set_lineage(in.step_cap_counts_matches && in.max_states_per_step != 0 &&
-                       in.canonicalization == CanonicalizationMode::None);
+    engine.set_lineage(lineage);
     engine.set_state_cost(in.max_states_per_step != 0 ? in.state_cost : hgcommon::StateCost{});
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
@@ -463,15 +468,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // edges, which live in a per-edge-slot array no other mode reads. Taken here, once the
         // mode is known, so a run identifying events by their endpoint states alone is not
         // charged four bytes per edge slot for it.
-        // The transition draw keys on the consumed edges' ranks too, so a SAMPLED run needs the
-        // array whatever event identity it asked for. Taking it in the kernel's need_ranks alone
-        // is not enough: that flag decides whether the ranks are COMPUTED, and this decides
-        // whether there is anywhere to put them. Without it the kernel writes through a null
-        // pointer, the run faults, and the grow-and-retry loop reports the engine as too large
-        // for the device rather than naming the real fault.
-        const bool sampling_needs_ranks =
-            sampling || (clamped_p < 1.0 && !explore && !full_states);
-        if (sampling_needs_ranks ||
+        // A transition key reads the consumed edges' ranks too (reads_keys), and so do a root's
+        // lineage labels, so such a run needs the array whatever event identity it asked for.
+        // Taking it in the kernel's need_ranks alone is not enough: that flag decides whether the
+        // ranks are COMPUTED, and this decides whether there is anywhere to put them. Without it
+        // the kernel writes through a null pointer, the run faults, and the grow-and-retry loop
+        // reports the engine as too large for the device rather than naming the real fault.
+        if (reads_keys || lineage ||
             (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();
         }

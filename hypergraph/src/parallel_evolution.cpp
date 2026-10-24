@@ -1776,8 +1776,9 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     const bool full_states =
         hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full;
     // Under None states "MatchesPerStep" orders transitions by lineage (hgcommon::StepOrder).
-    lineage_on_ = max_states_per_step_ != 0 && step_cap_counts_matches_ &&
-                  hg_->state_canonicalization_mode() == StateCanonicalizationMode::None;
+    lineage_on_ = hgcommon::lineage_applies(
+        step_cap_counts_matches_, max_states_per_step_,
+        hg_->state_canonicalization_mode() == StateCanonicalizationMode::None);
     // A step's selection hands each kept transition's state's matches to its child when nothing
     // else chooses among a state's matches at its drain.
     inherit_matches_ =
@@ -1869,16 +1870,21 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     }
 
     hg_->set_quotient_causal(qc);
-    hg_->set_transition_orbits(hgcommon::transition_key_reads_orbits(full_states, sampling_active()));
+    const bool reads_keys = hgcommon::run_reads_transition_keys(
+        transition_rate_,
+        hgcommon::effective_rule_weights(transition_rate_, rule_weights_.data(),
+                                         static_cast<uint32_t>(rule_weights_.size())),
+        hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
+                                static_cast<uint32_t>(max_successor_states_per_parent_),
+                                static_cast<uint32_t>(max_states_per_step_)),
+        lineage_on_,
+        hgcommon::explore_coin_reads_transition_key(exploration_probability_,
+                                                    explore_from_canonical_states_only_,
+                                                    full_states));
+    hg_->set_transition_orbits(hgcommon::transition_key_reads_orbits(full_states, reads_keys));
     hg_->set_quotient_expansions_by_depth(hgcommon::qc_expansions_by_depth(max_states_per_step_));
-    hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
-        hg_->event_signature_keys(), transition_rate_,
-        static_cast<uint32_t>(rule_weights_.size()),
-        // A full-capture run that explores with a probability below 1 under None or Automatic
-        // states keys its coin on the creating transition, which reads rank tuples too.
-        (defers_to_drain() ||
-         (exploration_probability_ < 1.0 && !explore_from_canonical_states_only_ && !full_states))
-            ? 1u : 0u));
+    hg_->set_keyed_conditions(
+        hgcommon::run_reads_rank_tuples(hg_->event_signature_keys(), reads_keys), generational_);
 
     // The exploration strategy and the raw reconstruction are separate decisions, and only the
     // second is expensive. Quotient causal exploration decides state identity and costs what the

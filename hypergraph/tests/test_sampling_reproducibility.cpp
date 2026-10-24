@@ -1602,6 +1602,51 @@ TEST(SamplingReproducibility, NoneStatesRunOneIrPassPerStateWhoseKeyIsRead) {
 }
 #endif
 
+// hgcommon::run_reads_transition_keys, the rule both engines compute each state's hash and ranks
+// (or orbits under Full states) by. A drain selection replaces the draw, and "MatchesPerStep"
+// under None states reads lineage labels.
+TEST(SamplingReproducibility, TransitionKeysAreReadByDrawsCapsAndTheCoin) {
+    using hgcommon::run_reads_transition_keys;
+    EXPECT_FALSE(run_reads_transition_keys(1.0, 0u, 0u, false, false));
+    EXPECT_TRUE(run_reads_transition_keys(0.5, 0u, 0u, false, false));
+    EXPECT_TRUE(run_reads_transition_keys(1.0, 2u, 0u, false, false));
+    EXPECT_TRUE(run_reads_transition_keys(1.0, 0u, 1u, false, false));
+    EXPECT_FALSE(run_reads_transition_keys(1.0, 0u, 1u, true, false));
+    EXPECT_FALSE(run_reads_transition_keys(0.5, 2u, 1u, true, false));
+    EXPECT_TRUE(run_reads_transition_keys(1.0, 0u, 1u, true, true));
+    EXPECT_TRUE(run_reads_transition_keys(1.0, 0u, 0u, false, true));
+    const double ones[] = {1.0, 1.0}, half[] = {1.0, 0.5};
+    EXPECT_EQ(hgcommon::effective_rule_weights(1.0, ones, 2u), 0u);
+    EXPECT_EQ(hgcommon::effective_rule_weights(1.0, half, 2u), 2u);
+    EXPECT_EQ(hgcommon::effective_rule_weights(0.5, ones, 2u), 2u);
+}
+
+// Under Full states a state computes its edge orbit table only when the run reads transition
+// keys. "Generational" reads none: no state of a Full "Generational" run holds a table. A
+// "MatchesPerStateRule" run reads them: every state holds one. Wolfram's rule
+// {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}} from {{0,0},{0,0}}, 4 steps.
+TEST(SamplingReproducibility, FullStatesBuildOrbitTablesOnlyWhenAKeyReadsThem) {
+    for (bool generational : {true, false}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, 1);
+        e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
+                       .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
+        if (generational) e.set_generational(true);
+        else e.set_matches_per_state_rule(1);
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 0u}, {0u, 0u}}, 4);
+        size_t states = 0, with_orbits = 0;
+        for (StateId s = 0; s < hg.num_states(); ++s) {
+            const State& st = hg.get_state(s);
+            if (st.id == INVALID_ID || st.edges.count() == 0) continue;
+            ++states;
+            if (st.edge_orbits != nullptr) ++with_orbits;
+        }
+        EXPECT_GT(states, 4u) << generational;
+        EXPECT_EQ(with_orbits, generational ? 0u : states) << generational;
+    }
+}
+
 // "Generational": each step applies the matches taken in the standard order that share no edge,
 // as one generation of one state. Rule {{x,y},{y,z}} -> {{x,z}} on the path 1-2-3-4-5 (edges 0 to
 // 3): the matches in standard order are (0,1), (1,2), (2,3); the first and the third are taken,

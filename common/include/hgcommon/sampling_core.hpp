@@ -349,13 +349,55 @@ HG_HD inline bool sampling_active(double transition_rate, const double* weights,
     return false;
 }
 
+// The number of rule weights a run's draws read: `num_weights`, or 0 when every rule's rate is 1
+// (sampling_rate_for_rule), so no draw can fail.
+HG_HD inline uint32_t effective_rule_weights(double transition_rate, const double* weights,
+                                             uint32_t num_weights) {
+    return sampling_active(transition_rate, weights, num_weights, 0u) ? num_weights : 0u;
+}
+
+// Whether a draw can fail, from the rate and effective_rule_weights.
+HG_HD inline bool draw_can_fail(double transition_rate, uint32_t num_rule_weights) {
+    return transition_rate < 1.0 || num_rule_weights != 0u;
+}
+
+// Whether "MatchesPerStep" orders transitions by lineage labels (StepOrder): under None states.
+// `step_cap_counts_matches` is set by "MatchesPerStep". One rule for the host's lineage_on_ and the
+// device's EngineState::set_lineage.
+HG_HD inline bool lineage_applies(bool step_cap_counts_matches, uint64_t max_states_per_step,
+                                  bool none_states) {
+    return step_cap_counts_matches && max_states_per_step != 0u && none_states;
+}
+
+// Whether the ExplorationProbability coin reads the creating transition's key: full capture under
+// None and Automatic states. Under Full states and under quotient exploration it reads the class's
+// canonical hash.
+HG_HD inline bool explore_coin_reads_transition_key(double exploration_probability,
+                                                    bool quotient_exploration, bool full_states) {
+    return exploration_probability < 1.0 && !quotient_exploration && !full_states;
+}
+
+// WHETHER A RUN READS TRANSITION KEYS (canonical_transition_key, transition_key_device), and so each
+// state's canonical hash and edge ranks, or its edge orbits under Full states. A drain selection
+// (drain_selects) replaces the draw and reads them, except "MatchesPerStep" under None states,
+// which orders by lineage labels (lineage_applies). Without one, the draw reads them when one can
+// fail (draw_can_fail; `num_rule_weights` is effective_rule_weights). The coin of
+// explore_coin_reads_transition_key reads them. "Generational" reads none, and the FFI clears the
+// options above under it. One rule for the host's configure and the device's.
+HG_HD inline bool run_reads_transition_keys(double transition_rate, uint32_t num_rule_weights,
+                                            uint32_t drain_selection, bool lineage,
+                                            bool explore_coin) {
+    return (drain_selection != 0u ? !lineage : draw_can_fail(transition_rate, num_rule_weights)) ||
+           explore_coin;
+}
+
 // Whether a run's transition key reads the matched edges' automorphism orbits, and so whether
 // every state computes its orbit table. Under Full states a draw or a cap keys on orbits
 // (canonical_transition_key, transition_key_device): automorphic transitions share the key, so
 // the kept set is invariant under the state's automorphisms, which the quotient reconstruction
-// needs to replay it onto every instance of the class.
-HG_HD inline bool transition_key_reads_orbits(bool full_states, bool sampling) {
-    return full_states && sampling;
+// needs to replay it onto every instance of the class. `reads_keys` is run_reads_transition_keys.
+HG_HD inline bool transition_key_reads_orbits(bool full_states, bool reads_keys) {
+    return full_states && reads_keys;
 }
 
 // THE SUCCESSOR CAP. MaxSuccessorStatesPerParent (over one state's transitions) and

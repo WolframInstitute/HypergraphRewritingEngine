@@ -114,7 +114,7 @@ constexpr uint32_t kMatchSharedWords =
 __device__ __forceinline__ bool match_state_rule_splits(const DeviceState& ds) {
     // No draw applies where a cap chooses: under MaxStatesPerStep every transition is a candidate
     // of its step, as on the host.
-    const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
+    const bool sampling = hgcommon::draw_can_fail(ds.transition_rate, ds.num_rule_weights) &&
                           ds.max_states_per_step == 0u;
     return ds.matches_per_state_rule == 0u && ds.max_successor_states_per_parent == 0u &&
            !sampling && ds.generational == 0u;
