@@ -1239,38 +1239,32 @@ void ParallelEvolutionEngine::ordered_at_drain(StateId state, uint32_t step) {
         delete set;
         return;
     }
+    // The rewrite hands the set to the child it makes (execute_rewrite_task, MatchContext::held).
     const uint32_t slot = set->by_event_order.begin()->slot;
-    std::vector<MatchRecord> one{held_record(*set, slot, state, step)};
-    submit_generation_task(state, step, std::move(one), set);
+    submit_rewrite_task(held_record(*set, slot, state, step), step, step, set);
 }
 
 void ParallelEvolutionEngine::submit_generation_task(StateId state, uint32_t step,
-                                                     std::vector<MatchRecord> matches,
-                                                     HeldMatches* held) {
+                                                     std::vector<MatchRecord> matches) {
     // A generation past the budget, or after a stop, is the state's matching again when a
-    // continuation resumes it: the generation is a function of the state. The resumed state
-    // matches itself, so it takes no held set.
+    // continuation resumes it: the generation is a function of the state.
     if (should_stop_.load(std::memory_order_relaxed) || step > step_budget()) {
-        delete held;
         defer_match_task(state, step);
         return;
     }
     note_depth_task_pushed(step);
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, state, step, matches = std::move(matches), held]() {
+        [this, state, step, matches = std::move(matches)]() {
             DepthTaskGuard depth_guard(*this, step);
-            execute_generation_task(state, step, matches, held);
+            execute_generation_task(state, step, matches);
         },
         EvolutionJobType::REWRITE);
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::execute_generation_task(StateId state, uint32_t step,
-                                                      const std::vector<MatchRecord>& matches,
-                                                      HeldMatches* held) {
+                                                      const std::vector<MatchRecord>& matches) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
-    // The state's match set goes to the child, or is deleted on any return before it.
-    std::unique_ptr<HeldMatches> own_held(held);
     if (should_stop_.load(std::memory_order_relaxed)) { defer_match_task(state, step); return; }
     if ((max_states_ > 0 && hg_->num_states() >= max_states_) ||
         (max_events_ > 0 && hg_->num_events() + matches.size() > max_events_)) {
@@ -1288,20 +1282,7 @@ void ParallelEvolutionEngine::execute_generation_task(StateId state, uint32_t st
     if (r.raw_state == INVALID_ID) return;
     total_rewrites_.fetch_add(r.num_events, std::memory_order_relaxed);
     total_events_.fetch_add(r.num_events, std::memory_order_relaxed);
-    if (!own_held) {
-        submit_match_task(r.raw_state, step + 1);
-        return;
-    }
-    // One event: the child updates the held set by its consumed and produced edges.
-    MatchContext ctx;
-    ctx.parent_state = state;
-    ctx.num_consumed = matches[0].num_edges();
-    for (uint8_t i = 0; i < matches[0].num_edges(); ++i)
-        ctx.consumed_edges[i] = matches[0].matched_edges()[i];
-    ctx.num_produced = static_cast<uint16_t>(r.num_produced);
-    for (uint32_t i = 0; i < r.num_produced; ++i) ctx.produced_edges[i] = r.first_produced + i;
-    ctx.held = own_held.release();
-    submit_match_task_with_context(r.raw_state, step + 1, ctx);
+    submit_match_task(r.raw_state, step + 1);
 }
 
 void ParallelEvolutionEngine::drop_blocks(DepthExtra& x) {

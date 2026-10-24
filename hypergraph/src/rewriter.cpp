@@ -282,8 +282,6 @@ GenerationResult Rewriter::apply_generation(StateId input_state, const Generatio
         edge_at += rule.num_rhs_edges;
     }
     result.num_events = num_matches;
-    result.first_produced = first_edge;
-    result.num_produced = num_produced;
     return result;
 }
 

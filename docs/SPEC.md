@@ -271,8 +271,8 @@ exact configuration. Sampling and capping options refine this as follows:
   `Generational`. On the host a state's match set is handed to the child its event makes
   (`HeldMatches::by_event_order`, ordered by the event order): the child drops the matches of
   the consumed edges and adds the matches of the produced edges, so a step costs the matching
-  around one event and O(log M) for M held matches (`ordered_at_drain`). The event is applied
-  as a generation of one (`apply_generation`). On the device the block that matches a state
+  around one event and O(log M) for M held matches (`ordered_at_drain`). `Rewriter::apply`
+  applies the event, as it applies a multiway rewrite. On the device the block that matches a state
   takes the first match in the order (`match_state_generation`, `greedy_disjoint` with limit 1)
   and emits a generation record of one match. The caps and draws do not apply with it. With the
   default order the events in creation order are those of `Generational`: a match on an edge of

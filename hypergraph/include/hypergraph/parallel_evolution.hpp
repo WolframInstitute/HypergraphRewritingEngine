@@ -1705,13 +1705,12 @@ private:
     // one task applying them (submit_generation_task, execute_generation_task).
     void generation_at_drain(StateId state, uint32_t step);
     // "EventOrderingFunction", at a state's drain: the state's first match in event order, from
-    // the match set its parent handed on (match_held) or from its own matches, applied as a
-    // generation of one event. The set goes to the child the event makes.
+    // the match set its parent handed on (match_held) or from its own matches, rewritten by
+    // submit_rewrite_task, which hands the set to the child the event makes.
     void ordered_at_drain(StateId state, uint32_t step);
-    void submit_generation_task(StateId state, uint32_t step, std::vector<MatchRecord> matches,
-                                HeldMatches* held = nullptr);
+    void submit_generation_task(StateId state, uint32_t step, std::vector<MatchRecord> matches);
     void execute_generation_task(StateId state, uint32_t step,
-                                 const std::vector<MatchRecord>& matches, HeldMatches* held);
+                                 const std::vector<MatchRecord>& matches);
     // Whether the run follows one history from each initial state ("Generational" or
     // "EventOrderingFunction").
     bool single_history() const { return generational_ || event_ordering_ != 0; }
