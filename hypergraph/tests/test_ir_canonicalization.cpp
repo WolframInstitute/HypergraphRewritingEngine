@@ -526,4 +526,28 @@ TEST(IRDepthHint, DeepStateDoesNotSendLaterStatesToTheFallback) {
     });
     t.join();
 }
+
+// Every host canonicalisation takes the depth ladder of hgcommon::ir_depth_ladder, so the hash
+// alone and the hash with edge ranks canonicalise a star with 100 leaves in the bounded core, as
+// the hash with orbits does: no fallback, and one hash from all three.
+TEST(IRDepthHint, AStarIsCanonicalisedWithoutTheFallbackOnEveryPath) {
+    std::thread t([] {
+        Hypergraph hg;
+        SparseBitset star, owned;
+        const VertexId hub = hg.alloc_vertex();
+        for (int i = 0; i < 100; ++i) {
+            const EdgeId e = hg.create_edge({hub, hg.alloc_vertex()});
+            star.set(e, hg.arena());
+            owned.set(e, hg.arena());
+        }
+        const StateId s = hg.create_state(std::move(owned));
+        const uint64_t plain = hg.compute_canonical_hash(star);
+        const uint64_t ranked = hg.cache_state_edge_ranks(s, star);
+        const uint64_t orbits = hg.compute_and_cache_state_orbits(s, star, /*cache=*/false);
+        EXPECT_EQ(hg.ir_work().fallbacks, 0u);
+        EXPECT_EQ(plain, orbits);
+        EXPECT_EQ(ranked, orbits);
+    });
+    t.join();
+}
 #endif

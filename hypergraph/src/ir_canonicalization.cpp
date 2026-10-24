@@ -90,12 +90,10 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // writes every word it later reads. That is the stronger claim; this is the one that needs
     // no claim.
     HG_THREAD_LOCAL(std::vector<uint32_t>, scratch);
-    // The static rungs, then the true bound (one individualisation per level); see the
-    // sibling ladder in hypergraph.cpp's ir_hash_and_orbits.
-    const uint32_t rung_cap = n_verts + 1;
-    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT,
-                           rung_cap > hgcommon::IR_MAX_DEPTH_DEFAULT ? rung_cap : 0u}) {
-        if (depth == 0u) continue;
+    uint32_t rungs[4];
+    const uint32_t num_rungs = hgcommon::ir_depth_ladder(n_verts, rungs);
+    for (uint32_t ri = 0; ri < num_rungs; ++ri) {
+        const uint32_t depth = rungs[ri];
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= gen_hi; gens *= 4u) {
             const uint64_t words =
                 hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth, gens);

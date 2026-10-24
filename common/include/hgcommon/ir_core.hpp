@@ -53,6 +53,20 @@ HG_HD inline uint32_t ir_bitset_words(uint32_t n) { return (n + 63u) / 64u + 1u;
 // needing more reports IR_NEED_DEPTH so the caller can retry with a larger one.
 constexpr uint32_t IR_MAX_DEPTH_DEFAULT = 64;
 
+// THE HOST'S DEPTH LADDER: the depths a canonicalisation tries in order, 1 (a state discrete
+// after refinement), 8 and IR_MAX_DEPTH_DEFAULT, then n_verts + 1 when it is above them. A path
+// individualises at least one vertex per level, so n_verts + 1 admits every state: a
+// maximal-symmetry star needs a level per leaf. Writes the rungs to out[0..4) and returns how
+// many.
+HG_HD inline uint32_t ir_depth_ladder(uint32_t n_verts, uint32_t* out) {
+    uint32_t k = 0;
+    out[k++] = 1u;
+    out[k++] = 8u;
+    out[k++] = IR_MAX_DEPTH_DEFAULT;
+    if (n_verts + 1u > IR_MAX_DEPTH_DEFAULT) out[k++] = n_verts + 1u;
+    return k;
+}
+
 // Automorphisms retained for orbit pruning, as a per-caller BUDGET rather than a constant.
 //
 // Generators only SKIP branches automorphic to one already explored, and automorphic branches

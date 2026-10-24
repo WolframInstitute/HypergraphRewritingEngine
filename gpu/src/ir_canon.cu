@@ -278,7 +278,7 @@ __device__ ExactHashStatus exact_hash_from(const Source& src, uint32_t ir_depth,
     if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth > 1) r = run_at(shape.depth);
     // THE HOST ESCALATES DEPTH WITHIN THE CALL; THE DEVICE MUST TOO.
     //
-    // ir_canonicalization.cpp:75 tries {1, 8, IR_MAX_DEPTH_DEFAULT} per state. The device tried
+    // The host tries the rungs of hgcommon::ir_depth_ladder per state. The device tried
     // only {1, ds.ir_depth} and, past that, returned kDepthExceeded -- which is classed retryable,
     // so the WRAPPER answered by doubling the config and RE-RUNNING THE ENTIRE EVOLUTION, up to
     // seven attempts. One state needing a deeper search therefore re-does every other state's

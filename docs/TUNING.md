@@ -324,7 +324,7 @@ States on these rows hold at most 7 matches, so at 4 or more workers the derived
 | Kind | Constants |
 |---|---|
 | Sentinels and masks | `kEmpty`, `kInvalid`, `kNoSpine`, `kNoPivotVar`, `kEmptyHead`, `kQeNoParent`, `kQeNoClaims`, `kKeyedNoNewEdge`, `kExploreNoDepth`, `kUnset`, `kAddrMask`, `kFullWarp`, `kVertexOne`, `kStateStream` |
-| Algorithm limits (change what can be represented) | `HG_MAX_PATTERN_EDGES` 16, `kMaxArity`, `kMaxVars`, `kMaxConsumedBits` 1024, `kMaxDedupProbes` 8, `depth_join` `kSegments` 27, `kIrDepthRungs`, `ir_depth` 8, `ir_generators` 32, `kQeEntryLimit`, `kQeWordLimit`, `QR_ID_LIMIT`, `kQeKeptStride`, `termination` `kMaxRoles` |
+| Algorithm limits (change what can be represented) | `HG_MAX_PATTERN_EDGES` 16, `kMaxArity`, `kMaxVars`, `kMaxConsumedBits` 1024, `kMaxDedupProbes` 8, `depth_join` `kSegments` 27, `hgcommon::ir_depth_ladder`, `ir_depth` 8, `ir_generators` 32, `kQeEntryLimit`, `kQeWordLimit`, `QR_ID_LIMIT`, `kQeKeptStride`, `termination` `kMaxRoles` |
 | Inline capacities with a spill path | `ScratchReachCtx` 64/128 (`scratch_alloc.hpp:190`), `kQeReachStack`/`kQeReachTable` 64/128, `kReachStack`/`kReachVisited` 256/512 (`rewrite.cu:70`, C30), `kTrScratchStack`/`kTrScratchVisited` 2048/4096, `kLocalSurvivors` 256, `kSnapshot` 64 (`concurrent_map.hpp:735`), `ClearBatch::kMaxRegions` 64, `keyed` `kDepth` 32 |
 | Pathology ceilings | `kMaxDetectorRounds`, `kMaxWorkerIdleSpins` (`persistent.cu:517-518`) |
 | Sized for the model checker only | `HG_ARENA_BLOCK_SIZE` under `HG_VERIFICATION`, `HG_SEGMENTED_ARRAY_MAX_SHIFT`, `HG_SEGMENTED_ARRAY_MAX_SEGMENTS` (capacity ceiling) |

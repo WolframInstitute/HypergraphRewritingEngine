@@ -123,12 +123,11 @@ EdgeId Hypergraph::create_edge(std::initializer_list<VertexId> vertices,
 // above the need costs scratch words and nothing else, since the search stops at a discrete
 // partition. Escalation past the hint stays: a state deeper than its predecessor climbs.
 //
-// A call never skips its own top rung `top`: a hint above it (set by a search deeper than
-// IR_MAX_DEPTH_DEFAULT, which only ir_hash_and_orbits' n_verts + 1 rung reaches) would otherwise
-// skip every rung and send every later state on the thread to the unbounded fallback. The top
-// rung's search then sets the hint from its own depth.
+// The rungs are hgcommon::ir_depth_ladder. A call never skips its own top rung `top`: a hint
+// above it (set by a larger state's n_verts + 1 rung) would otherwise skip every rung and send
+// every later state on the thread to the unbounded fallback. The top rung's search then sets the
+// hint from its own depth.
 namespace {
-constexpr uint32_t kIrDepthRungs[] = {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT};
 uint32_t& ir_depth_hint() {
     HG_THREAD_LOCAL(uint32_t, hint);
     return hint;
@@ -1140,8 +1139,11 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             out_form->resize(hgcommon::ir_canonical_form_words(n, total_occ));
             form = out_form->data();
         }
-        for (uint32_t depth : kIrDepthRungs) {
-            if (ir_rung_below_hint(depth, hgcommon::IR_MAX_DEPTH_DEFAULT)) continue;
+        uint32_t rungs[4];
+        const uint32_t num_rungs = hgcommon::ir_depth_ladder(n_verts, rungs);
+        for (uint32_t ri = 0; ri < num_rungs; ++ri) {
+            const uint32_t depth = rungs[ri];
+            if (ir_rung_below_hint(depth, rungs[num_rungs - 1])) continue;
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
             auto* scratch = static_cast<uint32_t*>(
                 worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
@@ -1443,17 +1445,20 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges,
     const uint32_t n_edges = static_cast<uint32_t>(ea.size());
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
 
-    // Escalating depth. Almost every state is discrete straight after refinement, and at
-    // depth 1 the core sizes for exactly that: no per-level partition blocks, no generator
-    // rows. Only a state that actually needs the individualization search pays for it, and
-    // it pays on the retry -- where the search dominates the re-run anyway.
+    // Escalating depth (hgcommon::ir_depth_ladder). Almost every state is discrete straight after
+    // refinement, and at depth 1 the core sizes for exactly that: no per-level partition blocks,
+    // no generator rows. Only a state that actually needs the individualization search pays for
+    // it, and it pays on the retry -- where the search dominates the re-run anyway.
     uint32_t* form = nullptr;
     if (out_form) {
         out_form->resize(hgcommon::ir_canonical_form_words(n_edges, total_occ));
         form = out_form->data();
     }
-    for (uint32_t depth : kIrDepthRungs) {
-        if (ir_rung_below_hint(depth, hgcommon::IR_MAX_DEPTH_DEFAULT)) continue;
+    uint32_t rungs[4];
+    const uint32_t num_rungs = hgcommon::ir_depth_ladder(n_verts, rungs);
+    for (uint32_t ri = 0; ri < num_rungs; ++ri) {
+        const uint32_t depth = rungs[ri];
+        if (ir_rung_below_hint(depth, rungs[num_rungs - 1])) continue;
         const uint64_t words =
             hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth);
         // Raw, so the buffer is not zeroed on the way in: the core writes every word it
@@ -1606,22 +1611,17 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
         worker_scratch().allocate_raw(sizeof(uint32_t) * (total_occ ? total_occ : 1), alignof(uint32_t)));
     const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev, occ, verts);
 
-    // The static rungs, then the true bound: a search individualises at most one vertex per
-    // level, so n_verts + 1 admits every state -- a maximal-symmetry star needs a level per
-    // leaf and fell through every static rung into the reference fallback (over 300 s at 256
-    // leaves against milliseconds in the search).
-    const uint32_t rung_cap = n_verts + 1;
-    const uint32_t rungs[] = {kIrDepthRungs[0], kIrDepthRungs[1], kIrDepthRungs[2],
-                              rung_cap > hgcommon::IR_MAX_DEPTH_DEFAULT ? rung_cap : 0u};
+    // The rungs of hgcommon::ir_depth_ladder.
     uint32_t* form = nullptr;
     if (out_form) {
         out_form->resize(hgcommon::ir_canonical_form_words(n, total_occ));
         form = out_form->data();
     }
-    const uint32_t top_rung = std::max(rung_cap, hgcommon::IR_MAX_DEPTH_DEFAULT);
-    for (uint32_t depth : rungs) {
-        if (depth == 0u) continue;
-        if (ir_rung_below_hint(depth, top_rung)) continue;
+    uint32_t rungs[4];
+    const uint32_t num_rungs = hgcommon::ir_depth_ladder(n_verts, rungs);
+    for (uint32_t ri = 0; ri < num_rungs; ++ri) {
+        const uint32_t depth = rungs[ri];
+        if (ir_rung_below_hint(depth, rungs[num_rungs - 1])) continue;
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= (1u << 16); gens *= 4u) {
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth, gens);
             auto* scratch = static_cast<uint32_t*>(worker_scratch().allocate_raw(
