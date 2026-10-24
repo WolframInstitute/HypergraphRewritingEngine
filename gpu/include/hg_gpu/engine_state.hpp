@@ -95,6 +95,9 @@ struct DeviceState {
     // hgcommon::rank_reads_step: 1 under a step cap or under None or Automatic states, where the
     // ranks and draws mix in the event's step (hgcommon::rank_step).
     uint32_t  rank_reads_step;
+    // "Generational": a state's matching takes its generation (match_state_generation) and emits
+    // one record of kGenerationRule, which apply_generation applies.
+    uint32_t  generational;
     // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
     // (select_step, state_cost_of_form_device).
     const hgcommon::StateCost* state_cost = nullptr;
@@ -468,6 +471,8 @@ public:
     void set_step_cap_counts_matches(bool on) { step_cap_counts_matches_ = on; }
     // hgcommon::rank_reads_step of the run's state mode and step cap.
     void set_rank_reads_step(uint32_t on) { rank_reads_step_ = on; }
+    // "Generational" (DeviceState::generational).
+    void set_generational(bool on) { generational_ = on; }
     // "StateCost": copied to the device when n != 0; DeviceState::state_cost is null otherwise.
     void set_state_cost(const hgcommon::StateCost& cost);
 
@@ -689,6 +694,7 @@ private:
     bool                               transition_orbits_ = false;
     bool                               step_cap_counts_matches_ = false;
     uint32_t                           rank_reads_step_ = 0;
+    bool                               generational_ = false;
     hgcommon::StateCost*               state_cost_dev_          = nullptr;
     bool                               state_cost_on_           = false;
     uint32_t slice_scan_max_edges_ = 256;

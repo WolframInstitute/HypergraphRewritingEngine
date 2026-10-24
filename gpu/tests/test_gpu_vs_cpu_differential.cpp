@@ -74,6 +74,8 @@ struct Workload {
     hgcommon::StateCost state_cost;
     // Forwarded to EvolveInput::persistent_blocks (0 keeps the default grid).
     uint32_t persistent_blocks = 0;
+    // "Generational" (EvolveInput::generational, ParallelEvolutionEngine::set_generational).
+    bool generational = false;
     // Collapse isomorphic initial states under quotient exploration (default off).
 };
 
@@ -266,6 +268,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_matches_per_state_rule(w.matches_per_state_rule);
     engine.set_exploration_probability(w.exploration_probability);
     engine.set_state_cost(w.state_cost);
+    engine.set_generational(w.generational);
 
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
@@ -432,6 +435,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.matches_per_state_rule = w.matches_per_state_rule;
     in.exploration_probability = w.exploration_probability;
     in.persistent_blocks = w.persistent_blocks;
+    in.generational = w.generational;
     return in;
 }
 
@@ -1646,6 +1650,59 @@ TEST(Sampling, ThinnedRunsAgreeAcrossEngines) {
             }
         }
       }
+    }
+}
+
+// "Generational" on both engines: the same states, events, causal and branchial edges under each
+// state mode and event identity, for a rule whose matches overlap (the path rule), a rule whose
+// every edge is rewritten (the growth rule), two rules, a rule with a fresh vertex on a cycle, and
+// two initial states.
+TEST(Generational, GenerationsAgreeAcrossEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<std::vector<hg_gpu::VertexId>>> init;
+        uint32_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"path", {rule({{0, 1}, {1, 2}}, {{0, 2}})}, {{{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}}}, 5},
+        {"growth", {rule({{0, 1}}, {{0, 1}, {1, 2}})}, {{{0u, 1u}}}, 6},
+        {"two-rules", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 3}}), rule({{0, 1}}, {{1, 0}})},
+         {{{1u, 2u}, {2u, 3u}, {3u, 1u}}}, 5},
+        {"cycle-fresh", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 3}, {3, 1}})},
+         {{{1u, 2u}, {2u, 3u}, {3u, 1u}}}, 5},
+        {"two-roots", {rule({{0, 1}}, {{0, 2}, {2, 1}})}, {{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}}, 4},
+    };
+    const std::pair<hg_gpu::CanonicalizationMode, hg_gpu::EventCanonicalizationMode> modes[] = {
+        {hg_gpu::CanonicalizationMode::None, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Automatic, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::Automatic},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::Full}};
+    for (const Case& c : cases) {
+        for (const auto& [states, events] : modes) {
+            Workload w;
+            w.name = c.name;
+            w.rules = c.rules;
+            w.initial_states = c.init;
+            w.num_steps = c.steps;
+            w.canon_mode = states;
+            w.event_canon_mode = events;
+            w.generational = true;
+            const NormalizedResult cpu = run_cpu(w);
+            const NormalizedResult gpu = run_gpu(w);
+            const std::string at = std::string(c.name) + " states " +
+                                   std::to_string(static_cast<int>(states)) + " events " +
+                                   std::to_string(static_cast<int>(events));
+            EXPECT_GT(cpu.raw_events, 0u) << at;
+            EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes) << at;
+            EXPECT_EQ(cpu.event_keys, gpu.event_keys) << at;
+            EXPECT_EQ(cpu.causal_edge_keys, gpu.causal_edge_keys) << at;
+            EXPECT_EQ(cpu.branchial_edge_keys, gpu.branchial_edge_keys) << at;
+            EXPECT_EQ(cpu.raw_states, gpu.raw_states) << at;
+            EXPECT_EQ(cpu.raw_events, gpu.raw_events) << at;
+            EXPECT_EQ(cpu.num_events, gpu.num_events) << at;
+        }
     }
 }
 

@@ -70,6 +70,9 @@ struct AppliedMatch {
     KeptCopy kept{};
     // Keyed rewrites (keyed.hpp): the rewrite id with REWRITE_TWIN_CANDIDATE, or 0.
     uint32_t keyed = 0;
+    // The events from `event` on that the rewrite made: a generation's matches (apply_generation),
+    // 1 otherwise.
+    uint32_t num_events = 1;
 };
 
 // Copy a child's kept edges. Par is a lane policy (hgcommon::IrSerial, or IrTile for w lanes

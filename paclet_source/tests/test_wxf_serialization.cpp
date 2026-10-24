@@ -7027,9 +7027,7 @@ TEST(GenerationalJob, AGenerationalJobGivesEachGenerationsEvents) {
         host);
     EXPECT_EQ(read_int_key(out, "NumStates"), 3);
     EXPECT_EQ(read_int_key(out, "NumEvents"), 3);
-#ifdef HG_GPU_BACKEND
-    EXPECT_TRUE(reply_mentions(out, "runs on the CPU engine"));
-#endif
+    EXPECT_FALSE(reply_mentions(out, "runs on the CPU engine"));
 }
 
 #if defined(__linux__) && !defined(HG_GPU_BACKEND)

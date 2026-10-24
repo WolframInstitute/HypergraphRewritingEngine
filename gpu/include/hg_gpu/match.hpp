@@ -117,7 +117,21 @@ __device__ __forceinline__ bool match_state_rule_splits(const DeviceState& ds) {
     const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
                           ds.max_states_per_step == 0u;
     return ds.matches_per_state_rule == 0u && ds.max_successor_states_per_parent == 0u &&
-           !sampling;
+           !sampling && ds.generational == 0u;
+}
+
+// The rule id of a generation record ("Generational", match_state_generation): matched_edges[0]
+// and [1] hold the low and high words of the address of its list (generation_list).
+constexpr RuleId kGenerationRule = 0xFFFFFFFFu;
+
+// A generation's list in the arena: the number of matches taken T, the number of edges they
+// consume C, then each match as its rule and kMaxPatternEdges edges by pattern position, in the
+// order taken, then the C consumed edges ascending.
+constexpr uint32_t kGenerationEntryWords = 1u + kMaxPatternEdges;
+__host__ __device__ __forceinline__ const uint32_t* generation_list(const MatchRecord& m) {
+    return reinterpret_cast<const uint32_t*>(
+        static_cast<uintptr_t>(m.matched_edges[0]) |
+        (static_cast<uintptr_t>(m.matched_edges[1]) << 32));
 }
 
 // The first anchor (an index into the state's slice of `count` edges) of part `part` of

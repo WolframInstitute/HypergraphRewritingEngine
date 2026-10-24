@@ -119,6 +119,11 @@ struct EvolveInput {
     hgcommon::StateCost state_cost;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
+    // "Generational": each state's matches are taken in the standard order, each unless it shares
+    // an edge with one taken before it, and applied together as one generation (match.cu,
+    // match_state_generation; rewrite.cu, apply_generation). Every state is expanded, the relations
+    // come from the edges, and the caps and draws are off (the FFI drops them).
+    bool     generational = false;
 
     // Override for EngineConfig::slice_scan_max_edges (0 keeps the default).
     // Tests set a tiny value to force the index-backed match path and the

@@ -708,6 +708,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.state_cost = req.state_cost;
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
+        job.generational = req.generational;
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
         }
@@ -1021,15 +1022,11 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         const bool custom_keys = req.event_signature_keys != hypergraph::EVENT_SIG_NONE &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_FULL &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
-        const bool on_cpu =
-            req.positional_event_identity || custom_keys || cpu_session || req.generational;
+        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session;
         if (req.positional_event_identity && !cpu_session)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
                 "mode"});
-        else if (req.generational && !cpu_session)
-            req.ffi_warnings.push_back({"Engine", 1,
-                "\"Generational\" runs on the CPU engine: the device has no generational update"});
         else if (custom_keys && !cpu_session)
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "

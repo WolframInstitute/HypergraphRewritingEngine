@@ -1035,8 +1035,8 @@ __device__ void compute_state_record(const DeviceState& ds, StateId sid, DeviceA
 
 template <class Par>
 __device__ __forceinline__ ChildIdentity canonicalise_child(
-        const DeviceState& ds, StateId sid, EventId evt, StateId parent, uint32_t keyed,
-        CanonicalizationMode state_mode, EventSignatureKeys event_keys, bool need_ranks,
+        const DeviceState& ds, StateId sid, EventId evt, uint32_t num_events, StateId parent,
+        uint32_t keyed, CanonicalizationMode state_mode, EventSignatureKeys event_keys, bool need_ranks,
         bool need_exact, bool want_orbits, bool dedup, DeviceArena::View arena, uint32_t*& slot,
         uint64_t& slot_words, DedupMap::DeviceView dedup_map, DedupMap::DeviceView exact_map,
         DedupMap::DeviceView event_map, typename Pool<uint32_t>::DeviceView forms,
@@ -1146,9 +1146,11 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             // The event identity, where both halves exist: the input hash, published when the
             // parent was created, and the output hash just computed. Built from the EXACT hashes,
             // never the mode's key (SPEC.md sec 4).
+            // A generation's events are evt .. evt + num_events.
             if (event_keys != EVENT_SIG_NONE && evt != INVALID_ID) {
                 const uint64_t s1 = clock64();
-                stamp_event_signature(ds, evt, event_keys, event_map);
+                for (uint32_t k = 0; k < num_events; ++k)
+                    stamp_event_signature(ds, evt + k, event_keys, event_map);
                 acc_evkey += clock64() - s1;
             }
             // Quotient causal: EVERY raw event registers its canonical transition, whether or not
@@ -1471,6 +1473,7 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_step;
     __shared__ KeptCopy child_kept;   // the kept edges of the child the warp copies
     __shared__ uint32_t child_event;
+    __shared__ uint32_t child_events;   // the events from child_event on (AppliedMatch::num_events)
     __shared__ uint32_t child_keyed;
     __shared__ StateId  child_parent;
     __shared__ uint32_t child_rule;
@@ -1542,7 +1545,8 @@ __global__ void k_persistent_evolve(
         const unsigned long long t1 = clock64();
         ChildIdentity id{};
         if (child_sid != INVALID_ID)
-            id = canonicalise_child(ds, child_sid, child_event, child_parent, child_keyed,
+            id = canonicalise_child(ds, child_sid, child_event, child_events, child_parent,
+                                    child_keyed,
                                     state_mode, event_keys, need_ranks, need_exact,
                                     ds.state_edge_orbit != nullptr, dedup, arena, ir_slot,
                                     ir_slot_words, dedup_map, exact_map, event_map, forms, ready,
@@ -1582,15 +1586,17 @@ __global__ void k_persistent_evolve(
                 claimed_count = 1;
                 const MatchRecord& r = found.at(claimed);
                 await_match(r);
-                const DeviceRule& rule = rules[r.rule_id];
+                // A generation record ("Generational") is applied alone.
+                const bool generation = r.rule_id == kGenerationRule;
+                const DeviceRule& rule = rules[generation ? 0u : r.rule_id];
                 const uint32_t child = ds.state_edge_slices[r.state_id].count +
-                                       rule.num_rhs_edges - rule.num_lhs_edges;
+                                       (generation ? 0u : rule.num_rhs_edges - rule.num_lhs_edges);
                 // As many records as tiles whose child's IR slot fits a share of the region.
                 const uint64_t need =
                     ir_slot_shape(child, child * ds.max_edge_arity, ds.ir_depth, ds.ir_generators)
                         .stride();
                 const uint64_t fit = need ? region_words / need : 32u;
-                if (fit > 1u && busy_streak >= kBatchBusyStreak) {
+                if (fit > 1u && busy_streak >= kBatchBusyStreak && ds.generational == 0u) {
                     const bool deep = busy_streak >= kDeepStreak;
                     // Below the backlog a short burst is spread over the grid, where a batch
                     // would leave the other blocks idle (lane_backlog_of).
@@ -1613,6 +1619,7 @@ __global__ void k_persistent_evolve(
                 const DeviceEvent& x = ds.event_pool.at(e);
                 child_sid = x.output_state;
                 child_event = e;
+                child_events = 1u;
                 child_step = x.step;
                 child_parent = x.input_state;
                 child_rule = x.rule;
@@ -1660,6 +1667,7 @@ __global__ void k_persistent_evolve(
                         ds, rules, rec, rec.step + 1u, phase_cycles ? phase_cycles + 5 : nullptr);
                     child_sid = a.state;
                     child_event = a.event;
+                    child_events = a.num_events;
                     child_step = rec.step + 1u;
                     child_kept = a.kept;
                     child_keyed = a.keyed;
@@ -1732,7 +1740,7 @@ __global__ void k_persistent_evolve(
                 const unsigned long long t1 = clock64();
                 ChildIdentity id{};
                 if (sid != INVALID_ID)
-                    id = canonicalise_child(ds, sid, evt, parent, keyed, state_mode, event_keys,
+                    id = canonicalise_child(ds, sid, evt, 1u, parent, keyed, state_mode, event_keys,
                                             need_ranks, need_exact,
                                             ds.state_edge_orbit != nullptr, dedup, arena,
                                             tile_slot[tile], tile_slot_words[tile], dedup_map,
@@ -2618,7 +2626,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // fills (a rewrite per event, a twin claim per state), and the state words. A session keeps its
     // own across calls; a one-shot run starts empty and ARMED.
     DeviceState dsk = engine.device();
-    const bool keyed = hgcommon::keyed_rewrites_apply(
+    // A generation's rewrite is many matches, which no rewrite key names.
+    const bool keyed = dsk.generational == 0u && hgcommon::keyed_rewrites_apply(
         engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
         /*positional_events=*/false,
         hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,

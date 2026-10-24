@@ -247,9 +247,11 @@ exact configuration. Sampling and capping options refine this as follows:
   per match from the input state to it. An edge's id is its creation order: the initial edges
   in input order, then each generation's produced edges in the order of its events and of each
   right-hand side, with the fresh vertices in the same order. The caps, `TransitionRate`,
-  `RuleWeights`, `ExplorationProbability` and `StateCost` do not apply with it, and quotient
-  exploration is off. The device has no generational update: the GPU binary runs such a job on
-  the CPU engine it carries.
+  `RuleWeights`, `ExplorationProbability` and `StateCost` do not apply with it, quotient
+  exploration is off, and the relations come from the edges under every state mode. On the
+  device the block that matches a state collects its matches, orders and takes them through the
+  same two functions, and emits one generation record (`match_state_generation`), which one
+  thread applies as the host does (`apply_generation`).
 - **List order.** `"CausalEdges"` and `"BranchialEdges"` list their rows in ascending order
   (`hgmarshal::relation_list`), so a list's order is a function of its pairs.
 - **A truncated run.** A run that reaches a container ceiling, or whose allocation fails, stops:

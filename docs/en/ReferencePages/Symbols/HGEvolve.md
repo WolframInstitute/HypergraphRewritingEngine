@@ -1276,7 +1276,7 @@ HGEvolve[{{x, y}} -> {{x, y}, {y, z}}, {{1, 2}}, 6, "NumEvents", "Generational" 
 
 <!-- => 63 -->
 
-The caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"StateCost"` do not apply with it. With `"TargetDevice" -> "GPU"` it runs on the CPU engine.
+The caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"StateCost"` do not apply with it.
 
 ### "BranchialStep"
 

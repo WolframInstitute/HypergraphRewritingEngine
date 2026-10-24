@@ -267,8 +267,9 @@ __device__ __noinline__ MatchStage stage_state_edges(const DeviceState& ds, cons
 // The caps' rank is selection_rank_device, the spine's hgcommon::transition_rank of
 // transition_key_device, and the draw hgcommon::transition_survives of that key: the host's
 // cap_at_drain, spine_at_drain and transition_survives compute the same values.
+//   kCollect      record each match's rule and edges, emit nothing ("Generational", no rank)
 enum class EmitMode : uint8_t {
-    kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit
+    kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit, kCollect
 };
 
 struct EmitCtl {
@@ -309,7 +310,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
     if (c.mode == EmitMode::kDraw || c.mode == EmitMode::kSpineEmit) {
         key = transition_key_device(ds, state_id, rid, edges, depth);
         r = hgcommon::transition_rank(key, ds.sampling_seed, rs);
-    } else {
+    } else if (c.mode != EmitMode::kCollect) {
         r = selection_rank_device(ds, state_id, rid, edges, depth, step + 1u);
     }
 
@@ -333,10 +334,11 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
     case EmitMode::kSpineEmit:
         // Every match at the minimum rank: under Full states automorphic transitions share it.
         return r == c.threshold;
-    case EmitMode::kParentCount: {
+    case EmitMode::kParentCount:
+    case EmitMode::kCollect: {
         const uint32_t at = atomicAdd(c.s_seen, 1u);
         if (at < c.capacity) {
-            c.s_ranks[at] = r;
+            if (c.s_ranks) c.s_ranks[at] = r;
             c.s_rules[at] = static_cast<uint16_t>(rid);
             for (uint8_t i = 0; i < kMaxPatternEdges; ++i)
                 c.s_edges[at * kMaxPatternEdges + i] = edges[i];
@@ -510,11 +512,10 @@ __device__ __forceinline__ ParentBuffers parent_spill_buffers(uint32_t* p, uint3
 __device__ __forceinline__ void parent_count_pass(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
-        const ParentBuffers& b) {
+        const ParentBuffers& b, EmitMode mode = EmitMode::kParentCount) {
     if (threadIdx.x == 0) { *s_seen = 0; *s_overflow = 0; }
     __syncthreads();
-    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, b.ranks, nullptr,
-                  nullptr};
+    EmitCtl count{mode, 0u, 0u, s_seen, s_overflow, b.ranks, nullptr, nullptr};
     count.s_rules = b.rules;
     count.s_edges = b.edges;
     count.capacity = b.capacity;
@@ -646,6 +647,118 @@ __device__ __noinline__ void match_state_parent_capped(
         match_state_rule_pass(ds, rules, state_id, r, step, out, &keep);
 }
 
+// "Generational", in the block of the state's rule 0, over every rule: the host's
+// generation_at_drain. A first pass counts the state's matches; a second records each match's
+// rule and edges into a spill buffer of exactly that many, with an order array and a bit per
+// edge of the state's slice. Thread 0 orders the matches by hgcommon::standard_order_before,
+// takes them by hgcommon::greedy_disjoint, writes the generation's list to the arena
+// (generation_list) and emits one record of kGenerationRule. A state with no match emits nothing.
+__device__ __noinline__ void match_state_generation(
+        const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
+        typename Pool<MatchRecord>::DeviceView out, const SuccessorCtx* succ) {
+    __shared__ uint32_t s_seen;
+    __shared__ uint32_t s_overflow;
+    ParentBuffers none{};
+    parent_count_pass(ds, rules, state_id, step, out, &s_seen, &s_overflow, none,
+                      EmitMode::kCollect);
+    const uint32_t n = s_seen;
+    if (n == 0u) return;
+    const StateEdgeSlice slice = ds.state_edge_slices[state_id];
+    const uint32_t bitmap_words = (slice.count + 31u) / 32u;
+    const uint64_t words = even_words(2ull * n) + even_words(4ull * n * kMaxPatternEdges) +
+                           even_words(4ull * n) + even_words(4ull * bitmap_words);
+    uint32_t* spill = claim_spill(ds, succ, words);
+    if (!spill) return;   // claim_spill recorded why; the state is not rewritten
+    ParentBuffers b{};
+    {
+        uint32_t* p = spill;
+        auto take = [&](uint64_t bytes) { uint32_t* at = p; p += even_words(bytes); return at; };
+        b.rules = reinterpret_cast<uint16_t*>(take(2ull * n));
+        b.edges = reinterpret_cast<EdgeId*>(take(4ull * n * kMaxPatternEdges));
+        b.order = take(4ull * n);
+        b.quota = take(4ull * bitmap_words);   // the slice's used edges
+        b.capacity = n;
+    }
+    parent_count_pass(ds, rules, state_id, step, out, &s_seen, &s_overflow, b,
+                      EmitMode::kCollect);
+    if (threadIdx.x == 0) {
+        const uint32_t m = s_seen < n ? s_seen : n;
+        const EdgeId* ids = ds.state_edge_ids;
+        auto edges_at = [&](uint32_t i) { return b.edges + size_t(i) * kMaxPatternEdges; };
+        auto count_at = [&](uint32_t i) { return uint32_t{rules[b.rules[i]].num_lhs_edges}; };
+        for (uint32_t i = 0; i < m; ++i) b.order[i] = i;
+        hgcommon::ir_heapsort_idx(b.order, m, [&](uint32_t x, uint32_t y) {
+            if (hgcommon::standard_order_before(edges_at(x), count_at(x), b.rules[x],
+                                                edges_at(y), count_at(y), b.rules[y]))
+                return -1;
+            if (hgcommon::standard_order_before(edges_at(y), count_at(y), b.rules[y],
+                                                edges_at(x), count_at(x), b.rules[x]))
+                return 1;
+            return x < y ? -1 : (x > y ? 1 : 0);
+        });
+        for (uint32_t w = 0; w < bitmap_words; ++w) b.quota[w] = 0u;
+        // The taken matches are compacted to the front of `order`, in the order taken.
+        uint32_t taken = 0, consumed = 0;
+        hgcommon::greedy_disjoint(
+            b.order, m,
+            [&](uint32_t i, uint32_t* o) {
+                const uint32_t k = count_at(i);
+                for (uint32_t j = 0; j < k; ++j) o[j] = edges_at(i)[j];
+                return k;
+            },
+            // A bit per position in the slice; slice_position indexes `ids`.
+            [&](uint32_t e) {
+                const uint32_t p = slice_position(ids, slice, e);
+                if (p == UINT32_MAX) return true;
+                const uint32_t at = p - slice.offset;
+                return ((b.quota[at >> 5] >> (at & 31u)) & 1u) != 0u;
+            },
+            [&](uint32_t e) {
+                const uint32_t p = slice_position(ids, slice, e);
+                if (p == UINT32_MAX) return;
+                const uint32_t at = p - slice.offset;
+                b.quota[at >> 5] |= 1u << (at & 31u);
+                ++consumed;
+            },
+            [&](uint32_t i) { b.order[taken++] = i; });
+        uint32_t* list = nullptr;
+        if (taken) {
+            list = DeviceArena::View(succ->arena)
+                       .claim(2ull + uint64_t{taken} * kGenerationEntryWords + consumed);
+            if (!list) ds.errors.record(ErrorKind::kIRArenaExhausted);
+        }
+        const uint32_t idx = list ? out.claim() : Pool<MatchRecord>::kInvalid;
+        if (list && idx == Pool<MatchRecord>::kInvalid) ds.errors.record(ErrorKind::kMatchPoolFull);
+        if (list && idx != Pool<MatchRecord>::kInvalid) {
+            list[0] = taken;
+            list[1] = consumed;
+            for (uint32_t t = 0; t < taken; ++t) {
+                const uint32_t i = b.order[t];
+                uint32_t* e = list + 2 + size_t(t) * kGenerationEntryWords;
+                e[0] = b.rules[i];
+                for (uint32_t j = 0; j < kMaxPatternEdges; ++j) e[1 + j] = edges_at(i)[j];
+            }
+            // The consumed edges ascending: the slice is ascending.
+            uint32_t* c = list + 2 + size_t(taken) * kGenerationEntryWords;
+            uint32_t w = 0;
+            for (uint32_t at = 0; at < slice.count; ++at)
+                if ((b.quota[at >> 5] >> (at & 31u)) & 1u) c[w++] = ids[slice.offset + at];
+            const uintptr_t addr = reinterpret_cast<uintptr_t>(list);
+            MatchRecord& rec = out.at(idx);
+            rec.rule_id = kGenerationRule;
+            rec.state_id = state_id;
+            rec.step = step;
+            rec.num_edges = 0;
+            for (uint32_t j = 0; j < kMaxPatternEdges; ++j) rec.matched_edges[j] = INVALID_ID;
+            rec.matched_edges[0] = static_cast<EdgeId>(addr & 0xFFFFFFFFu);
+            rec.matched_edges[1] = static_cast<EdgeId>(static_cast<uint64_t>(addr) >> 32);
+            __threadfence();
+            publish_match(rec);
+        }
+    }
+    __syncthreads();
+}
+
 __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRule& rule,
                                           StateId parent, const EdgeId* matched,
                                           const SuccessorCtx& ctx,
@@ -775,6 +888,10 @@ __device__ void match_state_rule(const DeviceState& ds,
     // The block's match buffer: the state's staged edges when no cap ranks candidates, the
     // caps' ranks and candidate arrays otherwise.
     __shared__ uint64_t s_buf[kMatchSharedWords];
+    if (ds.generational != 0u) {
+        if (rid == 0u) match_state_generation(ds, rules, state_id, step, out, succ);
+        return;
+    }
     if (match_state_rule_splits(ds)) {
         const MatchStage stage = stage_state_edges(ds, rules[rid], state_id, s_buf, sizeof(s_buf));
         match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, stage, part, parts,

@@ -310,11 +310,20 @@ __device__ void register_branchial(const DeviceState& ds, EventId my_event, Stat
 // when a capacity claim failed. A scheduler that finishes the work itself needs both: the state
 // to hash and re-enqueue, the event to stamp an identity onto once that hash exists.
 // See gpu/ARCHITECTURE.md sec 3.
+__device__ unsigned long long register_event_relations(const DeviceState& ds, EventId my_event,
+                                                       StateId input_state, const EdgeId* consumed,
+                                                       uint8_t num_consumed,
+                                                       EdgeId first_produced,
+                                                       uint8_t num_produced);
+__device__ AppliedMatch apply_generation(const DeviceState& ds, const DeviceRule* rules,
+                                         const MatchRecord& m, uint32_t step);
+
 __device__ AppliedMatch apply_one_match(const DeviceState& ds,
                                         const DeviceRule* rules,
                                         const MatchRecord& m,
                                         uint32_t          step,
                                         unsigned long long* sub) {
+    if (m.rule_id == kGenerationRule) return apply_generation(ds, rules, m, step);
     const DeviceRule&  rule = rules[m.rule_id];
     const unsigned long long t_start = clock64();
 
@@ -558,6 +567,30 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
             : 0u;
     const unsigned long long t_event = clock64();
 
+    const unsigned long long t_causal =
+        register_event_relations(ds, my_event, m.state_id, m.matched_edges, rule.num_lhs_edges,
+                                 first_eid, rule.num_rhs_edges);
+
+    if (sub) {
+        atomicAdd(&sub[0], t_reserved - t_start);
+        atomicAdd(&sub[1], t_emitted - t_reserved);
+        atomicAdd(&sub[2], t_csr - t_emitted);
+        atomicAdd(&sub[3], t_event - t_csr);
+        atomicAdd(&sub[4], t_causal - t_event);
+        atomicAdd(&sub[5], clock64() - t_causal);
+    }
+
+    return AppliedMatch{new_sid, my_event, kept, keyed};
+}
+
+// One event's causal and branchial registration: the producer side over its produced edges
+// first_produced .. first_produced + num_produced, the consumer side over its consumed edges, then
+// the branchial scan of its input state. One body for apply_one_match and apply_generation.
+// Returns the clock between the causal and the branchial parts.
+__device__ unsigned long long register_event_relations(const DeviceState& ds, EventId my_event,
+                                         StateId input_state, const EdgeId* consumed,
+                                         uint8_t num_consumed, EdgeId first_produced,
+                                         uint8_t num_produced) {
     // Under the quotient route the raw-edge rendezvous is off: the replay reconstructs the
     // relations (quotient_expansion.hpp), so which raw child wins the canonical slot does not
     // decide them. Mirrors the rewriter.cpp gate. Branchial registration below follows
@@ -565,8 +598,8 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
     const CausalViews causal(ds);
-    for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
-        if (ds.record_causal) register_as_producer(ds, causal, my_event, first_eid + r);
+    for (uint8_t r = 0; r < num_produced; ++r) {
+        if (ds.record_causal) register_as_producer(ds, causal, my_event, first_produced + r);
     }
 
     // 9. Causal rendezvous — consumer side (our consumed edges).
@@ -576,8 +609,8 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     // their producer is already reachable via an earlier (higher-EventId)
     // producer. Mirrors rewriter.cpp:145–172 on CPU.
     EdgeId consumed_sorted[kMaxPatternEdges];
-    uint8_t  n_cons = rule.num_lhs_edges;
-    for (uint8_t i = 0; i < n_cons; ++i) consumed_sorted[i] = m.matched_edges[i];
+    uint8_t  n_cons = num_consumed;
+    for (uint8_t i = 0; i < n_cons; ++i) consumed_sorted[i] = consumed[i];
 
     // Insertion sort, descending by producer-EventId.
     for (uint8_t i = 1; i < n_cons; ++i) {
@@ -610,18 +643,173 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
 
     // 10. Branchial scan: our sibling events in the same input state.
     if (ds.record_explored_branchial)
-        register_branchial(ds, my_event, m.state_id, m.matched_edges, rule.num_lhs_edges);
+        register_branchial(ds, my_event, input_state, consumed, num_consumed);
+    return t_causal;
+}
 
-    if (sub) {
-        atomicAdd(&sub[0], t_reserved - t_start);
-        atomicAdd(&sub[1], t_emitted - t_reserved);
-        atomicAdd(&sub[2], t_csr - t_emitted);
-        atomicAdd(&sub[3], t_event - t_csr);
-        atomicAdd(&sub[4], t_causal - t_event);
-        atomicAdd(&sub[5], clock64() - t_causal);
+// "Generational": a generation record's matches applied together by one THREAD, the host's
+// Rewriter::apply_generation. One state, the input less every consumed edge and with every
+// produced edge, and one event per match from the input state to it. The events, the produced
+// edges and the fresh vertices take consecutive ids in the order the matches were taken, each
+// match's produced edges in right-hand-side order. The child's slice is written here, so the
+// returned KeptCopy copies nothing.
+__device__ AppliedMatch apply_generation(const DeviceState& ds, const DeviceRule* rules,
+                                         const MatchRecord& m, uint32_t step) {
+    const uint32_t* list = generation_list(m);
+    const uint32_t taken = list[0];
+    const uint32_t num_consumed = list[1];
+    const uint32_t* entries = list + 2;
+    const EdgeId* consumed = list + 2 + size_t(taken) * kGenerationEntryWords;
+    if (taken == 0u) return AppliedMatch{};
+
+    uint32_t num_produced = 0, num_fresh = 0, vert_slots = 0;
+    for (uint32_t t = 0; t < taken; ++t) {
+        const DeviceRule& rule = rules[entries[size_t(t) * kGenerationEntryWords]];
+        num_produced += rule.num_rhs_edges;
+        num_fresh += static_cast<uint32_t>(__popc(rule.new_var_mask));
+        for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) vert_slots += rule.rhs[r].arity;
+    }
+    const StateEdgeSlice parent_slice = ds.state_edge_slices[m.state_id];
+    if (uint64_t{parent_slice.count} + num_produced < num_consumed) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        return AppliedMatch{};
+    }
+    const uint32_t new_count = parent_slice.count + num_produced - num_consumed;
+
+    const uint32_t new_sid = coalesced_bounded_claim(ds.state_count, ds.max_states);
+    if (new_sid == INVALID_ID) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        return AppliedMatch{};
+    }
+    EventId first_event = INVALID_ID;
+    uint32_t first_eid = 0u, claimed_edges = 0u;
+    auto abandon = [&](ErrorKind kind) {
+        ds.errors.record(kind);
+        ds.state_edge_slices[new_sid] = StateEdgeSlice{INVALID_ID, 0u};
+        if (first_event != INVALID_ID) {
+            for (uint32_t t = 0; t < taken; ++t) {
+                DeviceEvent& dead = ds.event_pool.at(first_event + t);
+                dead.id = INVALID_ID;
+                dead.input_state = INVALID_ID;
+                dead.output_state = INVALID_ID;
+            }
+        }
+        for (uint32_t r = 0; r < claimed_edges; ++r) {
+            Edge none{};
+            none.creator_event = INVALID_ID;
+            ds.edge_pool.at(first_eid + r) = none;
+        }
+        return AppliedMatch{};
+    };
+    first_event = ds.event_pool.settle(coalesced_add(ds.event_pool.counter, taken), taken);
+    if (first_event == Pool<DeviceEvent>::kInvalid) {
+        first_event = INVALID_ID;
+        return abandon(ErrorKind::kEventPoolFull);
+    }
+    if (num_produced > 0) {
+        first_eid = ds.edge_pool.settle(coalesced_add(ds.edge_pool.counter, num_produced),
+                                        num_produced);
+        if (first_eid == Pool<Edge>::kInvalid) {
+            first_eid = 0u;
+            return abandon(ErrorKind::kEdgePoolFull);
+        }
+        claimed_edges = num_produced;
+    }
+    const uint32_t slice_at = coalesced_add(ds.state_edge_ids_counter, new_count);
+    const uint32_t new_offset = new_count == 0 ? 0u : slice_at;
+    if (new_count > 0 && uint64_t{new_offset} + new_count > ds.state_edge_ids_capacity) {
+        atomicMin(ds.state_edge_ids_counter, min(new_offset, ds.state_edge_ids_capacity));
+        return abandon(ErrorKind::kStatePoolFull);
+    }
+    uint32_t vert_at = ds.vertex_pool.settle(coalesced_add(ds.vertex_pool.counter, vert_slots),
+                                             vert_slots);
+    if (vert_slots == 0) vert_at = 0u;
+    if (vert_slots > 0 && vert_at == Pool<VertexId>::kInvalid)
+        return abandon(ErrorKind::kVertexPoolFull);
+    uint32_t fresh_at = coalesced_add(ds.vertex_high_water, num_fresh);
+    if (num_fresh > 0 && fresh_at + num_fresh > ds.vertex_inverted_index.list.num_keys)
+        return abandon(ErrorKind::kVertexPoolFull);
+
+    // Each match's produced edges and event, in the order taken.
+    uint32_t edge_at = 0;
+    for (uint32_t t = 0; t < taken; ++t) {
+        const uint32_t* entry = entries + size_t(t) * kGenerationEntryWords;
+        const DeviceRule& rule = rules[entry[0]];
+        const EdgeId* matched = entry + 1;
+        const EventId e = first_event + t;
+        VertexId binding[kMaxVars];
+        bind_matched_vertices(ds, rule, matched, binding);
+        hgcommon::assign_fresh_consecutive(rule.new_var_mask, fresh_at, binding);
+        fresh_at += static_cast<uint32_t>(__popc(rule.new_var_mask));
+        const uint32_t first_of_event = first_eid + edge_at;
+        for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
+            const DeviceRhsEdge& re = rule.rhs[r];
+            VertexId verts[kMaxArity];
+            if (!hgcommon::resolve_rhs_vertices(re.vars, re.arity, binding, binding, verts))
+                return abandon(ErrorKind::kVertexPoolFull);
+            for (uint8_t i = 0; i < re.arity; ++i) ds.vertex_pool.at(vert_at + i) = verts[i];
+            Edge ne{};
+            ne.arity = re.arity;
+            ne.vertex_offset = vert_at;
+            ne.creator_event = e;
+            ne.step = step;
+            const EdgeId eid = first_eid + edge_at;
+            ds.edge_pool.at(eid) = ne;
+            vert_at += re.arity;
+            ++edge_at;
+            if (ds.maintain_indices) {
+                for (uint8_t i = 0; i < re.arity; ++i) {
+                    const VertexId v = verts[i];
+                    if (v >= ds.vertex_inverted_index.list.num_keys) continue;
+                    if (!first_occurrence([&](uint8_t k) { return verts[k]; }, i)) continue;
+                    if (ds.vertex_inverted_index.insert(v, eid) == INVALID_ID)
+                        ds.errors.record(ErrorKind::kInvIndexNodes);
+                }
+            }
+        }
+        DeviceEvent& ev = ds.event_pool.at(e);
+        ev.id             = e;
+        ev.canonical_id   = INVALID_ID;
+        ev.input_state    = m.state_id;
+        ev.output_state   = new_sid;
+        ev.rule           = entry[0];
+        ev.step           = step;
+        ev.num_consumed   = rule.num_lhs_edges;
+        ev.num_produced   = rule.num_rhs_edges;
+        ev.rewrite_id     = hgcommon::REWRITE_ID_UNSET;
+        ev.first_produced = first_of_event;
+        ev.consumed_at    = e * ds.event_consumed_stride;
+        for (uint8_t i = 0; i < rule.num_lhs_edges && i < ds.event_consumed_stride; ++i)
+            ds.event_consumed[ev.consumed_at + i] = matched[i];
     }
 
-    return AppliedMatch{new_sid, my_event, kept, keyed};
+    // The child's slice: the parent's edges less the consumed ones (both ascending), then the
+    // produced ones, which are above every parent edge.
+    EdgeId* new_ids = ds.state_edge_ids + new_offset;
+    const EdgeId* parent_ids = ds.state_edge_ids + parent_slice.offset;
+    uint32_t w = 0, c = 0;
+    for (uint32_t i = 0; i < parent_slice.count; ++i) {
+        const EdgeId e = parent_ids[i];
+        while (c < num_consumed && consumed[c] < e) ++c;
+        if (c < num_consumed && consumed[c] == e) continue;
+        new_ids[w++] = e;
+    }
+    for (uint32_t r = 0; r < num_produced; ++r) new_ids[w++] = first_eid + r;
+    ds.state_edge_slices[new_sid] = StateEdgeSlice{new_offset, new_count};
+    if (!ds.maintain_indices && new_count > ds.slice_scan_max_edges) atomicExch(ds.needs_indices, 1u);
+
+    __threadfence();   // the events are visible before any rendezvous reads them
+    edge_at = 0;
+    for (uint32_t t = 0; t < taken; ++t) {
+        const uint32_t* entry = entries + size_t(t) * kGenerationEntryWords;
+        const DeviceRule& rule = rules[entry[0]];
+        register_event_relations(ds, first_event + t, m.state_id, entry + 1, rule.num_lhs_edges,
+                                 first_eid + edge_at, rule.num_rhs_edges);
+        edge_at += rule.num_rhs_edges;
+    }
+    AppliedMatch out{new_sid, first_event, KeptCopy{}, 0u};
+    out.num_events = taken;
+    return out;
 }
 
 namespace {
