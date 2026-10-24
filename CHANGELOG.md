@@ -29,7 +29,7 @@
   `"MaxSuccessorStatesPerParent"` and the spine read the step, for the same reason. Every sampled
   or capped result under those modes changes. Under `Full` they read no step, so quotient
   exploration and full capture keep the same transitions.
-- `"Generational" -> True` (provisional name) follows one history in which each step applies, as
+- `"Generational" -> True` follows one history in which each step applies, as
   one generation, every match that shares no hyperedge with a match before it in the Wolfram
   model's standard order (`"LeastRecentEdge"`, `"RuleOrdering"`, `"RuleIndex"`), on both
   devices.

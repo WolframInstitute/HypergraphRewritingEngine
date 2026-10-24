@@ -235,7 +235,7 @@ exact configuration. Sampling and capping options refine this as follows:
   successor is canonicalised for its cost only, and the identity in force still decides which
   successors are distinct. `MaxSuccessorStatesPerParent` and `MatchesPerStateRule` are not
   guided by the cost; they bound the candidates a step's cost is computed for.
-- **`Generational`** (provisional name) is the Wolfram model's single-way update. The evolution
+- **`Generational`** is the Wolfram model's single-way update. The evolution
   follows one history from each initial state, and each step is one generation. A state's
   matches are ordered by the standard order (`hgcommon::standard_order_before`): first by the
   match's edge ids sorted from newest to oldest, lexicographically (`"LeastRecentEdge"`: the
