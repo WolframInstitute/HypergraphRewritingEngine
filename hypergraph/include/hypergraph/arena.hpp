@@ -566,6 +566,26 @@ size_t arena_trim_block_pool(size_t keep_bytes);
 // family through hg_evolve --serve at 4 threads: releasing everything after each 1-step job
 // cost 0.8 ms of re-faulting on a 7 ms job; the kept bytes cover a small job's whole working set.
 inline constexpr size_t kPooledBytesKeptBetweenJobs = size_t{64} << 20;
+
+// ADDRESS SPACE HELD BACK FOR THE END OF A RUN. A run that exhausts memory stops and returns what
+// it built (ParallelEvolutionEngine::raise_worker_error), and writing that result needs memory of
+// its own. The engine maps `bytes` it never touches when a run starts and unmaps them when an
+// allocation fails, so the mapping counts against the limit that failed (RLIMIT_AS, or the
+// Windows commit charge) and is free again for the result. Untouched, it is never resident.
+class AddressReserve {
+public:
+    explicit AddressReserve(size_t bytes);
+    ~AddressReserve();
+    AddressReserve(const AddressReserve&) = delete;
+    AddressReserve& operator=(const AddressReserve&) = delete;
+    void release();
+
+private:
+    void* base_ = nullptr;
+    size_t bytes_ = 0;
+};
+// 256 MB.
+inline constexpr size_t kEndOfRunReserveBytes = size_t{256} << 20;
 #if HG_ENGINE_STATS
 // Stats builds: bytes and calls per allocation site (the engine function that asked), the
 // largest first. Addresses are symbolised with addr2line against the binary.

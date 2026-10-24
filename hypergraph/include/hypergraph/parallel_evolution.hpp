@@ -866,6 +866,9 @@ private:
     OpeningSettings opening_;
     // Indices into warnings_ of the notices that say the result is truncated (a capacity limit).
     mutable std::vector<size_t> truncation_warnings_;
+    // Held from the start of each run, given back when an allocation fails (AddressReserve).
+    // Mutable for the same reason as warnings_.
+    mutable std::unique_ptr<AddressReserve> end_of_run_reserve_;
 
     // Per-state match-task join (match_join.hpp), keyed by state id.
     static constexpr uint64_t MATCH_JOIN_EMPTY  = (1ULL << 62) + 700;

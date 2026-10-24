@@ -116,6 +116,7 @@ void ParallelEvolutionEngine::evolve(
 ) {
     if (!hg_) return;
     refuse_after_worker_error("evolve");
+    end_of_run_reserve_ = std::make_unique<AddressReserve>(kEndOfRunReserveBytes);
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
@@ -229,6 +230,7 @@ void ParallelEvolutionEngine::evolve(
 ) {
     if (!hg_ || initial_states.empty()) return;
     refuse_after_worker_error("evolve");
+    end_of_run_reserve_ = std::make_unique<AddressReserve>(kEndOfRunReserveBytes);
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
@@ -298,6 +300,17 @@ void ParallelEvolutionEngine::raise_worker_error() const {
                 "ceiling was hit") + ". The evolution is TRUNCATED at that point -- the states, "
                 "events and relations returned are valid and incomplete. Raise the limit or "
                 "reduce the workload to explore further.");
+            return;
+        }
+        // An allocation that fails is the same limit, the machine's: the job that threw stops,
+        // the queues drain unrun, and what was published is the result.
+        case job_system::ErrorType::OutOfMemory: {
+            end_of_run_reserve_.reset();
+            truncation_warnings_.push_back(warnings_.size());
+            warnings_.push_back(
+                "memory exhausted: an allocation failed. The evolution is TRUNCATED at that "
+                "point -- the states, events and relations returned are valid and incomplete. "
+                "Reduce the workload or give the process more memory to explore further.");
             return;
         }
         default: {
@@ -1326,6 +1339,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
             "unchanged graph, which reads as a converged one.");
     }
     refuse_after_worker_error("evolve_more");
+    end_of_run_reserve_ = std::make_unique<AddressReserve>(kEndOfRunReserveBytes);
     {
         const OpeningSettings now = current_settings();
         const char* what = !hgcommon::same_record_set(now.record, opening_.record) ? "record set"

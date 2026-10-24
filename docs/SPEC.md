@@ -232,6 +232,13 @@ exact configuration. Sampling and capping options refine this as follows:
   successor is canonicalised for its cost only, and the identity in force still decides which
   successors are distinct. `MaxSuccessorStatesPerParent` and `MatchesPerStateRule` are not
   guided by the cost; they bound the candidates a step's cost is computed for.
+- **A truncated run.** A run that reaches a container ceiling, or whose allocation fails, stops:
+  the task that failed ends, the queued tasks are dropped unrun, and the states, events and
+  relations already published are the result, with a warning marked `"Partial" -> 1`
+  (`HGEvolve::overflow`). The host engine holds 256 MB of untouched address space during a run
+  and gives it back when an allocation fails (`AddressReserve`), for the reply. A reply that
+  does not fit the memory left carries the counts and the warnings, `"Reduced" -> 1`, and
+  `HGEvolve` gives empty lists for the rest.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*

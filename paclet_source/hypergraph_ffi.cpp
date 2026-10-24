@@ -855,6 +855,105 @@ static void read_back_session_identity(hgffi::ParsedJob& req, const hypergraph::
     req.explore_from_canonical_states_only = engine.explore_from_canonical_states_only();
 }
 
+// The requested counts, NumStates, NumEvents, NumCausalEdges and NumBranchialEdges, into `out`.
+// `genesis_pairs` is the reconstruction's causal pairs from genesis events
+// (Hypergraph::reconstructed_genesis_pairs), 0 when none are reported.
+static void push_counts(wxf::WXFValueAssociation& out, const hgffi::ParsedJob& req,
+                        hypergraph::Hypergraph& hg, hypergraph::ParallelEvolutionEngine& engine,
+                        size_t genesis_pairs) {
+    if (req.include_num_states) {
+        out.push_back({wxf::WXFValue("NumStates"),
+                       wxf::WXFValue(static_cast<int64_t>(hg.num_canonical_states()))});
+    }
+    if (req.include_num_events) {
+        // Under the reconstruction (quotient exploration, or Automatic identity on either
+        // path) the observable event count is the reconstruction's -- the authority-anchored
+        // identity count the golden matrix pins -- not the materialised dedup count.
+        const int64_t n_events = hg.quotient_reconstruction()
+            ? static_cast<int64_t>(hg.observable_num_events() +
+                                   (req.show_genesis_events
+                                        ? hg.num_reconstructed_genesis_events() : 0))
+            : static_cast<int64_t>(engine.num_events());
+        out.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(n_events)});
+    }
+    if (req.include_num_causal_edges) {
+        // Count unique (producer, consumer) event pairs for v1 semantics
+        // When ShowGenesisEvents is false, we must filter out pairs involving genesis events
+        // to match reference behavior ("IncludeInitialEvent" -> False)
+        //
+        // Reconstruction branch first: its pairs live in its own store over its own event
+        // ids, which never include genesis events (INIT is a sentinel producer, dropped at
+        // emission), so the genesis filter below -- which indexes HYPERGRAPH events and
+        // would misread a reconstruction id -- must not run on them.
+        int64_t causal_count;
+        if (hg.quotient_reconstruction()) {
+            // The count follows CausalTransitiveReduction, exactly as the stored path's
+            // does: under full capture a redundant edge is dropped AT REGISTRATION when the
+            // reduction is on (add_causal_edge), so the stored count, list and graph are
+            // all the reduced relation. The reconstruction stores every pair and reduces on
+            // read; passing the flag here is what keeps the quotient's numbers equal to
+            // full capture's in the same cell, which is the exploration contract.
+            causal_count = static_cast<int64_t>(hg.observable_num_causal_pairs(
+                hg.causal_graph().transitive_reduction_enabled()) + genesis_pairs);
+        } else if (req.show_genesis_events) {
+            // Include all pairs
+            causal_count = static_cast<int64_t>(hg.num_causal_event_pairs());
+        } else {
+            // Filter out genesis event pairs - must iterate and count
+            auto causal_edge_vec = hg.causal_graph().get_causal_edges();
+            auto pair_hash = [](const std::pair<hypergraph::EventId, hypergraph::EventId>& p) {
+                return std::hash<uint64_t>{}((static_cast<uint64_t>(p.first) << 32) | p.second);
+            };
+            std::unordered_set<std::pair<hypergraph::EventId, hypergraph::EventId>, decltype(pair_hash)> seen_pairs(
+                0, pair_hash);
+            seen_pairs.reserve(causal_edge_vec.size());
+
+            for (const auto& edge : causal_edge_vec) {
+                // Skip edges involving genesis events
+                if (hg.is_genesis_event(edge.producer) || hg.is_genesis_event(edge.consumer)) {
+                    continue;
+                }
+                seen_pairs.insert({edge.producer, edge.consumer});
+            }
+            causal_count = static_cast<int64_t>(seen_pairs.size());
+        }
+        out.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(causal_count)});
+    }
+    if (req.include_num_branchial_edges) {
+        const int64_t n_branchial = hg.quotient_reconstruction()
+            ? static_cast<int64_t>(hg.observable_num_branchial())
+            : static_cast<int64_t>(hg.num_branchial_edges());
+        out.push_back({wxf::WXFValue("NumBranchialEdges"), wxf::WXFValue(n_branchial)});
+    }
+}
+
+// THE REPLY OF A RUN THAT EXHAUSTED ITS MEMORY, when the whole reply does not fit either: the
+// requested counts and the warnings, the last of them saying that the lists were left out, and
+// "Reduced" -> 1. HGEvolve then gives empty lists for what the reply leaves out.
+static std::vector<uint8_t> reduced_reply(const hgffi::ParsedJob& req, hypergraph::Hypergraph& hg,
+                                          hypergraph::ParallelEvolutionEngine& engine) {
+    wxf::WXFValueAssociation out;
+    const size_t genesis_pairs =
+        hg.quotient_reconstruction() && req.show_genesis_events
+            ? hg.reconstructed_genesis_pairs(hg.causal_graph().transitive_reduction_enabled()).size()
+            : 0;
+    push_counts(out, req, hg, engine, genesis_pairs);
+    wxf::WXFValueList warn;
+    for (const auto& w : req.ffi_warnings)
+        warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, w.partial));
+    warn.push_back(hgmarshal::warning_record(
+        "ReplyReduced", 1,
+        "the reply of the truncated evolution does not fit in the memory left: it carries the "
+        "counts, and its states, events, relations and graphs are empty",
+        true));
+    out.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
+    out.push_back({wxf::WXFValue("Reduced"), wxf::WXFValue(int64_t{1})});
+    wxf::Writer w;
+    w.write_header();
+    w.write(wxf::WXFValue(out));
+    return w.release_data();
+}
+
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host) {
     return run_rewriting_core_pieces(wxf_bytes, host).join();
@@ -862,6 +961,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
 wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                                       const HostBridge& host) {
+    // Built before the reply when the evolution ran out of memory (reduced_reply), and answered
+    // when the reply runs out of memory as well. It outlives the engine, which the unwinding
+    // frees first.
+    std::vector<uint8_t> reduced;
     try {
         hgffi::ParsedJob req;
         parse_job(wxf_bytes, host, req);
@@ -1253,6 +1356,9 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                  "event signature(s) used a raw edge id where no canonical rank was "
                  "available; those identities are not isomorphism-invariant"});
         }
+
+        if (engine.get_error_type() == job_system::ErrorType::OutOfMemory)
+            reduced = reduced_reply(req, hg, engine);
 
         // Build WXF output - only include requested data components
         wxf::WXFValueAssociation full_result;
@@ -1992,70 +2098,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         }
 
         // Only include counts when requested
-        if (req.include_num_states) {
-            full_result.push_back({wxf::WXFValue("NumStates"), wxf::WXFValue(static_cast<int64_t>(hg.num_canonical_states()))});
-        }
-        if (req.include_num_events) {
-            // Under the reconstruction (quotient exploration, or Automatic identity on either
-            // path) the observable event count is the reconstruction's -- the authority-anchored
-            // identity count the golden matrix pins -- not the materialised dedup count.
-            const int64_t n_events = hg.quotient_reconstruction()
-                ? static_cast<int64_t>(hg.observable_num_events() +
-                                       (req.show_genesis_events
-                                            ? hg.num_reconstructed_genesis_events() : 0))
-                : static_cast<int64_t>(engine.num_events());
-            full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(n_events)});
-        }
-        if (req.include_num_causal_edges) {
-            // Count unique (producer, consumer) event pairs for v1 semantics
-            // When ShowGenesisEvents is false, we must filter out pairs involving genesis events
-            // to match reference behavior ("IncludeInitialEvent" -> False)
-            //
-            // Reconstruction branch first: its pairs live in its own store over its own event
-            // ids, which never include genesis events (INIT is a sentinel producer, dropped at
-            // emission), so the genesis filter below -- which indexes HYPERGRAPH events and
-            // would misread a reconstruction id -- must not run on them.
-            int64_t causal_count;
-            if (hg.quotient_reconstruction()) {
-                // The count follows CausalTransitiveReduction, exactly as the stored path's
-                // does: under full capture a redundant edge is dropped AT REGISTRATION when the
-                // reduction is on (add_causal_edge), so the stored count, list and graph are
-                // all the reduced relation. The reconstruction stores every pair and reduces on
-                // read; passing the flag here is what keeps the quotient's numbers equal to
-                // full capture's in the same cell, which is the exploration contract.
-                causal_count = static_cast<int64_t>(hg.observable_num_causal_pairs(
-                    hg.causal_graph().transitive_reduction_enabled()) +
-                    recon_genesis_pairs.size());
-            } else if (req.show_genesis_events) {
-                // Include all pairs
-                causal_count = static_cast<int64_t>(hg.num_causal_event_pairs());
-            } else {
-                // Filter out genesis event pairs - must iterate and count
-                auto causal_edge_vec = hg.causal_graph().get_causal_edges();
-                auto pair_hash = [](const std::pair<hypergraph::EventId, hypergraph::EventId>& p) {
-                    return std::hash<uint64_t>{}((static_cast<uint64_t>(p.first) << 32) | p.second);
-                };
-                std::unordered_set<std::pair<hypergraph::EventId, hypergraph::EventId>, decltype(pair_hash)> seen_pairs(
-                    0, pair_hash);
-                seen_pairs.reserve(causal_edge_vec.size());
-
-                for (const auto& edge : causal_edge_vec) {
-                    // Skip edges involving genesis events
-                    if (hg.is_genesis_event(edge.producer) || hg.is_genesis_event(edge.consumer)) {
-                        continue;
-                    }
-                    seen_pairs.insert({edge.producer, edge.consumer});
-                }
-                causal_count = static_cast<int64_t>(seen_pairs.size());
-            }
-            full_result.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(causal_count)});
-        }
-        if (req.include_num_branchial_edges) {
-            const int64_t n_branchial = hg.quotient_reconstruction()
-                ? static_cast<int64_t>(hg.observable_num_branchial())
-                : static_cast<int64_t>(hg.num_branchial_edges());
-            full_result.push_back({wxf::WXFValue("NumBranchialEdges"), wxf::WXFValue(n_branchial)});
-        }
+        push_counts(full_result, req, hg, engine, recon_genesis_pairs.size());
 
         // StepStatistics -> per step, the population of raw states summarised from one state per
         // class and the class's multiplicity (state_statistics.hpp). Under quotient exploration
@@ -2264,6 +2307,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
     } catch (const wxf::TypeError& e) {
         throw std::runtime_error(hgmarshal::valid_utf8(std::string("WXF TypeError: ") + e.what()));
     } catch (const std::bad_alloc&) {
+        if (!reduced.empty()) return wxf::Pieces::of(std::move(reduced));
         throw;
     } catch (const std::exception& e) {
         // Error messages quote names from the request; the caller decodes them as UTF-8.

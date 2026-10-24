@@ -418,6 +418,29 @@ size_t ConcurrentHeterogeneousArena::trim_block_pool(size_t keep_bytes) {
 #endif
 }
 
+AddressReserve::AddressReserve(size_t bytes) {
+#if defined(_WIN32)
+    base_ = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#elif !defined(HG_VERIFICATION)
+    void* p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    base_ = p == MAP_FAILED ? nullptr : p;
+#endif
+    if (base_) bytes_ = bytes;
+}
+
+AddressReserve::~AddressReserve() { release(); }
+
+void AddressReserve::release() {
+    if (!base_) return;
+#if defined(_WIN32)
+    VirtualFree(base_, 0, MEM_RELEASE);
+#elif !defined(HG_VERIFICATION)
+    ::munmap(base_, bytes_);
+#endif
+    base_ = nullptr;
+    bytes_ = 0;
+}
+
 size_t arena_trim_block_pool(size_t keep_bytes) {
     return ConcurrentHeterogeneousArena::trim_block_pool(keep_bytes);
 }

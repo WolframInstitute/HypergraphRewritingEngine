@@ -1337,7 +1337,7 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
   Module[
   {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
    branchialStateEdges, branchialStateVertices, graphOptions, canonicalizeStates, canonicalizeEvents, colorByRule,
-   multiedgeStyle},
+   multiedgeStyle, reduced},
 
   requiredData            = view["RequestedData"];
   graphOptions            = view["GraphOptions"];
@@ -1353,30 +1353,33 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
     wxfData["GraphData"] = hgMergeGraphData[sessionHandle, wxfData["GraphData"]]];
 
   (* Extract data - validate that requested data was returned *)
-  (* Only use defaults for data we didn't request *)
+  (* Only use defaults for data we didn't request. A reduced reply (an evolution that ran out of
+     memory, whose whole reply did not fit either; HGEvolve::overflow says so) carries the counts
+     only, and each list it leaves out is empty. *)
+  reduced = Lookup[wxfData, "Reduced", 0] === 1;
   states = If[MemberQ[requiredData, "States"],
     If[KeyExistsQ[wxfData, "States"], wxfData["States"],
-      Message[HGEvolve::missingdata, "States"]; Return[$Failed]],
+      If[reduced, <||>, Message[HGEvolve::missingdata, "States"]; Return[$Failed]]],
     <||>
   ];
   events = If[MemberQ[requiredData, "Events"] || MemberQ[requiredData, "EventsMinimal"],
     If[KeyExistsQ[wxfData, "Events"], wxfData["Events"],
-      Message[HGEvolve::missingdata, "Events"]; Return[$Failed]],
+      If[reduced, <||>, Message[HGEvolve::missingdata, "Events"]; Return[$Failed]]],
     <||>
   ];
   causalEdges = If[MemberQ[requiredData, "CausalEdges"],
     If[KeyExistsQ[wxfData, "CausalEdges"], wxfData["CausalEdges"],
-      Message[HGEvolve::missingdata, "CausalEdges"]; Return[$Failed]],
+      If[reduced, {}, Message[HGEvolve::missingdata, "CausalEdges"]; Return[$Failed]]],
     {}
   ];
   branchialEdges = If[MemberQ[requiredData, "BranchialEdges"],
     If[KeyExistsQ[wxfData, "BranchialEdges"], wxfData["BranchialEdges"],
-      Message[HGEvolve::missingdata, "BranchialEdges"]; Return[$Failed]],
+      If[reduced, {}, Message[HGEvolve::missingdata, "BranchialEdges"]; Return[$Failed]]],
     {}
   ];
   branchialStateEdges = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
     If[KeyExistsQ[wxfData, "BranchialStateEdges"], wxfData["BranchialStateEdges"],
-      Message[HGEvolve::missingdata, "BranchialStateEdges"]; Return[$Failed]],
+      If[reduced, {}, Message[HGEvolve::missingdata, "BranchialStateEdges"]; Return[$Failed]]],
     {}
   ];
   branchialStateVertices = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
@@ -1694,8 +1697,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
       graphData = wxfData["GraphData"][prop];
       isStyled = !StringMatchQ[prop, "*Structure"];
       Return[createGraphFromData[graphData, graphOptions, isStyled, colorByRule, multiedgeStyle]],
-      (* GraphData for this property not available *)
-      Return[$Failed]
+      (* GraphData for this property not available; a reduced reply's graphs are empty *)
+      Return[If[Lookup[wxfData, "Reduced", 0] === 1, Graph[{}, {}], $Failed]]
     ]
   ];
 
@@ -1712,7 +1715,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     "NumEvents", wxfData["NumEvents"],
     "NumCausalEdges", wxfData["NumCausalEdges"],
     "NumBranchialEdges", wxfData["NumBranchialEdges"],
-    "StepStatistics", wxfData["StepStatistics"],
+    "StepStatistics", Lookup[wxfData, "StepStatistics", {}],
     "GlobalEdges", wxfData["GlobalEdges"],
     "StateBitvectors", wxfData["StateBitvectors"],
     "Debug", <|

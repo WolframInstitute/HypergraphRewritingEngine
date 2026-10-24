@@ -40,6 +40,7 @@
 #include "hg_gpu/vertex_curvature.hpp"
 #endif
 #include "hgcommon/affinity.hpp"
+#include "hgcommon/build_stamp.hpp"
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
 #include "job_system/job_system.hpp"
@@ -6957,3 +6958,67 @@ TEST(GraphMarshalIndex, U64IndexKeepsTheFirstValueOfEveryKey) {
     }
     EXPECT_EQ(index.find(5001), nullptr);
 }
+
+#if defined(__linux__) && !defined(HG_GPU_BACKEND)
+// A run on the CPU engine that exhausts its memory returns the part it built, with the truncation
+// warning that HGEvolve reports as HGEvolve::overflow. The device's pools are sized up front and
+// overflow under their own warning, and CUDA does not initialise under a lowered RLIMIT_AS, so the
+// GPU build of this file leaves this out. The child caps its address space 1 GB above its current
+// size and runs the growth rule {{1,2}} -> {{1,2},{2,3}} from {{1,2},{2,3}} for 12 steps on two
+// workers, whose multiway system holds 12! states at the last step. Exit 0 is a reply with more
+// than 1000 states and the warning, reduced (ReplyReduced) or whole as `reduced` asks; 5 is any
+// other reply, 6 a std::bad_alloc out of the call, 7 another exception, its message on stderr.
+namespace {
+long vm_size_kb_now() {
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("VmSize:", 0) == 0) return std::atol(line.c_str() + 7);
+    return 0;
+}
+
+void evolve_past_the_memory_cap(const char* listed, bool reduced) {
+    auto opts = [&](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents", listed});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Threads"));
+        ww.write(int64_t{2});
+    };
+    const auto job = build_input(kSeed, kLhs, kRhs, 12, opts, 2);
+    const rlim_t cap = static_cast<rlim_t>(vm_size_kb_now() + 1024 * 1024) * 1024;
+    rlimit r{cap, cap};
+    if (setrlimit(RLIMIT_AS, &r) != 0) std::_Exit(3);
+    HostBridge host;
+    try {
+        const auto out = run_rewriting_core(job, host);
+        const bool ok = read_int_key(out, "NumStates") > 1000 &&
+                        reply_mentions(out, "TRUNCATED") &&
+                        reply_mentions(out, "ReplyReduced") == reduced;
+        std::_Exit(ok ? 0 : 5);
+    } catch (const std::bad_alloc&) {
+        std::_Exit(6);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        std::_Exit(7);
+    }
+}
+}  // namespace
+
+// The causal edges of what the run built fit in the 256 MB the engine gives back
+// (AddressReserve): the reply is whole. Measured without the reserve: reduced.
+TEST(PartialResults, ARunThatExhaustsItsMemoryReturnsWhatItBuilt) {
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1')
+        GTEST_SKIP() << "ASan and TSan do not throw bad_alloc under a lowered RLIMIT_AS";
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(evolve_past_the_memory_cap("CausalEdges", false), ::testing::ExitedWithCode(0),
+                "");
+}
+
+// Its states do not fit: the reply carries the counts and the warnings (reduced_reply).
+TEST(PartialResults, AReplyThatDoesNotFitEitherCarriesTheCounts) {
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1')
+        GTEST_SKIP() << "ASan and TSan do not throw bad_alloc under a lowered RLIMIT_AS";
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(evolve_past_the_memory_cap("States", true), ::testing::ExitedWithCode(0), "");
+}
+#endif
