@@ -30,6 +30,7 @@ struct Measured {
     SgGeometry g;
     std::vector<double> vv;
     std::vector<double> log_geodesic;   // the mean ln sigma at d = 1..D
+    std::vector<double> rotation;       // the orbital velocity at r = 1..R_C
     uint32_t n = 0;
     double at(uint32_t k, uint32_t v) const { return vv[k * n + v]; }
 };
@@ -43,18 +44,22 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
     hgcommon::sg_sizes(el, slots, pairs);
     r.vv.assign(hgcommon::SG_VERTEX_VALUES * slots, 0.0);
     r.log_geodesic.assign(slots + 1, 0.0);
+    r.rotation.assign(slots + 1, 0.0);
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), r.g, ball.data(),
                                         static_cast<uint32_t>(ball.size()), needed, ~0u,
                                         hgcommon::IrSerial{}, nullptr, 0, nullptr, nullptr,
                                         r.vv.data(), r.log_geodesic.data(),
-                                        static_cast<uint32_t>(r.log_geodesic.size()))) {
+                                        static_cast<uint32_t>(r.log_geodesic.size()),
+                                        hgcommon::SG_GRAPH_CONSECUTIVE, r.rotation.data(),
+                                        static_cast<uint32_t>(r.rotation.size()))) {
         EXPECT_GT(needed, scratch.size());
         scratch.resize(needed);
     }
     r.n = r.g.vertex_count;
     r.vv.resize(hgcommon::SG_VERTEX_VALUES * r.n);
     r.log_geodesic.resize(r.g.geodesic_radii);
+    r.rotation.resize(r.g.rotation_radii);
     return r;
 }
 
@@ -561,4 +566,140 @@ TEST(StateMeasures, StatisticsGraphRules) {
     // The default is the consecutive rule.
     const Measured m = measure({{1, 2, 3}});
     EXPECT_EQ(m.g.edge_count, 2u);
+}
+
+// docs/SPEC.md "StepStatistics geodesic analysis". P3: the 6 ordered pairs have d = 1, 1, 1, 1,
+// 2, 2: mean 4/3, variance 2 - 16/9 = 2/9. An end v has one neighbour, one step closer to every
+// target: curvature -1, spread 0. The middle has one neighbour closer and one farther from
+// either end: curvature 0, spread 1. Over the pairs: curvature -4/6, spread 2/6.
+TEST(StateMeasures, PathOfThreeGeodesicBundles) {
+    const Measured m = measure({{1, 2}, {2, 3}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_GEODESIC_BUNDLE);
+    EXPECT_NEAR(m.g.proper_time, 4.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.proper_time_variance, 2.0 / 9.0, 1e-15);
+    EXPECT_NEAR(m.g.geodesic_curvature, -2.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.bundle_spread, 1.0 / 3.0, 1e-15);
+}
+
+// C4: toward a neighbour t, v has t (one step closer) and the antipode of t (one step farther):
+// curvature 0, spread 1. Toward the antipode both neighbours are one step closer: curvature -1,
+// spread 0. Over the 12 pairs: curvature -4/12, spread 8/12, mean d 16/12, variance 2/9.
+TEST(StateMeasures, CycleOfFourGeodesicBundles) {
+    const Measured m = measure(cycle(4));
+    EXPECT_NEAR(m.g.proper_time, 4.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.proper_time_variance, 2.0 / 9.0, 1e-15);
+    EXPECT_NEAR(m.g.geodesic_curvature, -1.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.bundle_spread, 2.0 / 3.0, 1e-15);
+}
+
+// The star K1,3. From the centre toward a leaf t: t is one step closer and the other two leaves
+// one step farther, s1 = 1, s2 = 3: curvature 1/3, spread sqrt(3 * 3 - 1) / 3. From a leaf toward
+// any target the one neighbour is one step closer: curvature -1, spread 0. The 12 pairs: 3 from
+// the centre, 9 from a leaf. Mean d = 18/12, variance 30/12 - 9/4 = 1/4.
+TEST(StateMeasures, StarGeodesicBundles) {
+    const Measured m = measure({{1, 2}, {1, 3}, {1, 4}});
+    EXPECT_NEAR(m.g.proper_time, 1.5, 1e-15);
+    EXPECT_NEAR(m.g.proper_time_variance, 0.25, 1e-15);
+    EXPECT_NEAR(m.g.geodesic_curvature, (1.0 - 9.0) / 12.0, 1e-15);
+    EXPECT_NEAR(m.g.bundle_spread, std::sqrt(8.0) / 12.0, 1e-15);
+}
+
+// No pair joined by a path: undefined. Two components count the pairs inside each: two disjoint
+// edges have 4 pairs at d = 1, each a single neighbour one step closer.
+TEST(StateMeasures, GeodesicBundlesWithoutPairs) {
+    EXPECT_FALSE(measure({{1}, {2}}).g.defined & hgcommon::SG_GEODESIC_BUNDLE);
+    const Measured two = measure({{1, 2}, {3, 4}});
+    ASSERT_TRUE(two.g.defined & hgcommon::SG_GEODESIC_BUNDLE);
+    EXPECT_EQ(two.g.proper_time, 1.0);
+    EXPECT_EQ(two.g.proper_time_variance, 0.0);
+    EXPECT_EQ(two.g.geodesic_curvature, -1.0);
+    EXPECT_EQ(two.g.bundle_spread, 0.0);
+}
+
+// Lensing on P5. The middle vertex 3 has balls 3, 5 and the local dimension
+// (log 3 / log 2 + (log 5 - log 3) / (log 3 - log 2)) / 2, the largest, so C = {3}. Every pair
+// at distance 2 or more has its one shortest path through 3: b = 0 and d_C = d, so the 12
+// ordered pairs pass near the centre with deflection 0.
+TEST(StateMeasures, PathOfFiveLensing) {
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
+    EXPECT_EQ(m.g.lensing_deflection, 0.0);
+    EXPECT_EQ(m.g.lensing_impact, 0.0);
+    EXPECT_EQ(m.g.lensing_ratio, 0.0);
+}
+
+// C6 with the leaves 7, 8, 9 on vertex 1. The local dimensions over r = 1..3 put 3 and 5 highest
+// (balls 3, 5, 9), so C = {3, 5}, d(., C) is 1 at 2, 4 and 6, 2 at 1 and 3 at the leaves, and
+// D' = 4 makes the threshold 2. From s = 1 to t = 4 (d = 3) the shortest paths are 1-2-3-4 and
+// 1-6-5-4: b = 0 and d_C = 3. From the leaf 7 to the leaf 8 (d = 2) the path 7-1-8 has b = 2:
+// not near. From 2 to 6 (d = 2) the path 2-1-6 has b = 1 and d_C = d(2, 3) + d(3, 6) = 1 + 3 = 4:
+// deflection 1. Over the 48 near pairs the deflections and the impact parameters both sum to 14
+// (enumerated by the pair; M = 1.6293316413002572).
+TEST(StateMeasures, LensingAroundTwoCentres) {
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 1}, {1, 7}, {1, 8},
+                                {1, 9}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
+    EXPECT_NEAR(m.g.lensing_deflection, 7.0 / 24.0, 1e-15);
+    EXPECT_NEAR(m.g.lensing_impact, 7.0 / 24.0, 1e-15);
+    EXPECT_NEAR(m.g.lensing_ratio, 0.3580200117318138, 1e-12);
+    // A cycle has every d_v equal, so C is every vertex and every deflection is 0.
+    const Measured c = measure(cycle(7));
+    ASSERT_TRUE(c.g.defined & hgcommon::SG_LENSING);
+    EXPECT_EQ(c.g.lensing_deflection, 0.0);
+    EXPECT_EQ(c.g.lensing_impact, 0.0);
+    // A single edge has no pair at distance 2.
+    EXPECT_FALSE(measure({{1, 2}}).g.defined & hgcommon::SG_LENSING);
+}
+
+// A WPP state at step 3 whose two adjacent vertices 2 and 3 tie for the largest local dimension
+// (1.5), so C = {2, 3}. From a source equidistant from both, the search through the centre
+// reaches 3 from 2 one step later than its own start d(s, 3): the start holds. Every one of the
+// 14 near pairs has a shortest path through C, so every deflection is 0.
+TEST(StateMeasures, LensingWithAdjacentTiedCentres) {
+    const Measured m = measure({{2, 3}, {1, 3}, {2, 8}, {3, 8}, {0, 8}, {0, 12}, {8, 12},
+                                {2, 12}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
+    EXPECT_EQ(m.g.lensing_deflection, 0.0);
+}
+
+// Rotation curve of P5 about C = {3}: the shells are {2, 4} and {1, 5}, two vertices with no
+// edge between them, so L(1) = L(2) = 1, v(r) = 1 / (2 pi r), the exponent -1 with no residual and
+// the mean velocity (1/(2 pi) + 1/(4 pi)) / 2 = 3 / (8 pi).
+TEST(StateMeasures, PathOfFiveRotationCurve) {
+    const double pi = 3.14159265358979323846;
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_ROTATION);
+    ASSERT_EQ(m.rotation.size(), 2u);
+    EXPECT_NEAR(m.rotation[0], 1.0 / (2.0 * pi), 1e-15);
+    EXPECT_NEAR(m.rotation[1], 1.0 / (4.0 * pi), 1e-15);
+    EXPECT_NEAR(m.g.rotation_exponent, -1.0, 1e-14);
+    EXPECT_NEAR(m.g.rotation_residual, 0.0, 1e-7);
+    EXPECT_NEAR(m.g.orbital_velocity, 3.0 / (8.0 * pi), 1e-15);
+}
+
+// A hexagonal patch of radius 3 of the triangular lattice: the centre alone has the largest
+// local dimension, and the shell at distance r is a cycle of 6r vertices, so v(r) = 3 / pi at
+// r = 1, 2, 3: a flat curve, exponent 0. A cycle has every d_v equal, so C is every vertex and
+// no shell exists: no rotation curve.
+TEST(StateMeasures, HexagonalPatchRotationCurve) {
+    const double pi = 3.14159265358979323846;
+    std::vector<std::vector<uint32_t>> e;
+    auto id = [](int q, int r) { return static_cast<uint32_t>((q + 3) * 7 + (r + 3) + 1); };
+    auto in = [](int q, int r) {
+        return q >= -3 && q <= 3 && r >= -3 && r <= 3 && q + r >= -3 && q + r <= 3;
+    };
+    for (int q = -3; q <= 3; ++q)
+        for (int r = -3; r <= 3; ++r) {
+            if (!in(q, r)) continue;
+            const int dq[3] = {1, 0, -1}, dr[3] = {0, 1, 1};
+            for (int k = 0; k < 3; ++k)
+                if (in(q + dq[k], r + dr[k])) e.push_back({id(q, r), id(q + dq[k], r + dr[k])});
+        }
+    const Measured m = measure(e);
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_ROTATION);
+    ASSERT_EQ(m.rotation.size(), 3u);
+    for (double v : m.rotation) EXPECT_NEAR(v, 3.0 / pi, 1e-15);
+    EXPECT_NEAR(m.g.rotation_exponent, 0.0, 1e-14);
+    EXPECT_NEAR(m.g.orbital_velocity, 3.0 / pi, 1e-15);
+    EXPECT_FALSE(measure(cycle(8)).g.defined & hgcommon::SG_ROTATION);
 }

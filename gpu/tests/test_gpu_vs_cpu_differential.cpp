@@ -98,6 +98,14 @@ const hgcommon::StateCost kCostInvariants =
 const hgcommon::StateCost kCostHolonomy =
     cost_program({{hgcommon::SC_STAT, 47}, {hgcommon::SC_CONST, 0.01}, {hgcommon::SC_STAT, 0},
                   {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
+// GeodesicCurvature + 0.01 VertexCount (slots 55 and 0), and RotationCurveExponent + 0.01
+// VertexCount (slots 60 and 0).
+const hgcommon::StateCost kCostGeodesicCurvature =
+    cost_program({{hgcommon::SC_STAT, 55}, {hgcommon::SC_CONST, 0.01}, {hgcommon::SC_STAT, 0},
+                  {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
+const hgcommon::StateCost kCostRotation =
+    cost_program({{hgcommon::SC_STAT, 60}, {hgcommon::SC_CONST, 0.01}, {hgcommon::SC_STAT, 0},
+                  {hgcommon::SC_MUL, 0}, {hgcommon::SC_ADD, 0}});
 const hgcommon::StateCost kCostGeometry =
     cost_program({{hgcommon::SC_STAT, 25}, {hgcommon::SC_CONST, 2}, {hgcommon::SC_SUB, 0},
                   {hgcommon::SC_ABS, 0}, {hgcommon::SC_CONST, 0.1}, {hgcommon::SC_STAT, 26},
@@ -2083,17 +2091,17 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
     join.initial_states = {{{0u, 0u}, {0u, 0u}}};
     join.num_steps = 4;
 
-    // Variants 3, 4 and 5 are guided by a cost (5 reads HolonomyTriangle); over the workloads
-    // and N each changes some step's
+    // Variants 3 to 7 are guided by a cost (5 reads HolonomyTriangle, 6 GeodesicCurvature and 7
+    // RotationCurveExponent); over the workloads and N each of 3 to 6 changes some step's
     // choice. The ball dimension of the join's small states has no fit, so variant 4 changes
-    // nothing there.
+    // nothing there. Variant 7 is checked for agreement between the devices only.
     std::map<std::pair<int, uint32_t>, std::multiset<uint64_t>> chosen;
-    bool differs[6] = {};
+    bool differs[8] = {};
     for (Workload w : {one_edge, join}) {
         w.canon_mode = hg_gpu::CanonicalizationMode::Full;
         w.random_seed = 0x5EED;
         chosen.clear();
-        for (int variant = 0; variant < 6; ++variant) {
+        for (int variant = 0; variant < 8; ++variant) {
             for (uint32_t n : {1u, 2u, 3u}) {
                 Workload v = w;
                 v.max_states_per_step = n;
@@ -2102,6 +2110,8 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
                 if (variant == 3) v.state_cost = kCostInvariants;
                 if (variant == 4) v.state_cost = kCostGeometry;
                 if (variant == 5) v.state_cost = kCostHolonomy;
+                if (variant == 6) v.state_cost = kCostGeodesicCurvature;
+                if (variant == 7) v.state_cost = kCostRotation;
                 NormalizedResult cpu = run_cpu(v);
                 NormalizedResult gpu = run_gpu(v);
                 chosen[{variant, n}] = gpu.event_keys;
@@ -2115,13 +2125,14 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
                     << v.name << " N=" << n << " variant " << variant << ": different transitions";
             }
         }
-        for (int variant : {3, 4, 5})
+        for (int variant : {3, 4, 5, 6})
             for (uint32_t n : {1u, 2u, 3u})
                 differs[variant] |= chosen[{variant, n}] != chosen[{0, n}];
     }
     EXPECT_TRUE(differs[3]) << "the invariants cost chose what the ranks choose";
     EXPECT_TRUE(differs[4]) << "the geometry cost chose what the ranks choose";
     EXPECT_TRUE(differs[5]) << "the holonomy cost chose what the ranks choose";
+    EXPECT_TRUE(differs[6]) << "the geodesic curvature cost chose what the ranks choose";
 }
 
 // ExplorationProbability keeps the same states on both engines: the coin is the same function of
@@ -2515,6 +2526,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
     size_t compared = 0, with_growth = 0, ternary = 0, with_gap = 0, with_holonomy = 0, with_alignment = 0;
+    size_t with_bundle = 0, with_lensing = 0, with_rotation = 0;
     for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
@@ -2608,7 +2620,17 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::dimension_gradient,
                   &hgcommon::SgGeometry::rips_betti1, &hgcommon::SgGeometry::metric_tensor_gap,
                   &hgcommon::SgGeometry::holonomy_triangle,
-                  &hgcommon::SgGeometry::holonomy_square})
+                  &hgcommon::SgGeometry::holonomy_square,
+                  &hgcommon::SgGeometry::proper_time,
+                  &hgcommon::SgGeometry::proper_time_variance,
+                  &hgcommon::SgGeometry::bundle_spread,
+                  &hgcommon::SgGeometry::geodesic_curvature,
+                  &hgcommon::SgGeometry::lensing_deflection,
+                  &hgcommon::SgGeometry::lensing_impact,
+                  &hgcommon::SgGeometry::lensing_ratio,
+                  &hgcommon::SgGeometry::orbital_velocity,
+                  &hgcommon::SgGeometry::rotation_exponent,
+                  &hgcommon::SgGeometry::rotation_residual})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
             for (uint32_t k = 0; k < 3; ++k) {
                 EXPECT_TRUE(same(a->g.clique_betti[k], b->g.clique_betti[k])) << w.name;
@@ -2620,6 +2642,8 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
+            if (a->g.defined & hgcommon::SG_GEODESIC_BUNDLE) ++with_bundle;
+            if (a->g.defined & hgcommon::SG_LENSING) ++with_lensing;
             bool wide = false;
             a->for_each_arity([&](uint32_t k) { wide = wide || k >= 3; });
             if (wide && graph == hgcommon::SG_GRAPH_ALL_PAIRS) ++ternary;
@@ -2628,6 +2652,10 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
             ASSERT_EQ(a->num_geodesic, b->num_geodesic) << w.name;
             for (uint32_t k = 0; k < a->num_geodesic; ++k)
                 EXPECT_TRUE(same(a->geodesic()[k], b->geodesic()[k])) << w.name;
+            ASSERT_EQ(a->num_rotation, b->num_rotation) << w.name;
+            for (uint32_t k = 0; k < a->num_rotation; ++k)
+                EXPECT_TRUE(same(a->rotation()[k], b->rotation()[k])) << w.name;
+            if (a->num_rotation) ++with_rotation;
             // The per-vertex distributions, byte for byte.
             ASSERT_EQ(a->num_distributions, b->num_distributions) << w.name;
             EXPECT_EQ(std::memcmp(a->distributions(), b->distributions(),
@@ -2639,6 +2667,9 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
     }
     EXPECT_GT(compared, 0u);
     EXPECT_GT(with_growth, 0u);
+    EXPECT_GT(with_bundle, 0u);
+    EXPECT_GT(with_lensing, 0u);
+    EXPECT_GT(with_rotation, 0u);
     EXPECT_GT(ternary, 0u);
     EXPECT_GT(with_gap, 0u);
     EXPECT_GT(with_holonomy, 0u);

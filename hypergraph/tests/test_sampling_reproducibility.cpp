@@ -1128,12 +1128,16 @@ TEST(StateCost, InterpreterEvaluatesEveryOperation) {
     StateCost h = prog({{SC_STAT, 48}, {SC_STAT, 51}, {SC_ADD, 0}});
     ASSERT_TRUE(state_cost_validate(h));
     EXPECT_EQ(h.measures, SG_HOLONOMY | SG_BRANCH_ALIGNMENT);
+    // RotationCurveExponent (slot 60) requests the rotation curve.
+    StateCost r = prog({{SC_STAT, 60}});
+    ASSERT_TRUE(state_cost_validate(r));
+    EXPECT_EQ(r.measures, SG_ROTATION);
     // Malformed programs.
     StateCost bad = prog({{SC_ADD, 0}});
     EXPECT_FALSE(state_cost_validate(bad));
     bad = prog({{SC_CONST, 1}, {SC_CONST, 2}});
     EXPECT_FALSE(state_cost_validate(bad));
-    bad = prog({{SC_STAT, 52}});
+    bad = prog({{SC_STAT, static_cast<double>(SP_NUM_INVARIANTS)}});
     EXPECT_FALSE(state_cost_validate(bad));
     bad = prog({{SC_STAT, 1.5}});
     EXPECT_FALSE(state_cost_validate(bad));

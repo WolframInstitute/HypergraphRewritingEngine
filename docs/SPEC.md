@@ -455,6 +455,7 @@ list adds the families it names:
 | `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
+| `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature`, `LensingDeflection`, `LensingImpactParameter`, `LensingDeflectionRatio`, `OrbitalVelocity`, `RotationCurveExponent`, `RotationCurveResidual`, `RotationCurve` | geodesic analysis |
 | `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
 | `"MetricTensor"` | `MetricTensorGap` | metric tensor |
 | `"Holonomy"` | `HolonomyTriangle`, `HolonomySquare` | holonomy |
@@ -588,6 +589,104 @@ L_v > 0.
 `VertexInvariants` gains `DimensionGradientCurvature`, L_v over G', with 32 bins over [-8, 8).
 It takes O(\|E\|) after the local dimensions.
 
+**`StepStatistics` geodesic analysis.** The geodesic measures of hypergraph_viz
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp`), defined on shortest paths over
+every pair of vertices. A geodesic is a shortest path of G, and its proper time is its number
+of edges. The pairs below are the ordered pairs (v, t) of distinct vertices of one component of
+G. The geodesic bundle of a pair is the set of geodesics from the neighbours x of v to t. The
+proper time of the geodesics from x is τ_x = d(x, t), which is d(v, t) - 1, d(v, t) or
+d(v, t) + 1.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `GeodesicProperTime` | the mean of d(v, t) over the pairs | G has no edge |
+| `GeodesicProperTimeVariance` | the population variance of d(v, t) over the pairs | G has no edge |
+| `GeodesicBundleSpread` | the mean over the pairs of the population standard deviation of τ_x over the neighbours x of v | G has no edge |
+| `GeodesicCurvature` | the mean over the pairs of the mean of τ_x - d(v, t) over the neighbours x of v | G has no edge |
+
+`GeodesicCurvature` is the mean of the graph Laplacian at v of the distance to t. A vertex of
+degree k in a tree has one neighbour closer to t and k - 1 farther, so its term is (k - 2)/k.
+P3 has `GeodesicCurvature` -2/3 and `GeodesicBundleSpread` 1/3, and C4 has -1/3 and 2/3. The
+breadth-first search from each vertex t that the radius takes gives d(x, t) for every vertex
+x, so the four entries add O(\|E\|) to each search.
+
+hypergraph_viz traces each path as a self-avoiding random walk of up to 50 steps from a seed
+taken from the clock (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:141`), so
+its paths are not shortest paths and its values differ between runs. A bundle there is the
+source and up to four vertices within distance 2, in the order of the vertex list
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:272`). Its spread is the mean
+distance between the walks' end points
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:361`), and its curvature is
+(length - d(source, end)) / d(source, end)
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:408`), which is 0 for every
+shortest path. The definitions above take every neighbour of v, every pair and every
+geodesic, so each value is an isomorphism invariant of the state.
+
+The lensing entries read the local dimensions d_v of `LargestComponentDimension` on G'. The
+centre C is the set of vertices of G' whose d_v is within 10^-9 of the largest, M is the
+largest d_v, and d(u, C) is the distance from u to the nearest vertex of C. D' is the diameter
+of G'. For an ordered pair (s, t) of vertices of G' with d(s, t) >= 2, the impact parameter
+b(s, t) is the least d(w, C) over the vertices w of the shortest paths from s to t. The
+deflection is δ(s, t) = (d_C(s, t) - d(s, t)) / d(s, t), with d_C(s, t) the least
+d(s, c) + d(c, t) over the vertices c of C. A pair passes near the centre when
+b(s, t) < max(2, D'/5).
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `LensingDeflection` | the mean of δ over the pairs that pass near the centre | no pair passes near the centre, or M <= 0 |
+| `LensingImpactParameter` | the mean of b over the same pairs | as `LensingDeflection` |
+| `LensingDeflectionRatio` | the mean over the same pairs of δ (b + 1) / M, the deflection over hypergraph_viz's prediction M / (b + 1) | as `LensingDeflection` |
+
+On P5 the centre is the middle vertex and every pair at distance 2 or more passes through it, so
+all three entries are 0. A search from every vertex of C gives d(u, C). The search from each
+source s gives b(s, .) in the same pass as d(s, .), and a second search started from the
+vertices of C at d(s, c) gives d_C(s, .), so the lensing entries take O(\|V'\| \|E'\|).
+
+hypergraph_viz measures the deflection of a traced path as
+(d(start, mid) + d(mid, end) - d(start, end)) / d(start, end) with mid the path's middle vertex,
+or the excess of its length over d(start, end) when that is larger
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:724`). Both are 0 for a shortest
+path. The deflection above puts the centre in place of the middle vertex. hypergraph_viz takes
+the centre as the first vertex of greatest dimension in the vertex list
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:642`), the threshold from a
+diameter estimated over the first ten vertices
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:827`), and averages only the
+paths with a deflection above 0 (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:667`).
+Here C holds every vertex of greatest dimension, D' is the diameter of G', and every near pair
+counts. The prediction M / (b + 1) is hypergraph_viz's
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:774`).
+
+The rotation entries use the same centre C. The shell S_r is the set of vertices u of G' with
+d(u, C) = r, for r = 1..R_C, R_C the largest d(u, C) over G'. The orbit at radius r is the
+largest connected component of the subgraph of G induced on S_r, L(r) is its number of
+vertices, and the orbital velocity is v(r) = L(r) / (2π r). A least squares fit of
+ln v(r) = a + n ln r over r = 1..R_C gives the exponent n.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `OrbitalVelocity` | the mean of v(r) over r = 1..R_C | R_C < 2 |
+| `RotationCurveExponent` | n | R_C < 2 |
+| `RotationCurveResidual` | the root mean square of ln v(r) - a - n ln r over r = 1..R_C | R_C < 2 |
+
+The per-step key `RotationCurve` maps each radius r to the summary, over the states with
+R_C >= 2 and r <= R_C, of v(r), weighted as `Invariants`. On P5 the shells {2, 4} and {1, 5}
+have no edge, so v(r) = 1/(2π r) and n = -1. On a hexagonal patch of the triangular lattice the
+shell at distance r about the centre is a cycle of 6r vertices, so v(r) = 3/π and n = 0. The
+shells' components take one search over G' after the search from C.
+
+hypergraph_viz traces an orbit as a greedy walk through the shell from its first vertex in
+vertex-list order, stopping at the first vertex with no unvisited shell neighbour
+(`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:85`), and averages four identical
+walks per radius over r = 2..20 (`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:264`).
+Here the orbit is the largest component of the shell, which holds every walk through it, and
+the radii are 1..R_C. The fit is hypergraph_viz's
+(`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:168`). hypergraph_viz's flatness
+score is not ported. The score is the largest 1 / (1 + 10 \|v(r+1) - v(r-1)\| / 2) over the
+interior radii, with a curve called flat above 0.1
+(`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:226`). The factor 10 and the
+threshold 0.1 have no derivation in the source, and the largest value over the radii describes
+the flattest stretch of the curve, not the curve. `RotationCurveExponent` is 0 for a flat
+curve.
 **`StepStatistics` topology.** The family `"Topology"` adds four `Invariants` entries: Betti numbers over GF(2), the field of two elements. The clique complex of G has a k-simplex for each set of k + 1 vertices of G that are joined in pairs. The Vietoris-Rips complex at scale r is Infrageometry's `BallIntersectionComplex[vertices, r, 2, "Metric" -> G]` (Infrageometry@ffa5fe4:Kernel/InfraTopology/BallIntersectionComplex.wl:29-70): a set of vertices is a simplex when every two of them have balls of radius r with a common vertex. Two vertices at distance d have such balls when d <= 2r, so at r = 1 the complex is the clique complex of G², the graph that joins two vertices of G at distance 1 or 2. With V, E, T and Q the vertices, edges, triangles and tetrahedra of a complex and ∂k its boundary maps over GF(2), b0 = V - rank ∂1, b1 = E - rank ∂1 - rank ∂2 and b2 = T - rank ∂2 - rank ∂3.
 
 | Entry | Definition | Undefined when |

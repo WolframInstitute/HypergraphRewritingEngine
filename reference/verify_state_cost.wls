@@ -2,12 +2,13 @@
 
    "StateCost" against an independent computation (docs/SPEC.md section 5, StateCost). Each case
    evolves under "CanonicalizeStates" -> Full and "MaxStatesPerStep" -> N with a cost over
-   "VertexCount", "EdgeCount", "MaxDegree" and "TwoSectionEdgeCount". For every step s, the
+   "VertexCount", "EdgeCount", "MaxDegree", "TwoSectionEdgeCount" and "GeodesicCurvature"
+   (reference/StateGeometryReference.wl). For every step s, the
    successor classes of the classes the engine kept at step s come from MultiwayEvolve
    (reference/MultiwayReference.wl), one step from each, grouped by CanonicalForm; their costs
    come from the definitions of the statistics in Wolfram Language. The classes the engine kept at
    step s + 1 must be min(N, successor classes) of those successors, and each must cost no more
-   than the N-th lowest successor cost. Rules that add a vertex at every rewrite, so no class
+   than the N-th lowest successor cost, to 10^-9. Rules that add a vertex at every rewrite, so no class
    recurs at a later step. Run on the CPU, and on the GPU when its engine is present.
 
    Run: wolframscript -file reference/verify_state_cost.wls [cpu]   ("cpu": the CPU only)
@@ -16,6 +17,7 @@
 PacletDirectoryLoad[FileNameJoin[{DirectoryName[$InputFileName], "..", "paclet"}]];
 Needs["HypergraphRewriting`"];
 Get[FileNameJoin[{DirectoryName[$InputFileName], "MultiwayReference.wl"}]];
+Get[FileNameJoin[{DirectoryName[$InputFileName], "StateGeometryReference.wl"}]];
 
 (* The statistics of a state given as its edges (vertex lists), by their definitions. *)
 stats[vs_List] := Module[{flat = Flatten[vs], degs},
@@ -23,7 +25,8 @@ stats[vs_List] := Module[{flat = Flatten[vs], degs},
   <|"VertexCount" -> Length[Union[flat]], "EdgeCount" -> Length[vs],
     "MaxDegree" -> If[degs === {}, 0, Max[degs]],
     "TwoSectionEdgeCount" ->
-      Length[DeleteDuplicates[Sort /@ Catenate[Subsets[DeleteDuplicates[#], {2}] & /@ vs]]]|>];
+      Length[DeleteDuplicates[Sort /@ Catenate[Subsets[DeleteDuplicates[#], {2}] & /@ vs]]],
+    "GeodesicCurvature" -> sgrGeodesicBundle[vs]["GeodesicCurvature"]|>];
 
 (* The successor classes of the states `parents` (vertex lists) under `rules`, as
    class -> vertex lists. *)
@@ -46,7 +49,11 @@ costs = {
   {"vertices-degree", #VertexCount - 0.5 #MaxDegree &,
     Function[s, s["VertexCount"] - 0.5 s["MaxDegree"]]},
   {"pairs", Abs[#TwoSectionEdgeCount - 2 #EdgeCount] + 0.25 #MaxDegree &,
-    Function[s, Abs[s["TwoSectionEdgeCount"] - 2 s["EdgeCount"]] + 0.25 s["MaxDegree"]]}
+    Function[s, Abs[s["TwoSectionEdgeCount"] - 2 s["EdgeCount"]] + 0.25 s["MaxDegree"]]},
+  (* A state with no edge has no GeodesicCurvature: the engine gives it an infinite cost. *)
+  {"geodesic-curvature", #GeodesicCurvature + 0.01 #VertexCount &,
+    Function[s, If[MissingQ[s["GeodesicCurvature"]], Infinity,
+      s["GeodesicCurvature"] + 0.01 s["VertexCount"]]]}
 };
 devices = If[! MemberQ[$ScriptCommandLine, "cpu"] &&
     MatchQ[Quiet@HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1, "NumStates",
@@ -76,7 +83,7 @@ Do[
             ok = False; AppendTo[notes, {s + 1, "a kept class is not a successor"}]];
           If[kept =!= {},
             cut = all[[Min[n, Length[all]]]];
-            If[Max[ref[stats[#]] & /@ kept] > cut,
+            If[Max[ref[stats[#]] & /@ kept] > cut + 10^-9,
               ok = False; AppendTo[notes, {s + 1, "cost", Max[ref[stats[#]] & /@ kept], cut}]]]],
         {s, 0, steps - 1}],
       {n, {1, 2, 3}}];

@@ -2777,7 +2777,8 @@ TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
                                          put_str_list_option(
                                              o, "StepStatisticsMeasures",
                                              {"VolumeGrowth", "Geodesics", "EdgeCurvature",
-                                              "Combinatorial", "Particles", "DimensionGradient"});
+                                              "Combinatorial", "Particles", "DimensionGradient",
+                                              "GeodesicAnalysis"});
                                      },
                                      5);
         const auto host = cpu(job);
@@ -3885,9 +3886,9 @@ TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
     worker_stop(w);
 }
 
-// "StateCost" keeps the same states on both devices: a cost over the incidence mean distance and
-// one over the ball dimension, under each state identity, with "MaxStatesPerStep" 2 and with
-// "UniformRandom" and "MatchesPerStep" 2. Counts of states, events, causal and branchial pairs
+// "StateCost" keeps the same states on both devices: a cost over the incidence mean distance, one
+// over the ball dimension and one over RotationCurveExponent, under each state identity, with
+// "MaxStatesPerStep" 2 and with "UniformRandom" and "MatchesPerStep" 2. Counts of states, events, causal and branchial pairs
 // equal the host's.
 TEST(GpuBinaryGate, StateCostKeepsTheSameStatesOnBothDevices) {
     {
@@ -3905,7 +3906,8 @@ TEST(GpuBinaryGate, StateCostKeepsTheSameStatesOnBothDevices) {
     const EdgeList rhs = {{1, 2}, {1, 4}, {2, 4}, {3, 4}};
     struct Cost { std::vector<std::string> code; std::vector<double> k; const char* measures; };
     const Cost costs[] = {{{"IncidenceMeanDistance", "Minus"}, {}, nullptr},
-                          {{"BallDimension", "Const", "Plus", "Abs"}, {-2.0}, "VolumeGrowth"}};
+                          {{"BallDimension", "Const", "Plus", "Abs"}, {-2.0}, "VolumeGrowth"},
+                          {{"RotationCurveExponent"}, {}, "GeodesicAnalysis"}};
     for (const char* mode : {"None", "Automatic", "Full"}) {
         for (bool matches : {false, true}) {
             for (const Cost& c : costs) {
@@ -4675,7 +4677,7 @@ TEST(StateStatistics, RecordStoresSequencesAsRuns) {
     EXPECT_EQ(rec.num_degree_runs, 1u);
     EXPECT_EQ(storage.size() * 8,
               hgcommon::StateInvariantRecord::bytes(1, 1, rec.num_ball, rec.num_distributions,
-                                                    rec.num_geodesic));
+                                                    rec.num_geodesic, rec.num_rotation));
     const auto inv = hg::stats::state_invariants(torus);
     EXPECT_EQ(inv.arities, std::vector<int64_t>(288, 2));
     EXPECT_EQ(inv.degree_sequence, std::vector<int64_t>(144, 4));
@@ -5208,7 +5210,7 @@ TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     EXPECT_EQ(keys(*assoc_at(topology, "Invariants")).size(), 29u);
     EXPECT_NE(assoc_at(*assoc_at(topology, "Invariants"), "RipsBetti1"), nullptr);
     const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
-    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 52u);
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 62u);
     EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
     EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
     EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);

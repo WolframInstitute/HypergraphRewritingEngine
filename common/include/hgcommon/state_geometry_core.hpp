@@ -464,16 +464,21 @@ enum : uint32_t {
     SG_HOLONOMY = 1u << 21,              // holonomy_triangle: a triangle, max degree <= 6
     SG_HOLONOMY_SQUARE = 1u << 22,       // `defined` only: holonomy_square (SG_HOLONOMY's family)
     SG_BRANCH_ALIGNMENT = 1u << 23,      // alignment_moment: 4 <= |G'| <= 256, mu4 < mu5
+    SG_GEODESIC_BUNDLE = 1u << 24,       // proper_time, proper_time_variance, bundle_spread,
+                                         // geodesic_curvature: G has an edge
+    SG_LENSING = 1u << 25,               // lensing_*: a pair of G' passes near the centre, M > 0
+    SG_ROTATION = 1u << 26,              // orbital_velocity, rotation_*: R_C >= 2
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
 // computed without the option.
 constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
 constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
+constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE | SG_LENSING | SG_ROTATION;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
                                      SG_DIMENSION_GRADIENT | SG_TOPOLOGY | SG_METRIC_TENSOR |
-                                     SG_HOLONOMY | SG_BRANCH_ALIGNMENT;
+                                     SG_HOLONOMY | SG_BRANCH_ALIGNMENT | SG_GEODESIC_ANALYSIS;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -615,6 +620,27 @@ struct SgGeometry {
     double charge = 0.0;
     double charge_max = 0.0;
     double dimension_gradient = 0.0;     // the mean over G' of L_v, the Laplacian of d_v
+    // Over the ordered pairs (v, t) of distinct vertices joined by a path: the mean and the
+    // population variance of d(v, t), the mean over the pairs of the standard deviation of
+    // d(x, t) over the neighbours x of v, and the mean over the pairs of the mean of
+    // d(x, t) - d(v, t) over the same neighbours.
+    double proper_time = 0.0;
+    double proper_time_variance = 0.0;
+    double bundle_spread = 0.0;
+    double geodesic_curvature = 0.0;
+    // Over the ordered pairs (s, t) of G' with d(s, t) >= 2 that pass near the centre C: the
+    // means of the deflection, of the impact parameter and of the deflection times (b + 1) / M.
+    double lensing_deflection = 0.0;
+    double lensing_impact = 0.0;
+    double lensing_ratio = 0.0;
+    // The rotation curve about C: v(r) = L(r) / (2 pi r) for r = 1..R_C, L(r) the vertices of the
+    // largest component of the shell at distance r from C. The mean of v, and the slope and the
+    // root mean square residual of the least squares fit of ln v on ln r.
+    double orbital_velocity = 0.0;
+    double rotation_exponent = 0.0;
+    double rotation_residual = 0.0;
+    uint32_t rotation_radii = 0;         // R_C: entries written to the rotation-curve output
+    uint32_t reserved2 = 0;
     // b0, b1, b2 of the clique complex of G and b1 of its Vietoris-Rips complex at r = 1, over
     // GF(2); the metric tensor gap; the mean holonomy angles of the triangles and of the
     // chordless 4-cycles (state_topology_core.hpp).
@@ -657,6 +683,14 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // SG_GEODESIC adds per lane and per vertex the path counts, their log sums and the per-distance
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
+// SG_GEODESIC_BUNDLE adds per vertex the target count (4 bytes) and the sums of d, d^2, the
+// bundle curvature and the bundle spread over its targets (8 bytes each). SG_LENSING and
+// SG_ROTATION add the centre's largest dimension and the diameter of G' (8 bytes each), and per
+// vertex the distance to the centre and the centre search's queue (4 bytes each). SG_LENSING
+// adds per lane and per vertex the impact parameters, the distances through the centre, a queue
+// and the centre's vertices (4 bytes each), and per vertex the near-pair count (4 bytes) and the
+// sums of b, δ and the ratio (8 bytes each). SG_ROTATION adds per radius the orbit size and the
+// mark of the shell search (4 bytes each) and the velocity (8 bytes).
 HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes,
                                     uint32_t want = ~0u) {
     const size_t n1 = n + 1;
@@ -671,6 +705,10 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE | SG_PARTICLE))
         bytes += n1 * (4 + 8) + 2 * 8;
     if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
+    if (want & SG_GEODESIC_BUNDLE) bytes += n1 * (4 + 4 * 8) + 5 * 8;
+    if (want & (SG_LENSING | SG_ROTATION)) bytes += 2 * 8 + n1 * (2 * 4) + 3 * 8;
+    if (want & SG_LENSING) bytes += size_t{lanes} * n1 * (4 * 4) + n1 * (4 + 3 * 8) + 8 * 8;
+    if (want & SG_ROTATION) bytes += n1 * (2 * 4 + 8) + 3 * 8;
     // The counting scratch of state_topology_core.hpp's st_families_of: four arrays of n + 1
     // words.
     if (want & (SG_TOPOLOGY | SG_METRIC_TENSOR | SG_HOLONOMY)) bytes += 4 * (n1 * 4 + 8);
@@ -878,6 +916,8 @@ namespace common {
 // `log_geodesic`, with SG_GEODESIC, receives in entries 0..D-1, up to `log_geodesic_capacity`
 // entries, the mean over the ordered pairs at distance d = 1..D of ln sigma, D the largest
 // eccentricity; out.geodesic_radii is D.
+// `rotation_curve`, with SG_ROTATION, receives in entries 0..R_C-1, up to `rotation_capacity`
+// entries, the orbital velocity v(r) at r = 1..R_C; out.rotation_radii is R_C.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
@@ -887,7 +927,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                                  double* vertex_curvature = nullptr,
                                  double* vertex_values = nullptr,
                                  double* log_geodesic = nullptr,
-                                 uint32_t log_geodesic_capacity = 0) {
+                                 uint32_t log_geodesic_capacity = 0,
+                                 double* rotation_curve = nullptr,
+                                 uint32_t rotation_capacity = 0) {
     const bool want_growth = (want & SG_VOLUME_GROWTH) != 0;
     const bool want_geodesic = (want & SG_GEODESIC) != 0;
     const bool want_nonlazy = (want & SG_NONLAZY_OLLIVIER) != 0;
@@ -897,9 +939,12 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
                                       (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
     const bool want_gradient = (want & SG_DIMENSION_GRADIENT) != 0;
+    const bool want_lensing = (want & SG_LENSING) != 0;
+    const bool want_rotation = (want & SG_ROTATION) != 0;
+    const bool want_centre = want_lensing || want_rotation;
     const bool want_alignment = (want & SG_BRANCH_ALIGNMENT) != 0;
     const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient ||
-                          want_alignment;
+                          want_centre || want_alignment;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
     if (par.leader()) {
@@ -962,6 +1007,33 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* kappa_v = want_comb ? arena.take<double>(n1) : nullptr;
     // Particle measures: per vertex the Euler excess of B(v, 3).
     double* excess_v = want_particle ? arena.take<double>(n1) : nullptr;
+    // Geodesic bundles: per vertex t, over the vertices v its search reaches, the count, the sums
+    // of d(v, t) and d(v, t)^2, and the sums of the bundle curvature and spread toward t.
+    const bool want_bundle = (want & SG_GEODESIC_BUNDLE) != 0;
+    uint32_t* bundle_pairs = want_bundle ? arena.take<uint32_t>(n1) : nullptr;
+    uint64_t* bundle_d = want_bundle ? arena.take<uint64_t>(n1) : nullptr;
+    uint64_t* bundle_d2 = want_bundle ? arena.take<uint64_t>(n1) : nullptr;
+    double* bundle_curv = want_bundle ? arena.take<double>(n1) : nullptr;
+    double* bundle_spread = want_bundle ? arena.take<double>(n1) : nullptr;
+    // Lensing: the centre's largest dimension and the diameter of G', each vertex's distance to
+    // the centre and the centre search's queue; per lane the impact parameters, the distances
+    // through the centre, a queue and the centre's vertices in search order; per source the
+    // near-pair count and the sums of b, the deflection and the ratio.
+    double* centre_info = want_centre ? arena.take<double>(2) : nullptr;
+    int32_t* centre_d = want_centre ? arena.take<int32_t>(n1) : nullptr;
+    uint32_t* centre_q = want_centre ? arena.take<uint32_t>(n1) : nullptr;
+    uint32_t* lens_b_all = want_lensing ? arena.take<uint32_t>(L * n1) : nullptr;
+    int32_t* lens_dc_all = want_lensing ? arena.take<int32_t>(L * n1) : nullptr;
+    uint32_t* lens_q_all = want_lensing ? arena.take<uint32_t>(L * n1) : nullptr;
+    uint32_t* lens_s_all = want_lensing ? arena.take<uint32_t>(L * n1) : nullptr;
+    uint32_t* lens_count = want_lensing ? arena.take<uint32_t>(n1) : nullptr;
+    uint64_t* lens_bsum = want_lensing ? arena.take<uint64_t>(n1) : nullptr;
+    double* lens_dsum = want_lensing ? arena.take<double>(n1) : nullptr;
+    double* lens_rsum = want_lensing ? arena.take<double>(n1) : nullptr;
+    // Rotation: per radius the orbit size and the velocity; per vertex the shell search's mark.
+    uint32_t* orbit_len = want_rotation ? arena.take<uint32_t>(n1) : nullptr;
+    double* orbit_v = want_rotation ? arena.take<double>(n1) : nullptr;
+    uint32_t* orbit_mark = want_rotation ? arena.take<uint32_t>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -1045,6 +1117,36 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 excess_v[v] = P > 0 && E > P ? static_cast<double>(E - P) / static_cast<double>(P)
                                              : 0.0;
             }
+            if (want_bundle) {
+                // Each vertex u reached from v is the source of a bundle toward v: its
+                // neighbours x have proper times d(x, v) = d(u, v) + e_x, e_x in {-1, 0, 1}.
+                // With k = deg u, s1 = sum e_x and s2 = sum e_x^2, the bundle curvature is
+                // s1 / k and the spread sqrt(k s2 - s1^2) / k (docs/SPEC.md, "StepStatistics
+                // geodesic analysis").
+                uint64_t sd = 0, sd2 = 0;
+                double curv = 0.0, spread = 0.0;
+                for (uint32_t i = 1; i < reached; ++i) {
+                    const uint32_t u = queue[i];
+                    const int32_t du = dist[u];
+                    int64_t s1 = 0, s2 = 0;
+                    for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                        const int64_t ex = dist[g.nbr[k]] - du;
+                        s1 += ex;
+                        s2 += ex * ex;
+                    }
+                    const double k = static_cast<double>(g.degree(u));
+                    sd += static_cast<uint64_t>(du);
+                    sd2 += static_cast<uint64_t>(du) * static_cast<uint64_t>(du);
+                    curv += static_cast<double>(s1) / k;
+                    spread += ::sqrt(static_cast<double>(
+                                  static_cast<int64_t>(g.degree(u)) * s2 - s1 * s1)) / k;
+                }
+                bundle_pairs[v] = reached - 1;
+                bundle_d[v] = sd;
+                bundle_d2[v] = sd2;
+                bundle_curv[v] = curv;
+                bundle_spread[v] = spread;
+            }
             if (!want_local) {
                 sg_bfs_clear(dist, queue, reached);
             } else {
@@ -1088,6 +1190,30 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     connected = par.bcast(connected);
     uint32_t radius = UINT32_MAX;
     for (uint32_t v = 0; v < n; ++v) if (ecc[v] < radius) radius = ecc[v];
+    if (want_bundle && par.leader()) {
+        // Sums in vertex order; the variance from the exact integer sums of d and d^2.
+        uint64_t pairs = 0, sd = 0, sd2 = 0;
+        double curv = 0.0, spread = 0.0;
+        for (uint32_t v = 0; v < n; ++v) {
+            pairs += bundle_pairs[v];
+            sd += bundle_d[v];
+            sd2 += bundle_d2[v];
+            curv += bundle_curv[v];
+            spread += bundle_spread[v];
+        }
+        if (pairs) {
+            const double p = static_cast<double>(pairs);
+            out.proper_time = static_cast<double>(sd) / p;
+            // (P sum d^2 - (sum d)^2) / P^2, the numerator in double-double.
+            const DmDD a = dm_two_prod(p, static_cast<double>(sd2));
+            const DmDD b = dm_two_prod(static_cast<double>(sd), static_cast<double>(sd));
+            const DmDD num = dm_dd_add(a, DmDD{-b.hi, -b.lo});
+            out.proper_time_variance = (num.hi + num.lo) / dm_mul(p, p);
+            out.bundle_spread = spread / p;
+            out.geodesic_curvature = curv / p;
+            out.defined |= SG_GEODESIC_BUNDLE;
+        }
+    }
     if (want_geodesic && par.leader()) {
         uint32_t top = 0;
         for (uint32_t v = 0; v < n; ++v) if (ecc[v] > top) top = ecc[v];
@@ -1414,6 +1540,193 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         }
     }
 
+    // GEODESIC LENSING (docs/SPEC.md, "StepStatistics geodesic analysis"). The leader finds the
+    // centre C, the vertices of G' with d_v within 1e-9 of the largest, and d(u, C) for each
+    // vertex of G' by one search from every vertex of C.
+    if (part && want_centre) {
+        par.sync();
+        if (par.leader()) {
+            double top = dimv[vat(0)];
+            uint32_t diam = 0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                if (dimv[vat(i)] > top) top = dimv[vat(i)];
+                if (ecc[vat(i)] > diam) diam = ecc[vat(i)];
+            }
+            centre_info[0] = top;
+            centre_info[1] = static_cast<double>(diam);
+            for (uint32_t u = 0; u < n; ++u) centre_d[u] = -1;
+            uint32_t tail = 0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const uint32_t u = vat(i);
+                if (dimv[u] >= top - 1e-9) { centre_d[u] = 0; centre_q[tail++] = u; }
+            }
+            for (uint32_t head = 0; head < tail; ++head) {
+                const uint32_t u = centre_q[head];
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (centre_d[w] < 0) { centre_d[w] = centre_d[u] + 1; centre_q[tail++] = w; }
+                }
+            }
+        }
+        par.sync();
+    }
+    // From each source s of G', strided over the lanes, one search gives d(s, .) and b(s, .):
+    // b(s, s) = d(s, C), and b(s, w) is the least of d(w, C) and b(s, u) over the neighbours u
+    // of w one step closer to s. A second search gives d_C(s, .): it starts each vertex c of C
+    // at d(s, c), in the order of the first search, and relaxes edges in the order of
+    // increasing distance.
+    if (part && want_lensing) {
+        const double top = centre_info[0];
+        const double near_bound = centre_info[1] / 5.0 > 2.0 ? centre_info[1] / 5.0 : 2.0;
+        uint32_t* bmin = lens_b_all + me * n1;
+        int32_t* dcs = lens_dc_all + me * n1;
+        uint32_t* q2 = lens_q_all + me * n1;
+        uint32_t* seeds = lens_s_all + me * n1;
+        for (uint32_t i = me; i < ns; i += L) {
+            const uint32_t s = vat(i);
+            uint32_t head = 0, tail = 0;
+            queue[tail++] = s;
+            dist[s] = 0;
+            bmin[s] = static_cast<uint32_t>(centre_d[s]);
+            while (head < tail) {
+                const uint32_t u = queue[head++];
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (dist[w] < 0) {
+                        dist[w] = dist[u] + 1;
+                        queue[tail++] = w;
+                        const uint32_t cw = static_cast<uint32_t>(centre_d[w]);
+                        bmin[w] = bmin[u] < cw ? bmin[u] : cw;
+                    } else if (dist[w] == dist[u] + 1 && bmin[u] < bmin[w]) {
+                        bmin[w] = bmin[u];
+                    }
+                }
+            }
+            const uint32_t reached = tail;
+            uint32_t nseeds = 0;
+            for (uint32_t j = 0; j < reached; ++j) {
+                dcs[queue[j]] = -1;
+                if (centre_d[queue[j]] == 0) seeds[nseeds++] = queue[j];
+            }
+            uint32_t p = 0, h2 = 0, t2 = 0;
+            while (p < nseeds || h2 < t2) {
+                uint32_t u;
+                if (p < nseeds && (h2 == t2 || dist[seeds[p]] <= dcs[q2[h2]])) {
+                    // A vertex of C reached from another vertex of C at the same distance from s
+                    // holds d(s, c) + 1 from that edge: its own start d(s, c) replaces it.
+                    u = seeds[p++];
+                    if (dcs[u] >= 0 && dcs[u] <= dist[u]) continue;
+                    dcs[u] = dist[u];
+                } else {
+                    u = q2[h2++];
+                }
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (dcs[w] < 0) { dcs[w] = dcs[u] + 1; q2[t2++] = w; }
+                }
+            }
+            uint32_t count = 0;
+            uint64_t bsum = 0;
+            double dsum = 0.0, rsum = 0.0;
+            for (uint32_t j = 1; j < reached; ++j) {
+                const uint32_t t = queue[j];
+                const int32_t d = dist[t];
+                if (d < 2 || !(static_cast<double>(bmin[t]) < near_bound)) continue;
+                const double delta = static_cast<double>(dcs[t] - d) / static_cast<double>(d);
+                ++count;
+                bsum += bmin[t];
+                dsum += delta;
+                rsum += dm_mul(delta, static_cast<double>(bmin[t]) + 1.0) / top;
+            }
+            lens_count[s] = count;
+            lens_bsum[s] = bsum;
+            lens_dsum[s] = dsum;
+            lens_rsum[s] = rsum;
+            sg_bfs_clear(dist, queue, reached);
+        }
+        par.sync();
+        if (par.leader() && top > 0.0) {
+            uint64_t count = 0, bsum = 0;
+            double dsum = 0.0, rsum = 0.0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const uint32_t s = vat(i);
+                count += lens_count[s];
+                bsum += lens_bsum[s];
+                dsum += lens_dsum[s];
+                rsum += lens_rsum[s];
+            }
+            if (count) {
+                const double c = static_cast<double>(count);
+                out.lensing_deflection = dsum / c;
+                out.lensing_impact = static_cast<double>(bsum) / c;
+                out.lensing_ratio = rsum / c;
+                out.defined |= SG_LENSING;
+            }
+        }
+    }
+    // ROTATION CURVE: the leader finds the components of each shell S_r = {u : d(u, C) = r} by a
+    // search inside the shell, keeps the largest per radius, and fits ln v(r) on ln r.
+    if (part && want_rotation && par.leader()) {
+        uint32_t rc = 0;
+        for (uint32_t i = 0; i < ns; ++i) {
+            const uint32_t u = vat(i);
+            if (static_cast<uint32_t>(centre_d[u]) > rc) rc = static_cast<uint32_t>(centre_d[u]);
+            orbit_mark[u] = 0;
+        }
+        for (uint32_t r = 0; r <= rc; ++r) orbit_len[r] = 0;
+        for (uint32_t i = 0; i < ns; ++i) {
+            const uint32_t u0 = vat(i);
+            const int32_t r = centre_d[u0];
+            if (r == 0 || orbit_mark[u0]) continue;
+            uint32_t head = 0, tail = 0;
+            centre_q[tail++] = u0;
+            orbit_mark[u0] = 1;
+            while (head < tail) {
+                const uint32_t u = centre_q[head++];
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (centre_d[w] == r && !orbit_mark[w]) {
+                        orbit_mark[w] = 1;
+                        centre_q[tail++] = w;
+                    }
+                }
+            }
+            if (tail > orbit_len[r]) orbit_len[r] = tail;
+        }
+        if (rc >= 2) {
+            const double two_pi = 6.28318530717958647692;
+            double sv = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+            for (uint32_t r = 1; r <= rc; ++r) {
+                const double v = static_cast<double>(orbit_len[r]) /
+                                 dm_mul(two_pi, static_cast<double>(r));
+                orbit_v[r] = v;
+                const double x = dm_log(static_cast<double>(r)), y = dm_log(v);
+                sv += v;
+                sx += x;
+                sy += y;
+                sxx += dm_mul(x, x);
+                sxy += dm_mul(x, y);
+            }
+            const double m = static_cast<double>(rc);
+            const double slope =
+                (dm_mul(m, sxy) - dm_mul(sx, sy)) / (dm_mul(m, sxx) - dm_mul(sx, sx));
+            const double icpt = (sy - dm_mul(slope, sx)) / m;
+            double ss = 0.0;
+            for (uint32_t r = 1; r <= rc; ++r) {
+                const double e = dm_log(orbit_v[r]) - icpt -
+                                 dm_mul(slope, dm_log(static_cast<double>(r)));
+                ss += dm_mul(e, e);
+            }
+            out.orbital_velocity = sv / m;
+            out.rotation_exponent = slope;
+            out.rotation_residual = ::sqrt(ss / m);
+            out.rotation_radii = rc;
+            out.defined |= SG_ROTATION;
+            for (uint32_t r = 1; r <= rc && r <= rotation_capacity; ++r)
+                rotation_curve[r - 1] = orbit_v[r];
+        }
+    }
+
     // PASS 3: K_v for the vertices of G', from each vertex's balls to radius R'.
     if (part && (want_dists || want_alignment)) {
         par.sync();
@@ -1488,9 +1801,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
 // `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists`,
-// `vertex_curvature`, `vertex_values`, `log_geodesic` and `log_geodesic_capacity` are
-// sg_geometry_of's; `graph` is the rule that builds G (SG_GRAPH_CONSECUTIVE or
-// SG_GRAPH_ALL_PAIRS).
+// `vertex_curvature`, `vertex_values`, `log_geodesic`, `log_geodesic_capacity`,
+// `rotation_curve` and `rotation_capacity` are sg_geometry_of's; `graph` is the rule that builds
+// G (SG_GRAPH_CONSECUTIVE or SG_GRAPH_ALL_PAIRS).
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
@@ -1500,7 +1813,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                              double* vertex_curvature = nullptr,
                              double* vertex_values = nullptr, double* log_geodesic = nullptr,
                              uint32_t log_geodesic_capacity = 0,
-                             uint32_t graph = SG_GRAPH_CONSECUTIVE) {
+                             uint32_t graph = SG_GRAPH_CONSECUTIVE,
+                             double* rotation_curve = nullptr, uint32_t rotation_capacity = 0) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -1530,7 +1844,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     const size_t built = arena.used;
     if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
                         largest_n, dists, vertex_curvature, vertex_values, log_geodesic,
-                        log_geodesic_capacity)) {
+                        log_geodesic_capacity, rotation_curve, rotation_capacity)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
         needed += arena.extra;
         return false;

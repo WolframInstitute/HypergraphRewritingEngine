@@ -377,7 +377,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                     throw std::runtime_error(
                                         "StepStatisticsMeasures '" + k + "' is not one of "
                                         "VolumeGrowth, Geodesics, EdgeCurvature, Combinatorial, "
-                                        "Particles, DimensionGradient, Branchial");
+                                        "Particles, DimensionGradient, Topology, MetricTensor, Holonomy, "
+                                        "BranchAlignment, Equilibrium, GeodesicAnalysis, "
+                                        "Branchial");
                                 bits |= bit;
                             }
                             req.statistics_measures = bits;
