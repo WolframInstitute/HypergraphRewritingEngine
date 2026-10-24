@@ -88,7 +88,7 @@ Table[Prepend[device] @ Values @ HGEvolve[physics, physicsInit, 4, "Debug", "Can
 
 ## Sampling on the GPU
 
-`"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"MatchesPerStateRule"` decide from each transition's isomorphism-invariant identity and `"RandomSeed"`, so the same seed keeps the same transitions on both devices.
+`"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"MatchesPerStateRule"` decide from each transition's isomorphism-invariant identity and `"RandomSeed"`, so the same seed keeps the same transitions on both devices. Under None or Automatic states `"TransitionRate"`, `"RuleWeights"` and `"MatchesPerStateRule"` also read the step.
 
 A rule that replaces two adjacent edges by four, from two loops, keeping each transition with probability 0.25:
 
@@ -97,7 +97,7 @@ branching = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
 Table[Prepend[device] @ Values @ HGEvolve[branching, {{1, 1}, {1, 1}}, 5, "Debug", "TransitionRate" -> 0.25, "RandomSeed" -> 7, "TargetDevice" -> device], {device, {"CPU", "GPU"}}]
 ```
 
-<!-- => {{"CPU", 11, 10, 9, 2}, {"GPU", 11, 10, 9, 2}} -->
+<!-- => {{"CPU", 25, 24, 23, 21}, {"GPU", 25, 24, 23, 21}} -->
 
 ```wl
 branching = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};

@@ -1090,7 +1090,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "S
 
 ### "TransitionRate"
 
-Below 1, each transition is kept with the given probability. The draw depends on the transition's isomorphism-invariant identity and the seed, so the same seed keeps the same transitions at any thread count and on either device:
+Below 1, each transition is kept with the given probability. The draw depends on the transition's isomorphism-invariant identity, the seed and, under "CanonicalizeStates" None or Automatic, the step, so the same seed keeps the same transitions at any thread count and on either device:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
@@ -1105,7 +1105,7 @@ The four counts of that sample:
 HGEvolve[loops, {{1, 1}, {1, 1}}, 4, "Debug", "TransitionRate" -> 0.25, "RandomSeed" -> 7]
 ```
 
-<!-- => <|"NumStates" -> 7, "NumEvents" -> 6, "NumCausalEdges" -> 5, "NumBranchialEdges" -> 1|> -->
+<!-- => <|"NumStates" -> 7, "NumEvents" -> 6, "NumCausalEdges" -> 5, "NumBranchialEdges" -> 3|> -->
 
 Without sampling, four steps reach 117 states:
 
@@ -1160,7 +1160,7 @@ extend = {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}};
 {HGEvolve[extend, {{1, 1}, {1, 1}}, 3, "NumEvents", "RuleWeights" -> {0.25}, "RandomSeed" -> 7], HGEvolve[extend, {{1, 1}, {1, 1}}, 3, "NumEvents", "RuleWeights" -> {0.25, 1}, "RandomSeed" -> 7]}
 ```
 
-<!-- => {145, 145} -->
+<!-- => {152, 152} -->
 
 ### "ExploreFromCanonicalStatesOnly"
 
@@ -1371,7 +1371,7 @@ loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
 HGEvolve[loops, {{1, 1}, {1, 1}}, 4, "NumStates", "TransitionRate" -> 0.25, "RandomSeed" -> 8]
 ```
 
-<!-- => 9 -->
+<!-- => 5 -->
 
 It is also the seed of a generated initial condition. Another seed places six sprinkled points elsewhere:
 

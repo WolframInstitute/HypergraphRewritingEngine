@@ -144,7 +144,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[rule, init, 4, "States", "MaxS
 
 ## Reproducible selections
 
-These options decide each transition or state from its isomorphism-invariant identity and `"RandomSeed"`. The same seed keeps the same states at any thread count, on either device, and on every run.
+These options decide each transition or state from its isomorphism-invariant identity and `"RandomSeed"`. Under `"CanonicalizeStates" -> None` or `Automatic` the transition draws and caps also read the step. The same seed keeps the same states at any thread count, on either device, and on every run.
 
 ### Transitions per state and rule
 
@@ -194,15 +194,15 @@ kept === Lookup[{"Step", "CanonicalHash"}] @ Values @ HGEvolve[rule, init, 4, "S
 
 ### Transition rate
 
-`"TransitionRate" -> r` keeps each transition with probability *r*, drawn from the transition's identity and the seed.
+`"TransitionRate" -> r` keeps each transition with probability *r*, drawn from the transition's identity, the seed and, under None or Automatic states, the step.
 
-At rate 0.5 and four steps, 14 of the 117 states are kept:
+At rate 0.5 and four steps, 21 of the 117 states are kept:
 
 ```wl
 HGEvolve[rule, init, 4, "StatesGraphStructure", "TransitionRate" -> 0.5, "RandomSeed" -> 2, AspectRatio -> 1/2]
 ```
 
-![At rate 0.5 and four steps, 14 of the 117 states are kept](../images/SamplingAndPruning/SamplingAndPruning-19.png)
+![At rate 0.5 and four steps, 21 of the 117 states are kept](../images/SamplingAndPruning/SamplingAndPruning-19.png)
 
 The number of states at several rates, with one seed:
 
@@ -210,7 +210,7 @@ The number of states at several rates, with one seed:
 Table[HGEvolve[rule, init, 4, "NumStates", "TransitionRate" -> r, "RandomSeed" -> 2], {r, {1., 0.75, 0.5, 0.25, 0.125}}]
 ```
 
-<!-- => {117, 81, 14, 7, 5} -->
+<!-- => {117, 47, 21, 7, 5} -->
 
 ---
 
@@ -274,7 +274,7 @@ Weights `{1, 0.25}` at rate 0.5 keep the first rule's transitions with probabili
 {HGEvolve[two, init, 3, "NumStates", "TransitionRate" -> 0.5, "RuleWeights" -> {1, 0.25}, "RandomSeed" -> 3], HGEvolve[two, init, 3, "NumStates", "RuleWeights" -> {0.5, 0.125}, "RandomSeed" -> 3]}
 ```
 
-<!-- => {11, 11} -->
+<!-- => {10, 10} -->
 
 `{0.25}` and `{0.25, 1}` give the same count:
 
@@ -282,7 +282,7 @@ Weights `{1, 0.25}` at rate 0.5 keep the first rule's transitions with probabili
 {HGEvolve[two, init, 3, "NumStates", "RuleWeights" -> {0.25}, "RandomSeed" -> 3], HGEvolve[two, init, 3, "NumStates", "RuleWeights" -> {0.25, 1}, "RandomSeed" -> 3]}
 ```
 
-<!-- => {97, 97} -->
+<!-- => {113, 113} -->
 
 ### Exploration probability
 
