@@ -1030,6 +1030,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "S
 With `"MaxStatesPerStep"`, a cost function keeps each step's successor states of lowest cost. The cost here is the negated incidence mean distance, so each step keeps the two states whose vertices and hyperedges are farthest apart. The mean of `"IncidenceMeanDistance"` over the kept states at each step:
 
 ```wl
+loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
 meanDistance[opts___] := N[Round[Lookup[#["Invariants", "IncidenceMeanDistance"], "Mean"], 1/100]] & /@ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "StepStatistics", "CanonicalizeStates" -> Full, "MaxStatesPerStep" -> 2, "RandomSeed" -> 7, opts];
 meanDistance["StateCost" -> (-#IncidenceMeanDistance &)]
 ```
