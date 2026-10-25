@@ -1157,10 +1157,11 @@ hgStateCostProgram[f : Function[_]] := Module[{body, emit, out},
 hgStateCostProgram[other_] := (Message[HGEvolve::statecost, other, "it is not None or a pure function"];
   $Failed);
 
-(* "EventOrderingFunction": the ordering names the engine takes, {} when the option is None. The
-   engine refuses a name that is not one of SetReplace's and a list that leaves matches tied. *)
+(* "EventOrderingFunction": the value the engine takes: {} for None, Automatic for SetReplace's
+   default order (hgcommon::kStandardEventOrder), or the ordering names. The engine refuses a name
+   that is not one of SetReplace's and a list that leaves matches tied. *)
 hgEventOrdering[None] := {};
-hgEventOrdering[Automatic] := {"LeastRecentEdge", "RuleOrdering", "RuleIndex"};
+hgEventOrdering[Automatic] := Automatic;
 hgEventOrdering[s_String] := {s};
 hgEventOrdering[l : {__String}] := l;
 hgEventOrdering[other_] := (Message[HGEvolve::evorder, other]; $Failed);

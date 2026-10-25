@@ -2078,6 +2078,65 @@ TEST(WxfSerializationPin, AnUnrecognisedIdentityValueIsReported) {
     }
 }
 
+// "EventOrderingFunction" as WXF symbols, the form a direct hg_evolve job sends: Automatic is
+// SetReplace's default order and gives the reply of the explicit list
+// {"LeastRecentEdge", "RuleOrdering", "RuleIndex"}, None gives the reply of a job without the
+// option, a string is a one-name list, and any other symbol is refused with a message naming it.
+TEST(WxfSerializationPin, EventOrderingFunctionAcceptsSymbols) {
+    auto run = [](const std::function<void(wxf::Writer&)>& order) {
+        auto opts = [&order](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumEvents", "NumStates", "Events"});
+            order(w);
+        };
+        HostBridge host;
+        return run_rewriting_core(branch_job(4, "Evolve", 0, opts, 2), host);
+    };
+    auto symbol = [](const char* s) {
+        return [s](wxf::Writer& w) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("EventOrderingFunction"));
+            w.write_symbol(s);
+        };
+    };
+    const auto automatic = run(symbol("Automatic"));
+    const auto listed = run([](wxf::Writer& w) {
+        put_str_list_option(w, "EventOrderingFunction",
+                            {"LeastRecentEdge", "RuleOrdering", "RuleIndex"});
+    });
+    EXPECT_FALSE(reply_mentions(automatic, "OptionSkipped"));
+    EXPECT_FALSE(reply_mentions(automatic, "Error"));
+    ASSERT_GT(read_int_key(listed, "NumEvents"), 0);
+    EXPECT_EQ(value_bytes(automatic, "Events"), value_bytes(listed, "Events"));
+    EXPECT_EQ(read_int_key(automatic, "NumStates"), read_int_key(listed, "NumStates"));
+
+    const auto none = run(symbol("None"));
+    const auto empty = run([](wxf::Writer& w) {
+        put_str_list_option(w, "EventOrderingFunction", {});
+    });
+    EXPECT_FALSE(reply_mentions(none, "OptionSkipped"));
+    EXPECT_GT(read_int_key(none, "NumEvents"), read_int_key(listed, "NumEvents"));
+    EXPECT_EQ(read_int_key(none, "NumEvents"), read_int_key(empty, "NumEvents"));
+    EXPECT_EQ(read_int_key(none, "NumStates"), read_int_key(empty, "NumStates"));
+
+    const auto one = run([](wxf::Writer& w) {
+        put_str_option(w, "EventOrderingFunction", "RuleOrdering");
+    });
+    const auto one_listed = run([](wxf::Writer& w) {
+        put_str_list_option(w, "EventOrderingFunction", {"RuleOrdering"});
+    });
+    EXPECT_FALSE(reply_mentions(one, "OptionSkipped"));
+    EXPECT_EQ(value_bytes(one, "Events"), value_bytes(one_listed, "Events"));
+
+    std::string refusal;
+    try {
+        run(symbol("Sideways"));
+    } catch (const std::runtime_error& e) {
+        refusal = e.what();
+    }
+    EXPECT_NE(refusal.find("EventOrderingFunction"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("got \"Sideways\""), std::string::npos) << refusal;
+}
+
 // "IncludeVertexCurvature" through the request: every state record has "VertexCurvature", one
 // entry per vertex of the record's edges with a neighbour, under None and under Full (where the
 // record lists the canonical form and the curvature is of that form). Without the option no

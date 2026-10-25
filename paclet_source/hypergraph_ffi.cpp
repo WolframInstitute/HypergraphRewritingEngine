@@ -434,9 +434,23 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                     std::to_string(v));
                             req.step_statistics_matrix_limit = static_cast<uint64_t>(v);
                         } else if (option_key == "EventOrderingFunction") {
-                            // SetReplace's ordering names in priority order; {} when absent
-                            req.event_ordering_names =
-                                option_parser.read<std::vector<std::string>>();
+                            // None, Automatic (SetReplace's default order,
+                            // hgcommon::kStandardEventOrder), one ordering name, or a list of
+                            // them in priority order. parse_event_ordering refuses a name that
+                            // is not one of SetReplace's.
+                            req.event_ordering_automatic = false;
+                            req.event_ordering_names.clear();
+                            try {
+                                req.event_ordering_names =
+                                    option_parser.read<std::vector<std::string>>();
+                            } catch (const wxf::TypeError&) {
+                                option_parser.seek(option_value_start);
+                                std::string name = option_parser.read<std::string>();
+                                if (name == "Automatic")
+                                    req.event_ordering_automatic = true;
+                                else if (name != "None")
+                                    req.event_ordering_names.push_back(std::move(name));
+                            }
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
                             req.graph_properties = option_parser.read<std::vector<std::string>>();
@@ -647,19 +661,20 @@ static void refuse_invalid_input(const hgffi::ParsedJob& req) {
     }
 }
 
-// "EventOrderingFunction": the order its names make (hgcommon::event_order_compare), 0 when the
+// "EventOrderingFunction": the order its names make (hgcommon::event_order_compare),
+// hgcommon::kStandardEventOrder for Automatic, and 0 for None or when the
 // option is absent. The job is refused when a name is not one of SetReplace's, when the names
 // leave two distinct matches tied (SetReplace breaks such ties at random, from a generator this
 // engine does not reproduce), and with "Generational".
 static uint32_t parse_event_ordering(const hgffi::ParsedJob& req) {
-    if (req.event_ordering_names.empty()) return 0;
+    if (!req.event_ordering_automatic && req.event_ordering_names.empty()) return 0;
     const char* kRefused =
         "\"EventOrderingFunction\" needs a list of \"OldestEdge\", \"LeastOldEdge\", "
         "\"LeastRecentEdge\", \"NewestEdge\", \"RuleOrdering\", \"ReverseRuleOrdering\", "
         "\"RuleIndex\" and \"ReverseRuleIndex\" that orders every two matches: it contains "
         "\"RuleOrdering\" or \"ReverseRuleOrdering\", and with more than one rule \"RuleIndex\" "
         "or \"ReverseRuleIndex\". \"Random\" and \"Any\" are not supported";
-    uint32_t order = 0;
+    uint32_t order = req.event_ordering_automatic ? hgcommon::kStandardEventOrder : 0u;
     for (const std::string& name : req.event_ordering_names) {
         const uint32_t code = hgcommon::event_order_code(name.c_str());
         if (code == 0)

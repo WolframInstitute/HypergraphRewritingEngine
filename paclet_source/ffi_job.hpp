@@ -119,10 +119,12 @@ struct ParsedJob {
     // "UndirectedEdges": two-vertex edges are unordered pairs (hgcommon/undirected_core.hpp).
     bool undirected_edges = false;
     // "EventOrderingFunction": SetReplace's ordering names, in priority order, and the order they
-    // make (hgcommon::event_order_compare; 0: the option is absent). Each state's next state
-    // applies its one match first in that order
+    // make (hgcommon::event_order_compare; 0: the option is absent or None). Each state's next
+    // state applies its one match first in that order
     // (ParallelEvolutionEngine::set_event_ordering). The caps and draws do not apply with it.
+    // `event_ordering_automatic` is the option's Automatic: hgcommon::kStandardEventOrder.
     std::vector<std::string> event_ordering_names;
+    bool event_ordering_automatic = false;
     uint32_t event_ordering = 0;
     size_t matches_per_step = 0;  // The cap above (0 = all)
     // Keep k of a state's own matches per RULE, chosen at that state's drain by the transition's
