@@ -2484,15 +2484,16 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         // instances of the walk, so the directed one tests nothing.
         const VariableBinding unbound;
         auto walk = [&](auto unordered_tag) {
-          constexpr bool kUnordered = decltype(unordered_tag)::value;
+          // A type alias: the nested lambda reads Unordered::value without a capture (MSVC C3495).
+          using Unordered = decltype(unordered_tag);
           generate_candidates(
             first_edge, first_sig,
-            unbound.bindings, unbound.bound_mask, s.edges, cands, get_edge, kUnordered,
+            unbound.bindings, unbound.bound_mask, s.edges, cands, get_edge, Unordered::value,
             [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
 
                 uint8_t omask = 1u;
-                if constexpr (kUnordered)
+                if constexpr (Unordered::value)
                     omask = hgcommon::edge_orientation_mask(true, edge.vertices, edge.arity,
                                                             first_edge.vars, first_edge.arity,
                                                             unbound.bindings, unbound.bound_mask);
@@ -2603,10 +2604,11 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     const bool unordered = rule.und.undirected != 0 &&
                            hgcommon::undirected_flippable(pattern_edge.vars, pattern_edge.arity);
     auto walk = [&](auto unordered_tag) {
-      constexpr bool kUnordered = decltype(unordered_tag)::value;
+      // A type alias: the nested lambda reads Unordered::value without a capture (MSVC C3495).
+      using Unordered = decltype(unordered_tag);
       generate_candidates(
         pattern_edge, pattern_sig,
-        data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge, kUnordered,
+        data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge, Unordered::value,
         [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;
 
@@ -2616,7 +2618,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
             HG_STAT(match_join_for(data.state)->trace.fetch_or(512u, std::memory_order_relaxed));
 
             uint8_t omask = 1u;
-            if constexpr (kUnordered)
+            if constexpr (Unordered::value)
                 omask = hgcommon::edge_orientation_mask(
                     true, edge.vertices, edge.arity, pattern_edge.vars, pattern_edge.arity,
                     data.binding.bindings, data.binding.bound_mask);
