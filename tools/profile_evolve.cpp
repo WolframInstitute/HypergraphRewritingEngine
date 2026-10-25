@@ -10,6 +10,9 @@
 // With edges_file (one binary edge "a b" per line), the run starts from those edges under
 // {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}} and keeps matches_per_step transitions
 // per step ("UniformRandom" -> True, "MatchesPerStep" -> matches_per_step, "RandomSeed" -> seed).
+// A seventh argument chooses how the edges are read: "directed" (default), "undirected"
+// ("UndirectedEdges" -> True) or "emulated" (the 16 directed rules of the orientations of the
+// left side, the right side as written; bit j of a rule's number reverses left edge j).
 #include "hypergraph/parallel_evolution.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -39,8 +42,18 @@ int main(int argc, char** argv) {
         while (std::fscanf(f, "%u %u", &a, &b) == 2) init.push_back({a, b});
         std::fclose(f);
         // {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}}, x..v = 0..4, u = 5
-        e.add_rule(make_rule(0).lhs({0,1}).lhs({1,2}).lhs({2,3}).lhs({3,4})
-                       .rhs({1,5}).rhs({5,4}).rhs({3,0}).rhs({0,5}).build());
+        const char* orientation = argc > 7 ? argv[7] : "directed";
+        const uint8_t lhs[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
+        const unsigned variants = !std::strcmp(orientation, "emulated") ? 16u : 1u;
+        for (unsigned bits = 0; bits < variants; ++bits) {
+            RuleBuilder rb(static_cast<uint16_t>(bits));
+            for (unsigned p = 0; p < 4; ++p) {
+                const bool rev = (bits >> p) & 1u;
+                rb.lhs({lhs[p][rev ? 1 : 0], lhs[p][rev ? 0 : 1]});
+            }
+            e.add_rule(rb.rhs({1,5}).rhs({5,4}).rhs({3,0}).rhs({0,5}).build());
+        }
+        e.set_undirected(!std::strcmp(orientation, "undirected"));
         e.set_matches_per_step(argc > 5 ? std::strtoull(argv[5], nullptr, 10) : 1);
         e.set_random_seed(argc > 6 ? std::strtoull(argv[6], nullptr, 10) : 1);
     } else {
