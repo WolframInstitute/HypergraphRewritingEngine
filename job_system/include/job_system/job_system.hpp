@@ -326,6 +326,10 @@ private:
     // nested submit can go straight to that worker's own deque.
     static inline thread_local JobSystem* t_sys_ = nullptr;
     static inline thread_local WorkerData* t_worker_ = nullptr;
+    // The system whose outermost run_inline_ is on this thread's stack, and the jobs that
+    // overflowed under it (run_inline_). Null outside run_inline_.
+    static inline thread_local JobSystem* t_inline_sys_ = nullptr;
+    static inline thread_local std::vector<JobRaw>* t_inline_pending_ = nullptr;
 
     // What a throwing job does (run_job's catch clauses): latch the kind, stop every worker.
     void latch_error(ErrorType kind) {
@@ -865,11 +869,44 @@ private:
     // A job run on the thread that submitted it, because there was no room to queue it (see
     // enqueue). It must not recycle that thread's scratch arena: whatever submitted it still
     // holds live allocations there -- on a worker the job further out on this stack, on any
-    // other thread the code seeding work (evolve_more builds its resume lists there) -- and
-    // the jobs this one submits may run here too, nested inside it. So it gives back exactly
-    // the scratch it took: on_inline_begin_ marks the arena before it runs, and on_inline_end_
-    // releases back to that mark after.
+    // other thread the code seeding work (evolve_more builds its resume lists there). So it
+    // gives back exactly the scratch it took: on_inline_begin_ marks the arena before it runs,
+    // and on_inline_end_ releases back to that mark after.
+    //
+    // AT MOST ONE INLINE JOB OF THIS SYSTEM IS ON A THREAD'S STACK. A job that overflows while
+    // the thread already runs one goes on t_inline_pending_, and the outermost run_inline_ runs
+    // those jobs one after another, last in first out, before it returns. Run nested, every
+    // job of a chain that keeps the queues full (rewrite, scan, expand, rewrite, ...) adds
+    // frames, and a 7219-edge state at 2000 steps overflows an 8 MB worker stack. A deferred
+    // job was submitted and is not yet complete, so quiescence cannot be reached before it
+    // runs, and the job further out does not return before it runs. If the list cannot grow
+    // (bad_alloc), the job runs nested.
     void run_inline_(WorkerData* data, JobRaw raw) {
+        if (t_inline_sys_ == this) {
+            try {
+                t_inline_pending_->push_back(raw);
+                return;
+            } catch (const std::bad_alloc&) {
+                run_inline_one_(data, raw);
+                return;
+            }
+        }
+        std::vector<JobRaw> pending;
+        JobSystem* const outer_sys = t_inline_sys_;
+        std::vector<JobRaw>* const outer_pending = t_inline_pending_;
+        t_inline_sys_ = this;
+        t_inline_pending_ = &pending;
+        run_inline_one_(data, raw);
+        while (!pending.empty()) {
+            const JobRaw next = pending.back();
+            pending.pop_back();
+            run_inline_one_(data, next);
+        }
+        t_inline_sys_ = outer_sys;
+        t_inline_pending_ = outer_pending;
+    }
+
+    void run_inline_one_(WorkerData* data, JobRaw raw) {
         if (on_inline_begin_) on_inline_begin_();
         run_job(data, raw, /*recycle_scratch=*/false);
         if (on_inline_end_) on_inline_end_();
@@ -959,8 +996,8 @@ public:
     // execute(), even on error). Used to reset per-worker scratch between tasks.
     void set_on_job_complete(std::function<void()> cb) { on_job_complete_ = std::move(cb); }
     // Register the calls made around a job run on the thread that submitted it because every
-    // queue was full (run_inline_): `begin` before it runs and `end` after, on that thread,
-    // nested when one such job submits another. Used to give back exactly the scratch the job
+    // queue was full (run_inline_): `begin` before it runs and `end` after, on that thread.
+    // Used to give back exactly the scratch the job
     // took, where on_job_complete_ would recycle what its submitter still holds.
     void set_on_inline_job(std::function<void()> begin, std::function<void()> end) {
         on_inline_begin_ = std::move(begin);

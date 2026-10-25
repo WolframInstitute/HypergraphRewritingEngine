@@ -676,11 +676,12 @@ TEST(JobSystemOverflow, AJobRunOnASubmittingThreadDoesNotRecycleItsScratch) {
     // The calls made around each job run here, in order: +1 before it, -1 after it.
     std::vector<int> inline_calls;
     int inline_depth = 0;
+    int most_inline_depth = 0;
     js.set_on_inline_job(
         [&] {
             if (std::this_thread::get_id() != here) return;
             inline_calls.push_back(+1);
-            ++inline_depth;
+            most_inline_depth = std::max(most_inline_depth, ++inline_depth);
         },
         [&] {
             if (std::this_thread::get_id() != here) return;
@@ -708,26 +709,44 @@ TEST(JobSystemOverflow, AJobRunOnASubmittingThreadDoesNotRecycleItsScratch) {
     }
     ASSERT_TRUE(overflowed.load()) << "the injector never filled, so no job ran on this thread";
 
-    // Still full: this job runs here, and so does the job it submits.
+    // Still full: this job runs here, and so does the job it submits, after it and before the
+    // submit of the first one returns.
     bool child_ran_here = false;
+    bool child_ran_after_parent = false;
+    bool parent_returned = false;
     int recycled_while_running = -1;
     js.submit(job_system::make_job([&] {
         const int before = recycled_here.load();
         js.submit(job_system::make_job([&] {
             child_ran_here = std::this_thread::get_id() == here;
+            child_ran_after_parent = parent_returned;
         }, TestJobType::PHYSICS));
         recycled_while_running = recycled_here.load() - before;
+        parent_returned = true;
     }, TestJobType::GRAPHICS));
 
     EXPECT_TRUE(child_ran_here) << "the nested job did not run on the submitting thread";
+    EXPECT_TRUE(child_ran_after_parent) << "the nested job ran inside the job that submitted it";
     EXPECT_EQ(recycled_while_running, 0)
-        << "a job run nested on the submitting thread recycled the scratch the job outside it holds";
+        << "a job run on the submitting thread recycled the scratch the job outside it holds";
     EXPECT_EQ(recycled_here.load(), 0)
         << "a job run on the submitting thread recycled the scratch the submitter holds";
-    // Each job run here was bracketed, the nested one inside the one that submitted it, so
-    // each can give back exactly the scratch it took.
-    EXPECT_EQ(inline_calls, (std::vector<int>{+1, -1, +1, +1, -1, -1}))
+    // Each job run here was bracketed, one at a time, so each can give back exactly the
+    // scratch it took.
+    EXPECT_EQ(inline_calls, (std::vector<int>{+1, -1, +1, -1, +1, -1}))
         << "the jobs run on the submitting thread were not each bracketed by the inline calls";
+    EXPECT_EQ(inline_depth, 0);
+
+    // Still full: a chain of 100000 jobs, each submitting the next, runs here with one job of
+    // the chain on the stack at a time. Run nested, the chain needs 100000 frames.
+    constexpr int kChain = 100000;
+    int chain_ran = 0;
+    std::function<void()> link = [&] {
+        if (++chain_ran < kChain) js.submit(job_system::make_job(link, TestJobType::PHYSICS));
+    };
+    js.submit(job_system::make_job(link, TestJobType::PHYSICS));
+    EXPECT_EQ(chain_ran, kChain);
+    EXPECT_EQ(most_inline_depth, 1) << "an overflowed job ran inside another one";
     EXPECT_EQ(inline_depth, 0);
 
     release.store(true);
