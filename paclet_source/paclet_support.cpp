@@ -394,13 +394,13 @@ void push_branchial_state_edges(wxf::WXFValueAssociation& result,
     result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(verts)});
 }
 
-void state_record_edges(bool full,
+void state_record_edges(bool full, bool undirected,
                         std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges) {
     if (!full || edges.empty()) return;
     std::vector<std::vector<hypergraph::VertexId>> contents;
     contents.reserve(edges.size());
     for (const auto& e : edges) contents.emplace_back(e.second.begin(), e.second.end());
-    hypergraph::IRCanonicalizer ir;
+    hypergraph::IRCanonicalizer ir(undirected);
     const auto canon = ir.canonicalize_edges(contents);
     edges.clear();
     int64_t idx = 0;
@@ -430,13 +430,17 @@ std::unordered_map<uint64_t, int64_t> lowest_id_by_content(const std::vector<int
     return out;
 }
 
-uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges) {
+uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges,
+                         bool undirected) {
     std::sort(edges.begin(), edges.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
     hgcommon::ContentHasher ch(static_cast<uint32_t>(edges.size()));
     for (const auto& e : edges) {
-        ch.edge_begin(static_cast<uint32_t>(e.second.size()));
-        for (uint32_t v : e.second) ch.vertex(static_cast<uint64_t>(v));
+        const uint32_t n = static_cast<uint32_t>(e.second.size());
+        const bool flip = hgcommon::undirected_content_flip(undirected, n, e.second.data());
+        ch.edge_begin(n);
+        for (uint32_t i = 0; i < n; ++i)
+            ch.vertex(static_cast<uint64_t>(e.second[flip ? n - 1 - i : i]));
         ch.edge_end();
     }
     return ch.value();

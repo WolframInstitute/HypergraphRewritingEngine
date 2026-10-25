@@ -471,12 +471,13 @@ struct StateRecordIds {
 // the edges as stored, under the edge ids an event's ConsumedEdges and ProducedEdges name.
 // IsInitial is the 0/1 integer a WXFValue(bool) stores. With r.with_curvature the record has
 // "VertexCurvature" (stats::vertex_curvature of the edges the record lists, or r.curvature).
-void state_record_edges(bool full,
+// `undirected` reads two-vertex edges as unordered pairs ("UndirectedEdges").
+void state_record_edges(bool full, bool undirected,
                         std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges);
 template <class Sink>
-void write_state_record(Sink& s, const StateRecordIds& r, bool full,
+void write_state_record(Sink& s, const StateRecordIds& r, bool full, bool undirected,
                         std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges) {
-    state_record_edges(full, edges);
+    state_record_edges(full, undirected, edges);
     s.begin((r.with_hash ? 7u : 6u) + (r.with_curvature ? 1u : 0u));
     s.i64("Id", r.id);
     s.i64("CanonicalId", r.canonical_id);
@@ -652,7 +653,9 @@ std::unordered_map<uint64_t, int64_t> lowest_id_by_content(const std::vector<int
 
 // hgcommon::ContentHasher over a state's edges taken in edge-id order: the content hash the host
 // computes from its stored state (Hypergraph::get_state_content_hash).
-uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges);
+// `undirected`: a two-vertex edge as its labels in ascending order (hgcommon::undirected_content_flip).
+uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges,
+                         bool undirected);
 
 // One entry of the reply's "Warnings" list, for both engines. "Partial" is 1 for a result the
 // engine cut short, which the kernel reports as HGEvolve::overflow, and 0 for every other kind,

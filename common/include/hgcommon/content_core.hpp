@@ -34,6 +34,34 @@ struct ContentHasher {
     HG_HD uint64_t value() const { return h; }
 };
 
+// "UndirectedEdges": a two-vertex edge enters content identity as (min, max) of its two vertex
+// labels. True when edge `v` of `arity` enters reversed.
+HG_HD inline bool undirected_content_flip(bool undirected, uint32_t arity, const uint32_t* v) {
+    return undirected && arity == 2u && v[1] < v[0];
+}
+
+// A cursor of the shape content_equal reads, with each edge as undirected_content_flip says.
+template <class Cursor>
+struct UndirectedContentCursor {
+    Cursor c;
+    bool undirected;
+    uint32_t pair[2] = {0u, 0u};
+    HG_HD bool next(uint32_t& arity, const uint32_t*& v) {
+        if (!c.next(arity, v)) return false;
+        if (undirected_content_flip(undirected, arity, v)) {
+            pair[0] = v[1];
+            pair[1] = v[0];
+            v = pair;
+        }
+        return true;
+    }
+};
+
+template <class Cursor>
+HG_HD UndirectedContentCursor<Cursor> undirected_content_cursor(const Cursor& c, bool undirected) {
+    return UndirectedContentCursor<Cursor>{c, undirected};
+}
+
 // Automatic identity: two states are one when the words ContentHasher digests are equal -- the
 // edge count, then edge by edge in the hasher's order the arity and the vertices. A cursor yields
 // a state's edges in that order:

@@ -22,6 +22,9 @@ namespace engine {
 // form are isomorphic. Both halves are gated in tools/ir_core_equivalence_probe.cpp.
 class IRCanonicalizer {
 public:
+    // `undirected`: two-vertex edges are unordered pairs ("UndirectedEdges", hgcommon::ir_sym_edge).
+    explicit IRCanonicalizer(bool undirected = false) : undirected_(undirected) {}
+
     // Engine entry points: edges already materialized in the per-worker scratch
     // arena (no heap copy on the hot path). want_inverse_maps builds the
     // VertexMapping::original_to_canonical / original_edge_to_canonical lookups
@@ -101,6 +104,9 @@ public:
     bool are_isomorphic(
         const std::vector<std::vector<VertexId>>& edges1,
         const std::vector<std::vector<VertexId>>& edges2) const;
+
+private:
+    bool undirected_;
 };
 
 }  // namespace engine

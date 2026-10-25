@@ -191,6 +191,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.max_states_per_step = cap32(job.max_states_per_step);
     in.step_cap_counts_matches = job.step_cap_counts_matches;
     in.generational = job.generational;
+    in.undirected = job.undirected_edges;
     in.event_ordering = job.event_ordering;
     in.state_cost = job.state_cost;
     in.max_successor_states_per_parent = cap32(job.max_successor_states_per_parent);
@@ -458,7 +459,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                                [&](wxf::Writer&, size_t i) {
             const hg_gpu::CanonicalState& s = result.states[i];
             if (s.id != hg_gpu::INVALID_ID && !s.exact_hash)
-                host_hash[i] = hypergraph::IRCanonicalizer{}.compute_canonical_hash(result.edges_of(s));
+                host_hash[i] = hypergraph::IRCanonicalizer(job.undirected_edges)
+                                  .compute_canonical_hash(result.edges_of(s));
         });
     }
     // Under None every state is its own class. Otherwise a class's representative is its first
@@ -651,9 +653,9 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             hgmarshal::write_items(unused, emit.size(), par, [&](wxf::Writer&, size_t i) {
                 listed[i] = static_cast<int64_t>(emit[i]);
                 auto edges = record_edges(emit[i]);
-                listed_hash[i] = hgmarshal::content_hash_of(edges);
+                listed_hash[i] = hgmarshal::content_hash_of(edges, job.undirected_edges);
                 if (!curvature) return;
-                hgmarshal::state_record_edges(full, edges);
+                hgmarshal::state_record_edges(full, job.undirected_edges, edges);
                 std::vector<uint32_t>& vs = kept_vertices[i];
                 for (const auto& e : edges) vs.insert(vs.end(), e.second.begin(), e.second.end());
                 std::sort(vs.begin(), vs.end());
@@ -710,9 +712,10 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             // The kept edges are already the record's (under Full, the canonical form).
             if (curvature) {
                 ids.curvature = &curvatures[i];
-                hgmarshal::write_state_record(sink, ids, false, std::move(kept[i]));
+                hgmarshal::write_state_record(sink, ids, false, false, std::move(kept[i]));
             } else {
-                hgmarshal::write_state_record(sink, ids, full, record_edges(s));
+                hgmarshal::write_state_record(sink, ids, full, job.undirected_edges,
+                                              record_edges(s));
             }
         });
         full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(wxf::Encoded{w.release_data()})});
@@ -1290,7 +1293,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             int64_t idx = 0;
             for (const auto& ce : result.edges_of(result.states[sid]))
                 out.emplace_back(idx++, std::vector<uint32_t>(ce.begin(), ce.end()));
-            hgmarshal::state_record_edges(full, out);
+            hgmarshal::state_record_edges(full, job.undirected_edges, out);
         };
         auto step_of = [&](hg_gpu::StateId sid) -> uint32_t { return own_step(sid); };
         // THE EVENT IDENTITY THE COUNT USES, when the reconstruction ran.

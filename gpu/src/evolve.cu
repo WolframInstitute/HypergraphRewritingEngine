@@ -32,6 +32,56 @@ namespace gpu {
 
 namespace {
 
+// A pattern edge in the shape hgcommon::undirected_rule_info reads.
+struct FlatPatternEdge {
+    uint8_t vars[kMaxArity];
+    uint8_t arity;
+};
+
+// "UndirectedEdges": the rule table of the run (hgcommon::undirected_table_layout), the host
+// engine's expand_undirected_rules for this rule type. Throws for a rule both engines refuse.
+std::vector<RewriteRule> undirected_rule_table(const std::vector<RewriteRule>& rules) {
+    std::vector<hgcommon::UndirectedRuleInfo> info(rules.size());
+    for (size_t r = 0; r < rules.size(); ++r) {
+        FlatPatternEdge lhs[kMaxPatternEdges] = {}, rhs[kMaxPatternEdges] = {};
+        auto flatten = [&](const std::vector<std::vector<uint8_t>>& in, FlatPatternEdge* out) {
+            if (in.size() > kMaxPatternEdges)
+                throw std::runtime_error("rule " + std::to_string(r) + " has more than " +
+                                         std::to_string(kMaxPatternEdges) + " edges on a side");
+            for (size_t i = 0; i < in.size(); ++i) {
+                out[i].arity = static_cast<uint8_t>(std::min<size_t>(in[i].size(), kMaxArity));
+                for (uint8_t k = 0; k < out[i].arity; ++k) out[i].vars[k] = in[i][k];
+                if (in[i].size() > 2) out[i].arity = 3;
+            }
+        };
+        flatten(rules[r].lhs, lhs);
+        flatten(rules[r].rhs, rhs);
+        const auto status = hgcommon::undirected_rule_info(
+            lhs, static_cast<uint32_t>(rules[r].lhs.size()), rhs,
+            static_cast<uint32_t>(rules[r].rhs.size()), info[r]);
+        if (status != hgcommon::UNDIRECTED_RULE_OK)
+            throw std::runtime_error("\"UndirectedEdges\" -> True: rule " + std::to_string(r) +
+                                     " " + hgcommon::undirected_refusal_reason(status));
+    }
+    std::vector<RewriteRule> table(rules);
+    const uint32_t size = hgcommon::undirected_table_layout(
+        info.data(), static_cast<uint32_t>(rules.size()), [&](uint32_t r, uint32_t mask) {
+            RewriteRule v = rules[r];
+            for (uint32_t p = 0; p < v.lhs.size(); ++p)
+                if (hgcommon::undirected_reversed(info[r], mask, p))
+                    std::swap(v.lhs[p][0], v.lhs[p][1]);
+            v.und = info[r];
+            v.und.orientation = static_cast<uint16_t>(mask);
+            table.push_back(std::move(v));
+        });
+    if (size == 0)
+        throw std::runtime_error(
+            std::string("\"UndirectedEdges\" -> True: ") +
+            hgcommon::undirected_refusal_reason(hgcommon::UNDIRECTED_RULE_TOO_MANY_VARIANTS));
+    for (size_t r = 0; r < rules.size(); ++r) table[r].und = info[r];
+    return table;
+}
+
 }  // namespace (close anon — config_from_input has external linkage)
 
 // The most edges a state can hold `steps` rewrites from a root of `largest_root` edges: a rewrite
@@ -281,7 +331,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // the relations from the edges, as on the host.
     const bool single_history = in.generational || in.event_ordering != 0u;
     const bool explore = !single_history && hgcommon::quotient_exploration_applies(
-        in.explore_from_canonical_states_only, full_states, in.max_states_per_step);
+        in.explore_from_canonical_states_only, full_states, in.max_states_per_step,
+        in.undirected);
     const bool qc_route = full_states && !single_history &&
                           in.num_steps > 0 &&
                           hgcommon::quotient_route_requested(
@@ -360,10 +411,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // are per call (DeviceErrors::warnings_from clears them), so the count is this call's too.
     const uint32_t fallbacks_before = start_step != 0 ? engine.event_sig_raw_fallbacks() : 0u;
 
-    // The launch uploads the rules into its own scratch (run_persistent_evolve).
+    // The launch uploads the rules into its own scratch (run_persistent_evolve). Under
+    // "UndirectedEdges" the table holds the orientation variants after the user's rules.
     std::vector<DeviceRule> rules;
-    rules.reserve(in.rules.size());
-    for (const auto& r : in.rules) rules.push_back(make_device_rule(r));
+    {
+        const std::vector<RewriteRule> table =
+            in.undirected ? undirected_rule_table(in.rules) : in.rules;
+        rules.reserve(table.size());
+        for (const auto& r : table) rules.push_back(make_device_rule(r));
+    }
 
     const EngineConfig& cfg = engine.config();
     Pool<MatchRecord>& matches = matches_;
@@ -434,6 +490,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
     // "EventOrderingFunction" runs as a generation of one event (DeviceState::event_order).
     engine.set_generational(single_history);
+    engine.set_undirected(in.undirected);
     engine.set_event_ordering(in.event_ordering);
     engine.set_rank_reads_step(hgcommon::rank_reads_step(full_states, in.max_states_per_step));
     engine.set_lineage(lineage);

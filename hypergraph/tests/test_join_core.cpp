@@ -52,6 +52,7 @@ struct ScanCtx {
     uint8_t edge_arity(EdgeId e) const { return static_cast<uint8_t>((*edges)[e].v.size()); }
     bool usable(EdgeId) const { return true; }
     bool aborted() const { return false; }
+    bool undirected() const { return false; }
 
     using Cand = EdgeId;
     struct Cursor { EdgeId next = 0; };

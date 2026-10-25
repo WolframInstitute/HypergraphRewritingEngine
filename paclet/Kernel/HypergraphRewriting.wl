@@ -45,6 +45,7 @@ Options[HGEvolve] = {
   "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, drawn uniformly without replacement from "RandomSeed" and the step. It replaces "MaxStatesPerStep". *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
   "Generational" -> False,  (* True: one history; each step applies every match of the state that shares no edge with a match before it in the standard order ("LeastRecentEdge", "RuleOrdering", "RuleIndex"), the Wolfram model's single-way update. The caps and draws do not apply with it. Provisional name. *)
+  "UndirectedEdges" -> False,  (* True: every edge of two vertices is an unordered pair {u, v}. A rule's left edge {x, y} matches an edge in either order, matches that consume the same edges and differ by a symmetry of the rule count once, and the canonical hash does not depend on the order within an edge. Edges of three or more vertices are refused. Provisional name. *)
   "EventOrderingFunction" -> None,  (* None, Automatic, or one of SetReplace's event ordering names or a list of them in priority order: one history from each initial state, and each step applies the state's one match first in that order, as SetReplace's WolframModel does. Automatic is SetReplace's default {"LeastRecentEdge", "RuleOrdering", "RuleIndex"}. The caps and draws do not apply with it. *)
   "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps a state's transitions regardless of rule, and "MaxStatesPerStep" a step's. Applies on both devices. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
@@ -1211,6 +1212,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "UniformRandom" -> ov["UniformRandom"],
     "MatchesPerStep" -> ov["MatchesPerStep"],
     "Generational" -> ov["Generational"],
+    "UndirectedEdges" -> ov["UndirectedEdges"],
     "EventOrderingFunction" -> eventOrdering,
     "MatchesPerStateRule" -> ov["MatchesPerStateRule"]
   |>

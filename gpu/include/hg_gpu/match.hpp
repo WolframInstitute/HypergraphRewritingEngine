@@ -63,7 +63,18 @@ struct DeviceRule {
     // num_lhs_vars is a count on the host and a max-index-plus-one here, so neither reading
     // of [num_lhs_vars, num_rhs_vars) names the right variables. hgcommon takes the mask.
     uint32_t          new_var_mask  = 0;
+
+    // "UndirectedEdges" (hgcommon/undirected_core.hpp): zero for a directed rule.
+    hgcommon::UndirectedRuleInfo und{};
 };
+
+// The rules a run matches: the entries of `rules` before the first orientation variant. The
+// variants follow the user's rules (hgcommon::undirected_table_layout) and are never matched.
+inline uint32_t matched_rule_count(const std::vector<DeviceRule>& rules) {
+    uint32_t n = 0;
+    while (n < rules.size() && rules[n].und.orientation == 0u) ++n;
+    return n;
+}
 
 // One match found during pattern matching.
 //

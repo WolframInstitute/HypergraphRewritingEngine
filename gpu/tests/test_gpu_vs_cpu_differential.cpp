@@ -80,6 +80,8 @@ struct Workload {
     // "EventOrderingFunction" (EvolveInput::event_ordering,
     // ParallelEvolutionEngine::set_event_ordering); 0: absent.
     uint32_t event_ordering = 0;
+    // "UndirectedEdges" (EvolveInput::undirected, ParallelEvolutionEngine::set_undirected).
+    bool undirected = false;
     // Collapse isomorphic initial states under quotient exploration (default off).
 };
 
@@ -274,7 +276,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_state_cost(w.state_cost);
     engine.set_generational(w.generational);
     engine.set_event_ordering(w.event_ordering);
-
+    engine.set_undirected(w.undirected);
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
         for (const auto& r : w.initial_states) {
@@ -442,6 +444,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.persistent_blocks = w.persistent_blocks;
     in.generational = w.generational;
     in.event_ordering = w.event_ordering;
+    in.undirected = w.undirected;
     return in;
 }
 
@@ -1708,6 +1711,94 @@ TEST(Generational, GenerationsAgreeAcrossEngines) {
             EXPECT_EQ(cpu.raw_states, gpu.raw_states) << at;
             EXPECT_EQ(cpu.raw_events, gpu.raw_events) << at;
             EXPECT_EQ(cpu.num_events, gpu.num_events) << at;
+        }
+    }
+}
+
+// "UndirectedEdges" on both engines: the same raw states (by their directed hash, so the stored
+// order of every edge agrees), the same engine hashes, events, causal and branchial edges, for
+// Gorard's rule, a rule whose reversal is a symmetry, a one-edge rule with two orientations, the
+// Wolfram model's signature rule and two rules together, from states with self-loops and
+// parallel edges. Full multiway under each state mode and event identity, one match per step
+// over 30 steps under None states, "Generational" and "EventOrderingFunction".
+TEST(Undirected, RunsAgreeAcrossEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<std::vector<hg_gpu::VertexId>>> init;
+        uint32_t steps;
+    };
+    const auto gorard = rule({{0, 1}, {1, 2}, {2, 3}, {3, 4}}, {{1, 5}, {5, 4}, {3, 0}, {0, 5}});
+    const std::vector<Case> cases = {
+        {"gorard", {gorard},
+         {{{0u, 1u}, {2u, 1u}, {2u, 3u}, {3u, 4u}, {0u, 4u}, {4u, 2u}, {5u, 5u}, {5u, 0u}}}, 2},
+        {"contract", {rule({{0, 1}, {1, 2}}, {{0, 2}})},
+         {{{0u, 1u}, {2u, 1u}, {2u, 3u}, {3u, 3u}, {3u, 0u}, {1u, 0u}}}, 3},
+        {"grow", {rule({{0, 1}}, {{0, 1}, {1, 2}})}, {{{0u, 1u}, {1u, 1u}}}, 4},
+        {"wolfram", {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}})},
+         {{{0u, 1u}, {0u, 2u}, {2u, 2u}}}, 3},
+        {"two-rules", {rule({{0, 1}}, {{0, 1}, {1, 2}}), rule({{0, 1}, {1, 2}}, {{0, 2}})},
+         {{{0u, 1u}, {2u, 1u}, {2u, 2u}}}, 3},
+    };
+    const std::pair<hg_gpu::CanonicalizationMode, hg_gpu::EventCanonicalizationMode> modes[] = {
+        {hg_gpu::CanonicalizationMode::None, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Automatic, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::None},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::Full},
+        {hg_gpu::CanonicalizationMode::Full, hg_gpu::EventCanonicalizationMode::Automatic}};
+    auto compare = [](const Workload& w, const std::string& at) {
+        const NormalizedResult cpu = run_cpu(w);
+        const NormalizedResult gpu = run_gpu(w);
+        EXPECT_GT(cpu.raw_events, 0u) << at;
+        EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes) << at;
+        // The device keeps a state's canonical hash under Full states only.
+        if (w.canon_mode == hg_gpu::CanonicalizationMode::Full)
+            EXPECT_EQ(cpu.engine_state_hashes, gpu.engine_state_hashes) << at;
+        EXPECT_EQ(cpu.event_keys, gpu.event_keys) << at;
+        EXPECT_EQ(cpu.causal_edge_keys, gpu.causal_edge_keys) << at;
+        EXPECT_EQ(cpu.branchial_edge_keys, gpu.branchial_edge_keys) << at;
+        EXPECT_EQ(cpu.raw_states, gpu.raw_states) << at;
+        EXPECT_EQ(cpu.raw_events, gpu.raw_events) << at;
+        EXPECT_EQ(cpu.num_events, gpu.num_events) << at;
+    };
+    for (const Case& c : cases) {
+        auto base = [&]() {
+            Workload w;
+            w.name = c.name;
+            w.rules = c.rules;
+            w.initial_states = c.init;
+            w.num_steps = c.steps;
+            w.undirected = true;
+            return w;
+        };
+        for (const auto& [states, events] : modes) {
+            Workload w = base();
+            w.canon_mode = states;
+            w.event_canon_mode = events;
+            compare(w, std::string(c.name) + " states " + std::to_string(static_cast<int>(states)) +
+                           " events " + std::to_string(static_cast<int>(events)));
+        }
+        for (const uint64_t seed : {uint64_t(1), uint64_t(7)}) {
+            Workload w = base();
+            w.canon_mode = hg_gpu::CanonicalizationMode::None;
+            w.num_steps = 30;
+            w.max_states_per_step = 1;
+            w.step_cap_counts_matches = true;
+            w.random_seed = seed;
+            compare(w, std::string(c.name) + " one match per step, seed " + std::to_string(seed));
+        }
+        {
+            Workload w = base();
+            w.canon_mode = hg_gpu::CanonicalizationMode::None;
+            w.generational = true;
+            compare(w, std::string(c.name) + " generational");
+        }
+        {
+            Workload w = base();
+            w.canon_mode = hg_gpu::CanonicalizationMode::None;
+            w.num_steps = 8;
+            w.event_ordering = hgcommon::kStandardEventOrder;
+            compare(w, std::string(c.name) + " event ordering");
         }
     }
 }

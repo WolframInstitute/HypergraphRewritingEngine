@@ -1,6 +1,9 @@
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/pattern_matcher.hpp"
 
+#include <string>
+#include <utility>
+
 // The bodies behind pattern.hpp: PatternEdge, RewriteRule, RuleBuilder and
 // PartialMatch. A rule's derived matching data -- variable counts and the join order -- is
 // computed once at add_rule and read from then on; the rest is small value-type code. None of
@@ -203,6 +206,45 @@ RuleBuilder make_rule(uint16_t index) {
     return RuleBuilder(index);
 }
 
+namespace {
+
+std::string undirected_refusal(hgcommon::UndirectedRuleStatus status, uint32_t rule) {
+    const std::string head = "\"UndirectedEdges\" -> True: ";
+    if (status == hgcommon::UNDIRECTED_RULE_TOO_MANY_VARIANTS)
+        return head + hgcommon::undirected_refusal_reason(status);
+    return head + "rule " + std::to_string(rule) + " " + hgcommon::undirected_refusal_reason(status);
+}
+
+}  // namespace
+
+std::vector<RewriteRule> expand_undirected_rules(const std::vector<RewriteRule>& rules) {
+    std::vector<hgcommon::UndirectedRuleInfo> info(rules.size());
+    for (size_t r = 0; r < rules.size(); ++r) {
+        const auto status = hgcommon::undirected_rule_info(rules[r].lhs, rules[r].num_lhs_edges,
+                                                           rules[r].rhs, rules[r].num_rhs_edges,
+                                                           info[r]);
+        if (status != hgcommon::UNDIRECTED_RULE_OK)
+            throw std::invalid_argument(undirected_refusal(status, static_cast<uint32_t>(r)));
+    }
+    std::vector<RewriteRule> table(rules);
+    const uint32_t size = hgcommon::undirected_table_layout(
+        info.data(), static_cast<uint32_t>(rules.size()), [&](uint32_t r, uint32_t mask) {
+            RewriteRule v = rules[r];
+            for (uint8_t p = 0; p < v.num_lhs_edges; ++p)
+                if (hgcommon::undirected_reversed(info[r], mask, p))
+                    std::swap(v.lhs[p].vars[0], v.lhs[p].vars[1]);
+            v.und = info[r];
+            v.und.orientation = static_cast<uint16_t>(mask);
+            v.compute_var_counts();
+            table.push_back(v);
+        });
+    if (size == 0)
+        throw std::invalid_argument(
+            undirected_refusal(hgcommon::UNDIRECTED_RULE_TOO_MANY_VARIANTS, 0));
+    for (size_t r = 0; r < rules.size(); ++r) table[r].und = info[r];
+    return table;
+}
+
 // =============================================================================
 // PartialMatch
 // =============================================================================
@@ -266,11 +308,12 @@ bool validate_candidate(
     const VertexId* edge_vertices,
     uint8_t edge_arity,
     const PatternEdge& pattern_edge,
-    VariableBinding& binding
+    VariableBinding& binding,
+    uint8_t orient
 ) {
-    return hgcommon::bind_pattern_edge(edge_vertices, edge_arity,
-                                       pattern_edge.vars, pattern_edge.arity,
-                                       binding.bindings, binding.bound_mask);
+    return hgcommon::bind_pattern_edge_oriented(edge_vertices, edge_arity, orient,
+                                                pattern_edge.vars, pattern_edge.arity,
+                                                binding.bindings, binding.bound_mask);
 }
 
 }  // namespace engine

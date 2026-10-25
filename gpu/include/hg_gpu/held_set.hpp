@@ -420,6 +420,7 @@ struct HeldJoinCtx {
         return true;
     }
     __device__ bool aborted() const { return false; }
+    __device__ bool undirected() const { return rule.und.undirected != 0u; }
     __device__ void cursor_open(uint8_t p, const JoinState& st, Cursor& c) const {
         c.dealt = st.depth == 1u && split > 1u ? 1u : 0u;
         c.index = 0;
@@ -494,7 +495,21 @@ __device__ inline void held_item(const HeldCtx& c, const DeviceHeldSet& s, State
                             EdgeId edges[kMaxPatternEdges];
                             for (uint8_t d = 0; d < done.depth; ++d)
                                 edges[done.pattern[d]] = done.matched[d];
-                            emit(r, edges, rule.num_lhs_edges);
+                            // Undirected: under its orientation variant, or not at all
+                            // (hgcommon::undirected_resolve).
+                            uint32_t vid = r;
+                            if (rule.und.undirected &&
+                                !hgcommon::undirected_resolve(
+                                    rule.und, r, rule.num_lhs_edges, edges, done.binding,
+                                    hgcommon::undirected_mask_of_positions(rule.und,
+                                                                           done.reversed_mask),
+                                    [&](EdgeId e) {
+                                        return c.ds.vertex_pool
+                                            .data[c.ds.edge_pool.data[e].vertex_offset];
+                                    },
+                                    vid))
+                                return;
+                            emit(vid, edges, rule.num_lhs_edges);
                         });
 }
 

@@ -28,7 +28,7 @@ struct CoreForm {
 // Local vertex indices are assigned in order of first appearance (hgcommon::ir_renumber_encounter).
 uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
                       uint32_t* rank, uint32_t* orbit, uint32_t* klass,
-                      CoreForm* form_out = nullptr) {
+                      CoreForm* form_out = nullptr, bool sym = false) {
     const uint32_t n_edges = static_cast<uint32_t>(edges.size());
     // PER-THREAD AND REUSED, for the reason the scratch buffer below already records: as locals
     // these four allocate and free on EVERY call, and this function runs once per raw state.
@@ -101,7 +101,8 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
             auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
                                                  n_edges, n_verts, total_occ,
                                                  scratch.data(), depth, rank, gens,
-                                                 orbit, klass, out_form, out_label);
+                                                 orbit, klass, out_form, out_label, nullptr,
+                                                 hgcommon::IrSerial{}, sym);
             if (r.status == hgcommon::IR_OK) {
                 if (form_out) form_out->ok = true;
                 return r.hash;
@@ -128,7 +129,7 @@ CanonicalizationResult IRCanonicalizer::canonicalize_edges(
     auto scratch_mark = worker_scratch().mark();
     CoreForm cf;
     std::vector<uint32_t> rank(edges.size(), 0u);
-    ir_core_call(edges, rank.data(), nullptr, nullptr, &cf);
+    ir_core_call(edges, rank.data(), nullptr, nullptr, &cf, undirected_);
     worker_scratch().release(scratch_mark);
 
     CanonicalizationResult result;
@@ -205,10 +206,10 @@ uint64_t IRCanonicalizer::compute_canonical_hash(
     uint64_t hash = 0;
     if (out_form) {
         CoreForm cf;
-        hash = ir_core_call(edges, nullptr, nullptr, nullptr, &cf);
+        hash = ir_core_call(edges, nullptr, nullptr, nullptr, &cf, undirected_);
         if (cf.ok) out_form->swap(cf.form);
     } else {
-        hash = ir_core_call(edges, nullptr, nullptr, nullptr);
+        hash = ir_core_call(edges, nullptr, nullptr, nullptr, nullptr, undirected_);
     }
     worker_scratch().release(scratch_mark);
     return hash;
@@ -238,7 +239,8 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
     // orbit buffer must be supplied, since the class is emitted from the same pass.
     auto scratch_mark = worker_scratch().mark();
     std::vector<uint32_t> orbit(edges.size(), 0u);
-    const uint64_t hash = ir_core_call(edges, nullptr, orbit.data(), out_edge_class.data());
+    const uint64_t hash =
+        ir_core_call(edges, nullptr, orbit.data(), out_edge_class.data(), nullptr, undirected_);
     worker_scratch().release(scratch_mark);
     return hash;
 }
@@ -256,7 +258,8 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_rank(
     // quotient state automorphisms: two symmetric edge-role assignments keep distinct ranks
     // and stay distinct events.
     auto scratch_mark = worker_scratch().mark();
-    const uint64_t hash = ir_core_call(edges, out_edge_rank.data(), nullptr, nullptr);
+    const uint64_t hash =
+        ir_core_call(edges, out_edge_rank.data(), nullptr, nullptr, nullptr, undirected_);
     worker_scratch().release(scratch_mark);
     return hash;
 }
@@ -279,7 +282,8 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
     std::vector<uint32_t> klass_local;
     uint32_t* klass = out_edge_class ? out_edge_class->data()
                                      : (klass_local.assign(edges.size(), 0u), klass_local.data());
-    const uint64_t hash = ir_core_call(edges, out_edge_rank, out_edge_orbit.data(), klass);
+    const uint64_t hash =
+        ir_core_call(edges, out_edge_rank, out_edge_orbit.data(), klass, nullptr, undirected_);
     worker_scratch().release(scratch_mark);
     return hash;
 }

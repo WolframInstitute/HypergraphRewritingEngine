@@ -315,7 +315,10 @@ __device__ inline StateClaim state_claim_content(const DeviceState& ds, StateId 
         const DeviceState& ds;
         StateId sid;
         __device__ bool same(uint32_t rep) const {
-            DeviceContentCursor a(ds, sid), b(ds, rep);
+            auto a = hgcommon::undirected_content_cursor(DeviceContentCursor(ds, sid),
+                                                         ds.undirected != 0u);
+            auto b = hgcommon::undirected_content_cursor(DeviceContentCursor(ds, rep),
+                                                         ds.undirected != 0u);
             return hgcommon::content_equal(a, b);
         }
         __device__ bool make(uint32_t& v) const { v = sid; __threadfence(); return true; }

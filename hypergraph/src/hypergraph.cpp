@@ -141,8 +141,8 @@ inline void ir_note_search(const hgcommon::IrWork& work) { ir_depth_hint() = wor
 // [arity, v0, v1, ...] layout, from IRCanonicalizer::canonicalize_edges. That runs the same core
 // to its unbounded depth, so the form equals the one a bounded call would have emitted.
 void fallback_canonical_form(const SVec<SVec<VertexId>>& edge_vectors,
-                             std::vector<uint32_t>& out) {
-    IRCanonicalizer ir;
+                             std::vector<uint32_t>& out, bool undirected) {
+    IRCanonicalizer ir(undirected);
     const CanonicalizationResult cr = ir.canonicalize_edges(edge_vectors);
     out.clear();
     for (const auto& e : cr.canonical_form.edges) {
@@ -606,7 +606,8 @@ Hypergraph::CanonicalClaim Hypergraph::claim_content_state(StateId sid, uint64_t
         }
         theirs.clear();
         states_[rep].edges.for_each([&](EdgeId e) { theirs.push_back(e); });
-        HostContentCursor a{edges_, mine}, b{edges_, theirs};
+        auto a = hgcommon::undirected_content_cursor(HostContentCursor{edges_, mine}, undirected_);
+        auto b = hgcommon::undirected_content_cursor(HostContentCursor{edges_, theirs}, undirected_);
         return hgcommon::content_equal(a, b);
     };
     auto make = [&] { return sid; };
@@ -916,8 +917,10 @@ uint64_t Hypergraph::marked_form_hash(StateId s, const EdgeId* marked, uint8_t n
         const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
         auto* scratch = static_cast<uint32_t*>(
             worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
-        const auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(), n, n_verts,
-                                                   total_occ, scratch, depth);
+        const auto r = hgcommon::ir_canonical_hash(
+            ea.data(), eoff.data(), ev.data(), n, n_verts, total_occ, scratch, depth, nullptr,
+            hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, nullptr, nullptr, nullptr,
+            hgcommon::IrSerial{}, undirected_);
         if (r.status == hgcommon::IR_OK) { hash = r.hash; break; }
     }
     worker_scratch().release(mk);
@@ -1151,18 +1154,19 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
                                                  n, n_verts, total_occ, scratch, depth,
                                                  ranks.data(), hgcommon::IR_HOST_GENERATORS,
-                                                 nullptr, nullptr, form, nullptr, &work);
+                                                 nullptr, nullptr, form, nullptr, &work,
+                                                 hgcommon::IrSerial{}, undirected_);
             book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
             if (r.status == hgcommon::IR_OK) { ir_note_search(work); hash = r.hash; ok = true; break; }
             if (r.status == hgcommon::IR_EMPTY) break;
         }
         if (!ok) {
             HG_STAT(ir_fallbacks_.fetch_add(1, std::memory_order_relaxed));
-            IRCanonicalizer ir;
+            IRCanonicalizer ir(undirected_);
             HG_THREAD_LOCAL(std::vector<uint32_t>, fallback_ranks);
             hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, fallback_ranks);
             for (uint32_t i = 0; i < n; ++i) ranks[i] = fallback_ranks[i];
-            if (out_form) fallback_canonical_form(edge_vectors, *out_form);
+            if (out_form) fallback_canonical_form(edge_vectors, *out_form, undirected_);
         }
         for (uint32_t i = 0; i < n; ++i) { arr_edges[i] = ids[i]; arr_rank[i] = ranks[i]; }
     }
@@ -1376,7 +1380,9 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
     edges.for_each([&](EdgeId eid) {
         const Edge& e = edges_[eid];
         ch.edge_begin(e.arity);
-        for (uint8_t i = 0; i < e.arity; ++i) ch.vertex(static_cast<uint64_t>(e.vertices[i]));
+        const bool flip = hgcommon::undirected_content_flip(undirected_, e.arity, e.vertices);
+        for (uint8_t i = 0; i < e.arity; ++i)
+            ch.vertex(static_cast<uint64_t>(e.vertices[flip ? 1 - i : i]));
         ch.edge_end();
     });
     return ch.value();
@@ -1468,7 +1474,8 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges,
         hgcommon::IrWork work{};
         auto r = hgcommon::ir_canonical_hash(
             ea.data(), eoff.data(), ev.data(), n_edges, n_verts, total_occ, scratch, depth,
-            nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, form, nullptr, &work);
+            nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, form, nullptr, &work,
+            hgcommon::IrSerial{}, undirected_);
         book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
         if (r.status == hgcommon::IR_OK) {
             ir_note_search(work);
@@ -1486,9 +1493,9 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges,
         const Edge& e = edges_[eid];
         edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
     });
-    IRCanonicalizer ir;
+    IRCanonicalizer ir(undirected_);
     uint64_t h = ir.compute_canonical_hash(edge_vectors);
-    if (out_form) fallback_canonical_form(edge_vectors, *out_form);
+    if (out_form) fallback_canonical_form(edge_vectors, *out_form, undirected_);
     worker_scratch().release(mk);
     return h;
 }
@@ -1522,7 +1529,7 @@ uint64_t Hypergraph::successor_content_hash(StateId parent, const EdgeId* consum
         hgcommon::SuccessorCursor<HostEdgeCursor, PatternEdge> c(
             HostEdgeCursor{edges_, ids}, consumed, num_consumed, rule.rhs, rule.num_rhs_edges,
             rule.new_var_mask(), binding, 0);
-        h = hgcommon::content_hash_of(c);
+        h = hgcommon::content_hash_of(hgcommon::undirected_content_cursor(c, undirected_));
     }
     worker_scratch().release(mk);
     return h;
@@ -1547,7 +1554,7 @@ uint64_t Hypergraph::successor_canonical_hash(StateId parent, const EdgeId* cons
         uint32_t arity = 0;
         const uint32_t* v = nullptr;
         while (c.next(arity, v)) edges.emplace_back(v, v + arity);
-        h = IRCanonicalizer{}.compute_canonical_hash(edges, out_form);
+        h = IRCanonicalizer(undirected_).compute_canonical_hash(edges, out_form);
     }
     worker_scratch().release(mk);
     return h;
@@ -1586,7 +1593,7 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
                             std::vector<uint32_t>& klass,
                             std::vector<uint32_t>& rank,
                             Hypergraph::IrBooking& booking,
-                            std::vector<uint32_t>* out_form = nullptr) {
+                            std::vector<uint32_t>* out_form, bool undirected) {
     orbit.assign(n, 0);
     klass.assign(n, 0);
     if (out_form) out_form->clear();
@@ -1629,7 +1636,8 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
             hgcommon::IrWork work{};
             auto r = hgcommon::ir_canonical_hash(
                 ea, eoff, ev, n, n_verts, total_occ, scratch, depth,
-                rank.data(), gens, orbit.data(), klass.data(), form, nullptr, &work);
+                rank.data(), gens, orbit.data(), klass.data(), form, nullptr, &work,
+                hgcommon::IrSerial{}, undirected);
             booking.calls += 1;
             booking.searched += work.searched;
             booking.leaves += work.leaves;
@@ -1656,10 +1664,10 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
         const Edge& e = edge_table[ids[i]];
         edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
     }
-    IRCanonicalizer ir;
+    IRCanonicalizer ir(undirected);
     const uint64_t h =
         ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass, rank.data());
-    if (out_form) fallback_canonical_form(edge_vecs, *out_form);
+    if (out_form) fallback_canonical_form(edge_vecs, *out_form, undirected);
     return h;
 }
 
@@ -1706,7 +1714,8 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         klass.assign(n, 0);
         rank.assign(n, 0);
         IrBooking booking{};
-        hash = ir_hash_and_orbits(edges_, ids.data(), n, orbit, klass, rank, booking, out_form);
+        hash = ir_hash_and_orbits(edges_, ids.data(), n, orbit, klass, rank, booking, out_form,
+                                  undirected_);
         book_ir(booking);
         // ids are already ascending (SparseBitset iterates in id order), orbit is parallel.
         for (uint32_t i = 0; i < n; ++i) {
@@ -2286,7 +2295,7 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
     rank.assign(ids.size(), 0);
     IrBooking booking{};
     const uint64_t chash = ir_hash_and_orbits(edges_, ids.data(), static_cast<uint32_t>(ids.size()),
-                                              orbit, klass, rank, booking);
+                                              orbit, klass, rank, booking, nullptr, undirected_);
     book_ir(booking);
     for (uint32_t i = 0; i < n; ++i) {
         uint32_t orb = 0;

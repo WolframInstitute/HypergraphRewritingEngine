@@ -48,10 +48,14 @@ HG_HD inline bool run_reads_rank_tuples(EventSignatureKeys event_keys, bool read
 
 // Whether a run keys its rewrites and takes twins: Full mode (the only mode that takes twins),
 // event identity not positional (it reads each raw state's own labelling), no rank tuples, and
-// not "Generational" (a generation's rewrite is many matches, which no rewrite key names).
+// not "Generational" (a generation's rewrite is many matches, which no rewrite key names), and
+// not "UndirectedEdges" (the rule and the consumed tokens leave a two-vertex edge's orientation,
+// and so the binding, open).
 HG_HD inline bool keyed_rewrites_apply(bool requested, bool full_mode, bool positional_events,
-                                       bool reads_rank_tuples, bool generational) {
-    return requested && full_mode && !positional_events && !reads_rank_tuples && !generational;
+                                       bool reads_rank_tuples, bool generational,
+                                       bool undirected) {
+    return requested && full_mode && !positional_events && !reads_rank_tuples && !generational &&
+           !undirected;
 }
 
 // What one twin claim does to a run's keying. A claim that finds another state with the same

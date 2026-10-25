@@ -2704,14 +2704,15 @@ uint32_t run_persistent_match(const EngineState& engine,
                               uint32_t blocks) {
     if (rules.empty() || states.empty()) return out.size_host();
 
-    const uint32_t num_rules = static_cast<uint32_t>(rules.size());
+    // The rules matched; the table holds their orientation variants after them.
+    const uint32_t num_rules = matched_rule_count(rules);
     const uint32_t cap = persistent_ring_capacity(uint64_t{num_rules} * states.size());
     const uint32_t num_items = static_cast<uint32_t>(uint64_t{num_rules} * states.size());
 
     // Engine-lifetime grow-only scratch: allocating these per call was API-call overhead on
     // the per-call floor.
-    EngineState::LaunchScratch& sc =
-        engine.launch_scratch(num_rules, static_cast<uint32_t>(states.size()));
+    EngineState::LaunchScratch& sc = engine.launch_scratch(
+        static_cast<uint32_t>(rules.size()), static_cast<uint32_t>(states.size()));
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice, 0), "rules copy");
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
@@ -2751,13 +2752,14 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     // must start clear. The scheduler that relies on the flag is the one that clears it.
     scratch_matches.reset_and_clear();
 
-    const uint32_t num_rules = static_cast<uint32_t>(rules.size());
+    // The rules matched; the table holds their orientation variants after them.
+    const uint32_t num_rules = matched_rule_count(rules);
     const uint32_t cap = persistent_ring_capacity(uint64_t{num_rules} * states.size());
     const uint32_t num_items = static_cast<uint32_t>(uint64_t{num_rules} * states.size());
 
     // Engine-lifetime grow-only scratch; see run_persistent_match.
-    EngineState::LaunchScratch& sc =
-        engine.launch_scratch(num_rules, static_cast<uint32_t>(states.size()));
+    EngineState::LaunchScratch& sc = engine.launch_scratch(
+        static_cast<uint32_t>(rules.size()), static_cast<uint32_t>(states.size()));
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice, 0), "rules copy");
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
@@ -2823,13 +2825,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // must start clear. The scheduler that relies on the flag is the one that clears it.
     scratch_matches.reset_and_clear(&clears);
 
-    const uint32_t num_rules = static_cast<uint32_t>(rules.size());
+    // The rules matched; the table holds their orientation variants after them.
+    const uint32_t num_rules = matched_rule_count(rules);
     const uint32_t seed_cap = persistent_ring_capacity(uint64_t{num_rules} * roots.size());
     const uint32_t num_seed  = static_cast<uint32_t>(uint64_t{num_rules} * roots.size());
 
     // Engine-lifetime grow-only scratch; see run_persistent_match.
-    EngineState::LaunchScratch& sc =
-        engine.launch_scratch(num_rules, static_cast<uint32_t>(roots.size()));
+    EngineState::LaunchScratch& sc = engine.launch_scratch(
+        static_cast<uint32_t>(rules.size()), static_cast<uint32_t>(roots.size()));
     DeviceRule* d_rules = sc.rules;
     // Async from pageable memory, as upload_initial_states: staged on return, ordered before
     // the kernels by the stream.
@@ -2960,7 +2963,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
         /*positional_events=*/false,
         hgcommon::run_reads_rank_tuples(event_keys, transition_keys_read(dsk, dedup, state_mode)),
-        dsk.generational != 0u);
+        dsk.generational != 0u, dsk.undirected != 0u);
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();

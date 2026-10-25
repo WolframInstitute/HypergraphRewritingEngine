@@ -116,6 +116,8 @@ struct ParsedJob {
     // generation (ParallelEvolutionEngine::set_generational). The caps and draws do not apply
     // with it.
     bool generational = false;
+    // "UndirectedEdges": two-vertex edges are unordered pairs (hgcommon/undirected_core.hpp).
+    bool undirected_edges = false;
     // "EventOrderingFunction": SetReplace's ordering names, in priority order, and the order they
     // make (hgcommon::event_order_compare; 0: the option is absent). Each state's next state
     // applies its one match first in that order

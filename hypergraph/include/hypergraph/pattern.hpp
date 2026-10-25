@@ -9,6 +9,7 @@
 
 #include "types.hpp"
 #include "signature.hpp"
+#include "hgcommon/undirected_core.hpp"
 
 namespace HG_NAMESPACE {
 namespace engine {
@@ -94,6 +95,11 @@ struct alignas(8) RewriteRule {
     // Each LHS edge's signature, indexed by ORIGINAL LHS edge index (the same index space
     // as lhs[]; match_order maps into it). Filled once by compute_var_counts.
     EdgeSignature lhs_sig[MAX_PATTERN_EDGES];
+
+    // "UndirectedEdges": the flippable left edges, the orientation of this entry and the rule's
+    // automorphisms (hgcommon/undirected_core.hpp). Zero for a directed rule. Filled by
+    // expand_undirected_rules.
+    hgcommon::UndirectedRuleInfo und;
 
     // Default constructor
     RewriteRule();
@@ -212,6 +218,14 @@ public:
 
 // Convenience function
 RuleBuilder make_rule(uint16_t index = 0);
+
+// The rule table of an undirected run, for both engines: the user's rules with `und` filled, then
+// the orientation variants of each rule in turn (hgcommon/undirected_core.hpp). A variant is its
+// rule with the left edges of its mask reversed, and keeps the rule's `index`. Throws
+// std::invalid_argument for an edge of more than two vertices, a rule with more than
+// UNDIRECTED_MAX_FLIPPABLE flippable left edges, or one with more than
+// UNDIRECTED_MAX_AUTOMORPHISMS automorphisms.
+std::vector<RewriteRule> expand_undirected_rules(const std::vector<RewriteRule>& rules);
 
 // =============================================================================
 // PartialMatch

@@ -788,6 +788,10 @@ class Hypergraph {
     uint64_t event_key_mask_{~uint64_t{0}};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
     std::atomic<bool> positional_event_identity_{false};
+    // "UndirectedEdges": every canonicalisation reads two-vertex edges as unordered pairs
+    // (hgcommon::ir_sym_edge) and content identity reads them as (min, max). Set before any
+    // state is created.
+    bool undirected_{false};
 
     // Genesis state: the empty state (no edges) from which all initial states originate
     // Created lazily on first call to get_or_create_genesis_state()
@@ -1091,7 +1095,7 @@ public:
             state_canonicalization_mode_.load(std::memory_order_relaxed) ==
                 StateCanonicalizationMode::Full,
             positional_event_identity_.load(std::memory_order_relaxed), reads_rank_tuples_,
-            generational_);
+            generational_, undirected_);
         keyed_state_.store(on ? KEYED_ARMED : KEYED_OFF, std::memory_order_relaxed);
     }
     // Called by the engine before a run; re-derives keyed_state_ only when the value changes, so a
@@ -1320,6 +1324,13 @@ public:
     // requesting it disables quotient exploration (the engine reports that in warnings()).
     void set_positional_event_identity(bool on);
     bool positional_event_identity() const;
+
+    void set_undirected(bool on) {
+        if (on == undirected_) return;
+        undirected_ = on;
+        update_keyed_state();
+    }
+    bool undirected() const { return undirected_; }
 
 
     // =========================================================================

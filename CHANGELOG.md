@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `"UndirectedEdges" -> True` reads every hyperedge of two vertices as an unordered pair. A
+  left-hand edge `{x, y}` matches a hyperedge in either order, two bindings that consume the same
+  hyperedges and differ by a symmetry of the rule are one match, and the canonical hash does not
+  depend on the order of the two vertices. A rule or an initial state with a hyperedge of three or
+  more vertices is refused. Both engines give the same states and events.
+
 - `"TargetDevice" -> "GPU"` on a machine with no usable NVIDIA GPU (no device, no driver, a
   driver older than the engine needs, or a compute capability the engine has no code for) runs
   on the CPU and issues `HGEvolve::gpudev` naming the reason. It gave `$Failed` with

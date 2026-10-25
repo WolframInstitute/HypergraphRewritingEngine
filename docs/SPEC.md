@@ -12,7 +12,8 @@ records it.*
 
 - **Vertex.** An opaque identity. Vertices are only ever created or shared, never independently
   destroyed (see §2).
-- **Hyperedge.** An ordered tuple of vertices (arity ≥ 1; within-edge order is significant).
+- **Hyperedge.** An ordered tuple of vertices (arity ≥ 1; within-edge order is significant). Under
+  `UndirectedEdges` a hyperedge of two vertices is an unordered pair (§3.1).
 - **Hypergraph / state.** A finite multiset of hyperedges. Multiplicity is significant. A vertex
   "exists" in a state iff some edge references it — there is no separate vertex set.
 - **Rule.** A span `L ←l— K —r→ R` of hypergraphs: `L` the left pattern, `R` the right pattern,
@@ -60,6 +61,56 @@ reaches vertices (§2), the identification condition raises no hazard.
 
 *(Verified in `common/include/hgcommon/join_core.hpp` — one shared body for both engines: binding
 on first occurrence, equality on repeat, edge-injectivity on the join's frontier.)*
+
+### 3.1 Undirected edges — `UndirectedEdges`
+
+Under `"UndirectedEdges" -> True` a hyperedge of two vertices is an unordered pair `{u, v}`. A
+hyperedge of one vertex is unordered already. A rule or an initial state with a hyperedge of
+three or more vertices is refused.
+
+- **Binding.** A pattern edge `{a, b}` of two distinct variables binds a host edge `{u, v}` as
+  `a = u, b = v` and, when `u != v`, as `a = v, b = u` (`hgcommon::edge_orientation_mask`,
+  `bind_pattern_edge_oriented`). A self-loop `{u, u}` binds once. A pattern edge `{a, a}` binds
+  only a self-loop.
+- **Symmetric left sides.** Two bindings of one rule are one match when they bind the same set of
+  host edges and differ by a symmetry of the rule: a permutation of the left variables that maps
+  the unordered left edges onto themselves and, with a permutation of the fresh variables, the
+  unordered right edges onto themselves. Such matches consume the same edges and make the same
+  state up to the names of the fresh vertices. One match of each such set is applied
+  (`hgcommon::undirected_orbit_least`: the least by the edge ids in pattern order, then by
+  orientation). A symmetry of the left side that does not map the right side onto itself
+  leaves the two matches distinct, since they produce different edges: Gorard's rule
+  `{{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}}` applies at both ends of a path of four
+  edges.
+- **Orientation variants.** For a rule with k left edges of two distinct variables the engine
+  registers, after the user's rules, the 2^k - 1 rules with some of those edges reversed
+  (`hypergraph::expand_undirected_rules`). A match is identified by the variant of its
+  orientation, so the binding follows from its edges and its rule id on both engines, and every
+  key that reads a rule id (transition keys, ranks, held sets, generations) tells two
+  orientations apart. Events, `"RuleIndex"`, rule weights and `MatchesPerStateRule` read the
+  user's rule. `EventOrderingFunction` and `Generational` order matches of one rule and one edge
+  list by the orientation, the first reversible left edge most significant
+  (`hgcommon::undirected_order_rule_key`). A rule has at most 8 left edges of two distinct
+  variables and at most 16 symmetries.
+- **Canonical form.** The canonicalisation reads the two positions of every edge of two or more
+  vertices as interchangeable (`hgcommon::ir_sym_edge`): the refinement gives both positions one
+  class and counts the splitter's vertices among them, and a leaf writes the two labels in
+  ascending order. A state and its copy with any edges reversed have one canonical hash, and
+  states with different undirected graphs keep different canonical forms. Content identity
+  (`CanonicalizeStates -> Automatic`) reads a two-vertex edge as its two vertex labels in
+  ascending order (`hgcommon::undirected_content_flip`).
+- **Exploration.** `ExploreFromCanonicalStatesOnly` is off under `UndirectedEdges`
+  (`hgcommon::quotient_exploration_applies`, the `QuotientUndirected` warning), and keyed
+  rewrites (`hgcommon::keyed_rewrites_apply`) are off.
+- **Device.** The GPU engine builds the same rule table (`undirected_rule_table`, evolve.cu),
+  binds both orientations in the shared join, resolves each match through
+  `hgcommon::undirected_resolve` at every emission, and canonicalises with the same `sym` flag.
+
+*(Gates: `UndirectedEngine.AgreesWithTheOrientationEmulation` compares the multiway trees with the
+emulation by the 16 directed orientations of Gorard's rule and three other rules once the
+emulation's repeated matches are removed; `UndirectedHash.*` compares the canonical hash with a
+brute-force isomorphism test; `UndirectedEngine.IdenticalAcrossThreadCounts`;
+`Undirected.RunsAgreeAcrossEngines` compares the two engines.)*
 
 ## 4. Canonicalization — two axes
 

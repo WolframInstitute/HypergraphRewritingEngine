@@ -225,7 +225,7 @@ __device__ ExactHashStatus exact_hash_from(const Source& src, uint32_t ir_depth,
                                            uint32_t*& slot, uint64_t& slot_words,
                                            uint64_t& out_hash, bool ranks, bool orbits,
                                            uint32_t** out_form, uint32_t* out_form_words,
-                                           ExactHashSpans& spans, Par par) {
+                                           ExactHashSpans& spans, Par par, bool sym) {
     if (out_form) { *out_form = nullptr; *out_form_words = 0; }
     // Measure this source: exact counts, not a bound. Occurrences are summed rather than taken
     // as edges * kMaxArity, which is 8x loose on the arity-2 edges real rules produce.
@@ -272,7 +272,7 @@ __device__ ExactHashStatus exact_hash_from(const Source& src, uint32_t ir_depth,
                                            shape.generators,
                                            orbits ? orbit_buf : nullptr, nullptr,
                                            out_form ? form_buf : nullptr, nullptr, nullptr,
-                                           par);
+                                           par, sym);
     };
     hgcommon::IrResult r = run_at(1);
     if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth > 1) r = run_at(shape.depth);
@@ -348,7 +348,8 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
     ExactHashSpans spans;
     const ExactHashStatus st =
         exact_hash_from(StateSource{ds, sid}, ds.ir_depth, ds.ir_generators, arena, slot,
-                        slot_words, out_hash, ranks, orbits, out_form, out_form_words, spans, par);
+                        slot_words, out_hash, ranks, orbits, out_form, out_form_words, spans, par,
+                        ds.undirected != 0u);
     if (st != ExactHashStatus::kOk || spans.n_edges == 0) return st;
 
     // The scatters fan: each CSR slot is written by exactly one lane (flat_to_slot is
@@ -393,7 +394,8 @@ __device__ ExactHashStatus successor_exact_hash_device(
     ExactHashSpans spans;
     return exact_hash_from(CursorSource<hgcommon::SuccessorCursor<DeviceContentCursor, Rhs>>{c},
                            ds.ir_depth, ds.ir_generators, arena, slot, slot_words, out_hash,
-                           false, false, out_form, out_form_words, spans, par);
+                           false, false, out_form, out_form_words, spans, par,
+                           ds.undirected != 0u);
 }
 
 template <class Par>

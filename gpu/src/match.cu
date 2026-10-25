@@ -119,6 +119,7 @@ struct MatchJoinCtx {
     // pivot walk skips list entries outside the slice. A seeded anchor comes from the slice.
     __device__ bool usable(EdgeId) const { return true; }
     __device__ bool aborted() const { return false; }
+    __device__ bool undirected() const { return rule.und.undirected != 0u; }
 
     // The two paths are strictly EITHER/OR per pattern position: running both would enumerate a
     // candidate twice and emit a duplicate match. The pivot vertex's incident list holds each
@@ -155,7 +156,10 @@ struct MatchJoinCtx {
         c.pa = pe.arity;
         c.pk = kNoFilter;
         c.pv = 0;
-        if (pe.pivot_var != kNoPivotVar && (st.bound_mask >> pe.pivot_var) & 1u) {
+        // An undirected two-vertex pattern edge holds its pivot at either position, and the
+        // binding tests it.
+        if (pe.pivot_var != kNoPivotVar && (st.bound_mask >> pe.pivot_var) & 1u &&
+            !(undirected() && hgcommon::undirected_flippable(pe.vars, pe.arity))) {
             for (uint8_t k = 0; k < pe.arity; ++k)
                 if (pe.vars[k] == pe.pivot_var) { c.pk = k; break; }
             c.pv = st.binding[pe.pivot_var];
@@ -296,7 +300,10 @@ struct EmitCtl {
 
 // Not inlined: it is called from the join's innermost completion callback, which is
 // instantiated per rule shape, and inlined there ptxas ran out of memory assembling this file.
+// `rid` is the rule-table entry the match is emitted under and `user_rid` its user rule
+// (hgcommon::undirected_user_rule), whose weight the draw reads.
 __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id, RuleId rid,
+                                        RuleId user_rid,
                                         const uint8_t* pattern, const EdgeId* matched,
                                         uint8_t depth, uint32_t step, const EmitCtl& c) {
     EdgeId edges[kMaxPatternEdges];
@@ -326,7 +333,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
     case EmitMode::kDraw: {
         atomicMin(c.s_min_rank, static_cast<unsigned long long>(r));
         const double rate = hgcommon::sampling_rate_for_rule(
-            ds.transition_rate, ds.rule_weights, ds.num_rule_weights, rid);
+            ds.transition_rate, ds.rule_weights, ds.num_rule_weights, user_rid);
         if (!hgcommon::transition_survives(key, ds.sampling_seed, rate, rs)) return false;
         atomicExch(c.s_survived, 1u);
         return true;
@@ -392,7 +399,20 @@ __device__ __noinline__ void match_state_rule_pass(
 
     // A completed match. matched_edges is indexed by PATTERN position, not by depth.
     auto emit = [&] (const MatchJoinState& st) {
-        if (ctl && !emit_admit(ds, state_id, rid, st.pattern, st.matched, st.depth, step, *ctl)) {
+        EdgeId edges[kMaxPatternEdges];
+        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
+        for (uint8_t d = 0; d < st.depth; ++d) edges[st.pattern[d]] = st.matched[d];
+        // Undirected: the match under its orientation variant, or none when an automorphic
+        // match is emitted in its place (hgcommon::undirected_resolve).
+        uint32_t vid = rid;
+        if (rule.und.undirected &&
+            !hgcommon::undirected_resolve(
+                rule.und, rid, rule.num_lhs_edges, edges, st.binding,
+                hgcommon::undirected_mask_of_positions(rule.und, st.reversed_mask),
+                [&](EdgeId e) { return ctx.verts[ctx.edges[e].vertex_offset]; }, vid))
+            return;
+        if (ctl && !emit_admit(ds, state_id, vid, rid, st.pattern, st.matched, st.depth, step,
+                               *ctl)) {
             return;
         }
         const uint32_t idx = out.claim();
@@ -400,15 +420,12 @@ __device__ __noinline__ void match_state_rule_pass(
             ds.errors.record(ErrorKind::kMatchPoolFull);
             return;
         }
-        EdgeId edges[kMaxPatternEdges];
-        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
-        for (uint8_t d = 0; d < st.depth; ++d) edges[st.pattern[d]] = st.matched[d];
         if (out_rank)
-            out_rank[idx] = step_candidate_word_device(ds, state_id, rid, edges, st.depth,
+            out_rank[idx] = step_candidate_word_device(ds, state_id, vid, edges, st.depth,
                                                        step + 1u, stage.count ? stage.ids : nullptr,
                                                        stage.count);
         MatchRecord& m = out.at(idx);
-        m.rule_id   = rid;
+        m.rule_id   = vid;
         m.state_id  = state_id;
         m.step      = step;
         m.num_edges = st.depth;
@@ -587,12 +604,16 @@ __device__ __noinline__ void match_state_parent_capped(
     if (threadIdx.x == 0) {
         for (uint32_t i = 0; i < n; ++i) b.kept[i] = 1u;
         if (cap_k != 0u) {
+            // A candidate's rule is its user rule (hgcommon::undirected_user_rule).
+            auto user_of = [&](uint32_t i) {
+                return hgcommon::undirected_user_rule(rules[b.rules[i]].und, b.rules[i]);
+            };
             for (uint32_t r = 0; r < ds.num_rules; ++r) {
                 const hgcommon::RankCut cut = hgcommon::rank_cut_where(
                     n, cap_k, [&](uint32_t i) { return b.ranks[i]; },
-                    [&](uint32_t i) { return b.rules[i] == r; });
+                    [&](uint32_t i) { return user_of(i) == r; });
                 for (uint32_t i = 0; i < n; ++i)
-                    if (b.rules[i] == r && !hgcommon::rank_cut_keeps(cut, b.ranks[i]))
+                    if (user_of(i) == r && !hgcommon::rank_cut_keeps(cut, b.ranks[i]))
                         b.kept[i] = 0u;
             }
         }
@@ -690,10 +711,14 @@ __device__ __noinline__ void match_state_generation(
         for (uint32_t i = 0; i < m; ++i) b.order[i] = i;
         const uint32_t event_order =
             ds.event_order != 0u ? ds.event_order : hgcommon::kStandardEventOrder;
+        // "RuleIndex" reads the user rule, then the orientation (hgcommon::undirected_order_rule_key).
+        auto order_key = [&](uint32_t i) {
+            return hgcommon::undirected_order_rule_key(rules[b.rules[i]].und, b.rules[i]);
+        };
         hgcommon::ir_heapsort_idx(b.order, m, [&](uint32_t x, uint32_t y) {
             const int c = hgcommon::event_order_compare(event_order, edges_at(x), count_at(x),
-                                                        b.rules[x], edges_at(y), count_at(y),
-                                                        b.rules[y]);
+                                                        order_key(x), edges_at(y), count_at(y),
+                                                        order_key(y));
             if (c != 0) return c;
             return x < y ? -1 : (x > y ? 1 : 0);
         });
@@ -782,7 +807,8 @@ __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRul
             const hgcommon::SuccessorCursor<DeviceContentCursor, DeviceRhsEdge> c(
                 DeviceContentCursor(ds, parent), consumed, nc, rule.rhs, rule.num_rhs_edges,
                 rule.new_var_mask, binding, 0u);
-            key = hgcommon::content_hash_of(c);
+            key = hgcommon::content_hash_of(
+                hgcommon::undirected_content_cursor(c, ds.undirected != 0u));
         }
         key = __shfl_sync(0xffffffffu, static_cast<unsigned long long>(key), 0);
         out = hgcommon::SuccessorIdentity{key, 0};
@@ -1160,6 +1186,7 @@ DeviceRule make_device_rule(const RewriteRule& rule) {
         dst.arity = static_cast<uint8_t>(src.size());
         for (uint8_t i = 0; i < dst.arity; ++i) dst.vars[i] = src[i];
     }
+    d.und = rule.und;
     return d;
 }
 

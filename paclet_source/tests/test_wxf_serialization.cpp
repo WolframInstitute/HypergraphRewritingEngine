@@ -7089,6 +7089,40 @@ TEST(GenerationalJob, AGenerationalJobGivesEachGenerationsEvents) {
     EXPECT_FALSE(reply_mentions(out, "runs on the CPU engine"));
 }
 
+// "UndirectedEdges" through the job envelope: {{1,2}} -> {{1,2},{2,3}} from {{1,2}} binds the
+// edge in both orders, so one step makes 2 events where the directed run makes 1, and the
+// contraction {{1,2},{2,3}} -> {{1,3}} from the path {{1,2},{3,2}} makes 1 event (its two
+// bindings are one match under the rule's reversal) where the directed run makes none. An edge
+// of three vertices is refused.
+TEST(UndirectedJob, AnUndirectedJobBindsEdgesInBothOrders) {
+    auto opts = [](bool undirected) {
+        return [undirected](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents"});
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string("UndirectedEdges"));
+            ww.write_symbol(undirected ? "True" : "False");
+        };
+    };
+    HostBridge host;
+    for (const bool undirected : {false, true}) {
+        const auto grow = run_rewriting_core(
+            build_input({{{1, 2}}}, {{1, 2}}, {{1, 2}, {2, 3}}, 1, opts(undirected), 2), host);
+        EXPECT_EQ(read_int_key(grow, "NumEvents"), undirected ? 2 : 1);
+        const auto contract = run_rewriting_core(
+            build_input({{{1, 2}, {3, 2}}}, {{1, 2}, {2, 3}}, {{1, 3}}, 1, opts(undirected), 2),
+            host);
+        EXPECT_EQ(read_int_key(contract, "NumEvents"), undirected ? 1 : 0);
+    }
+    try {
+        run_rewriting_core(build_input({{{1, 2, 3}}}, {{1, 2, 3}}, {{1, 2}}, 1, opts(true), 2),
+                           host);
+        ADD_FAILURE() << "an edge of three vertices was accepted";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("more than two vertices"), std::string::npos)
+            << e.what();
+    }
+}
+
 #if defined(__linux__) && !defined(HG_GPU_BACKEND)
 // A run on the CPU engine that exhausts its memory returns the part it built, with the truncation
 // warning that HGEvolve reports as HGEvolve::overflow. The device's pools are sized up front and

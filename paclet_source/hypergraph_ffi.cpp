@@ -462,6 +462,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 // Each step one generation: the disjoint matches in the
                                 // standard order
                                 req.generational = value;
+                            } else if (option_key == "UndirectedEdges") {
+                                // Two-vertex edges are unordered pairs
+                                req.undirected_edges = value;
                             } else {
                                 // AN OPTION THIS BUILD DOES NOT KNOW IS NAMED, NOT DROPPED.
                                 // Every branch above matches a specific key, so reaching here
@@ -542,6 +545,43 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
 //     at least MAX_VARS (32), or a left-hand side is empty.
 // An edge of arity 0 is refused rather than dropped: dropping it evolves a different
 // hypergraph or rule than the caller wrote.
+// The job's rules in the engine's form, in the job's order. Every edge is held to the limits
+// (edge count, arity, variable range) by refuse_invalid_input before the engine reads them: a
+// pattern variable is an index into VariableBinding's MAX_VARS-entry array and a bit of its
+// 32-bit bound_mask, so one out of range would write out of bounds.
+static std::vector<hypergraph::RewriteRule> build_rules(const hgffi::ParsedJob& req) {
+    std::vector<hypergraph::RewriteRule> rules;
+    uint16_t rule_index = 0;
+    for (const auto& [rule_name, rule_data] : req.parsed_rules_raw) {
+        hypergraph::RewriteRule rule;
+        rule.index = rule_index++;
+        uint8_t max_lhs_var = 0;
+        uint8_t max_rhs_var = 0;
+        auto parse_side = [&](const auto& edges, hypergraph::PatternEdge* out,
+                              uint8_t& num_edges, uint8_t& max_var) {
+            num_edges = 0;
+            for (const auto& edge : edges) {
+                if (num_edges >= hypergraph::MAX_PATTERN_EDGES) break;
+                hypergraph::PatternEdge& pe = out[num_edges++];
+                pe.arity = 0;
+                for (int64_t v : edge) {
+                    if (pe.arity >= hypergraph::MAX_ARITY) break;
+                    pe.vars[pe.arity++] = static_cast<uint8_t>(v);
+                    if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
+                }
+            }
+        };
+        parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var);
+        parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var);
+        rule.num_lhs_vars = max_lhs_var + 1;
+        rule.num_rhs_vars = max_rhs_var + 1;
+        rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
+        rule.compute_var_counts();
+        rules.push_back(rule);
+    }
+    return rules;
+}
+
 static void refuse_invalid_input(const hgffi::ParsedJob& req) {
     if (!req.state_cost_error.empty()) throw std::runtime_error(req.state_cost_error);
     if (req.initial_states_raw.empty())
@@ -589,6 +629,22 @@ static void refuse_invalid_input(const hgffi::ParsedJob& req) {
             }
         }
     }
+    if (req.undirected_edges) {
+        for (size_t si = 0; si < req.initial_states_raw.size(); ++si)
+            for (size_t ei = 0; ei < req.initial_states_raw[si].size(); ++ei)
+                if (req.initial_states_raw[si][ei].size() > 2)
+                    throw std::runtime_error(
+                        "\"UndirectedEdges\" -> True: initial state " + std::to_string(si) +
+                        " edge " + std::to_string(ei) +
+                        " has more than two vertices; undirected edges have one or two");
+        // The rule table both engines build (hypergraph::expand_undirected_rules), so its refusals
+        // reach the caller before either engine starts.
+        try {
+            (void)hypergraph::expand_undirected_rules(build_rules(req));
+        } catch (const std::invalid_argument& e) {
+            throw std::runtime_error(e.what());
+        }
+    }
 }
 
 // "EventOrderingFunction": the order its names make (hgcommon::event_order_compare), 0 when the
@@ -610,7 +666,11 @@ static uint32_t parse_event_ordering(const hgffi::ParsedJob& req) {
             throw std::runtime_error(std::string(kRefused) + "; got \"" + name + "\"");
         order = hgcommon::event_order_append(order, code);
     }
-    if (!hgcommon::event_order_total(order, static_cast<uint32_t>(req.parsed_rules_raw.size())))
+    // Under "UndirectedEdges" the orientations of a rule are told apart as rules are.
+    const size_t num_rules = req.undirected_edges
+                                 ? hypergraph::expand_undirected_rules(build_rules(req)).size()
+                                 : req.parsed_rules_raw.size();
+    if (!hgcommon::event_order_total(order, static_cast<uint32_t>(num_rules)))
         throw std::runtime_error(std::string(kRefused) + "; the names given leave matches tied");
     if (req.generational)
         throw std::runtime_error(
@@ -741,6 +801,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         job.generational = req.generational;
+        job.undirected_edges = req.undirected_edges;
         job.event_ordering = req.event_ordering;
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
@@ -796,46 +857,12 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     engine.set_generational(req.generational);
     engine.set_event_ordering(req.event_ordering);
 
-    // Convert rules to unified format
-    uint16_t rule_index = 0;
-    for (const auto& [rule_name, rule_data] : req.parsed_rules_raw) {
-        hypergraph::RewriteRule rule;
-        rule.index = rule_index++;
-
-        // Track max variable seen for variable counting
-        uint8_t max_lhs_var = 0;
-        uint8_t max_rhs_var = 0;
-
-        // One side of the rule. refuse_invalid_input has already held every edge to the
-        // limits (edge count, arity, variable range): a pattern variable is an index into
-        // VariableBinding's MAX_VARS-entry array and a bit of its 32-bit bound_mask, so one
-        // out of range would write out of bounds.
-        auto parse_side = [&](const auto& edges, hypergraph::PatternEdge* out,
-                              uint8_t& num_edges, uint8_t& max_var) {
-            num_edges = 0;
-            for (const auto& edge : edges) {
-                hypergraph::PatternEdge& pe = out[num_edges++];
-                pe.arity = 0;
-                for (int64_t v : edge) {
-                    pe.vars[pe.arity++] = static_cast<uint8_t>(v);
-                    if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
-                }
-            }
-        };
-
-        parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var);
-        parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var);
-
-        rule.num_lhs_vars = max_lhs_var + 1;
-        rule.num_rhs_vars = max_rhs_var + 1;
-        rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
-
-        // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the engine
-        // gives the resulting empty state a canonical hash of its own. An empty LHS is
-        // refused by refuse_invalid_input.
-        engine.add_rule(rule);
-    }
-
+    // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the engine gives
+    // the resulting empty state a canonical hash of its own. An empty LHS is refused by
+    // refuse_invalid_input.
+    for (const hypergraph::RewriteRule& rule : build_rules(req)) engine.add_rule(rule);
+    hg.set_undirected(req.undirected_edges);
+    engine.set_undirected(req.undirected_edges);
 
     // GeodesicSources are given in the user's labels; initial_vertex_map translates them at the
     // geodesic block (initial vertices keep their engine ids through the evolution).
@@ -1128,8 +1155,15 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     "\"CanonicalizeEvents\" -> Automatic needs \"CanonicalizeStates\" -> Full. "
                     "Without it the causal relation is computed from the individual edges."});
         }
+        if (!held_session && req.explore_from_canonical_states_only && req.undirected_edges) {
+            req.ffi_warnings.push_back({"QuotientUndirected", 1,
+                "\"ExploreFromCanonicalStatesOnly\" -> True does not apply with "
+                "\"UndirectedEdges\" -> True: every state is expanded."});
+            req.explore_from_canonical_states_only = false;
+        }
         if (!held_session && req.explore_from_canonical_states_only &&
-            !hgcommon::quotient_exploration_applies(true, true, effective_max_states_per_step(req))) {
+            !hgcommon::quotient_exploration_applies(true, true, effective_max_states_per_step(req),
+                                                    false)) {
             req.ffi_warnings.push_back({"QuotientStepCap", 1,
                 "\"ExploreFromCanonicalStatesOnly\" -> True does not apply with "
                 "\"MaxStatesPerStep\" or with \"UniformRandom\" and \"MatchesPerStep\": every "
@@ -1566,7 +1600,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     if (exact_hash == 0 && !edges.empty()) {
                         std::vector<std::vector<hypergraph::VertexId>> contents;
                         for (const auto& e : edges) contents.emplace_back(e.second.begin(), e.second.end());
-                        hypergraph::IRCanonicalizer ir;
+                        hypergraph::IRCanonicalizer ir(req.undirected_edges);
                         exact_hash = ir.compute_canonical_hash(contents);
                     }
                     exact_hash = hgmarshal::reported_state_hash(edges.empty(), exact_hash);
@@ -1584,7 +1618,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                         static_cast<int64_t>(reported_step(sid)),
                         req.include_canonical_hashes, static_cast<int64_t>(exact_hash),
                         req.include_vertex_curvature, nullptr, req.statistics_graph},
-                    full_canonicalization, std::move(edges));
+                    full_canonicalization, req.undirected_edges, std::move(edges));
             });
             ++streamed_top_sections;
         }
@@ -1945,7 +1979,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     out.emplace_back(static_cast<int64_t>(eid),
                                      std::vector<uint32_t>(edge.vertices, edge.vertices + edge.arity));
                 });
-                hgmarshal::state_record_edges(full_canonicalization, out);
+                hgmarshal::state_record_edges(full_canonicalization, req.undirected_edges, out);
             };
             auto state_fields = [&](hypergraph::StateId sid, hgmarshal::GraphStateFields& f) {
                 f.id = static_cast<int64_t>(sid);

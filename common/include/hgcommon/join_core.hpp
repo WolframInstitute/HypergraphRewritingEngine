@@ -57,10 +57,14 @@ namespace common {
 template <uint32_t MaxEdges, uint32_t MaxVars, typename EdgeIdT, typename VertexIdT>
 struct JoinState {
     static constexpr uint32_t kMaxEdges = MaxEdges;
+    using EdgeIdType = EdgeIdT;
     EdgeIdT   matched[MaxEdges];   // the edge bound at each DEPTH
     uint8_t   pattern[MaxEdges];   // the pattern edge bound at each depth
     VertexIdT binding[MaxVars];
     uint32_t  bound_mask = 0;
+    // Bit p set when pattern edge p is bound with its data edge reversed (edge_orientation_mask);
+    // read for the positions bound so far.
+    uint32_t  reversed_mask = 0;
     uint8_t   depth = 0;
 
     // A reset frame has NO bound variables and no live values. The values matter as well as the
@@ -150,6 +154,13 @@ HG_HD inline void join_unbind_since(St& st, uint32_t saved_mask) {
 //   void                cursor_open(uint8_t p, const St& st, Cursor& c) const
 //   bool                cursor_next(Cursor& c, Cand& out) const   -- false when exhausted
 //   bool                aborted() const
+//   bool                undirected() const                  -- two-vertex edges bind both ways
+//
+// UNDIRECTED EDGES. A candidate is bound in the orientations edge_orientation_mask admits under
+// the binding so far: a bound variable fixes one. A candidate with two is bound in orientation 0
+// and, once everything below it is explored, in orientation 1, before the cursor moves on; the
+// second attempt reads the edge again through candidate_of(st.matched[depth]). One bit per depth
+// marks the pending second attempt.
 //
 // A CANDIDATE IS WHATEVER THE ENUMERATOR PRODUCES, not necessarily an edge id. Enumerating a
 // candidate already reads its edge, so it hands that read to the join rather than having the
@@ -183,6 +194,8 @@ HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
     Cursor cur[St::kMaxEdges];
     uint8_t at[St::kMaxEdges];         // the pattern position each depth binds
     uint32_t saved[St::kMaxEdges];     // the mask before each depth's binding
+    uint32_t flip_pending = 0;         // bit d: orientation 1 of st.matched[d] is pending
+    const bool undirected = ctx.undirected();
     {
         const uint8_t p = next_position();
         if (p == 0xFFu) return;        // every position bound but depth disagreed: emit nothing
@@ -197,28 +210,45 @@ HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
             return;
         }
         Cand cand;
-        if (!ctx.cursor_next(cur[d], cand)) {
-            if (d == base) return;
-            --d;
-            --st.depth;
-            join_unbind_since(st, saved[d]);
-            continue;
+        uint8_t orient = 0;
+        const uint8_t p = at[d];
+        if (undirected && ((flip_pending >> d) & 1u)) {
+            flip_pending &= ~(1u << d);
+            cand = ctx.candidate_of(st.matched[d]);
+            orient = 1;
+        } else {
+            if (!ctx.cursor_next(cur[d], cand)) {
+                if (d == base) return;
+                --d;
+                --st.depth;
+                join_unbind_since(st, saved[d]);
+                continue;
+            }
+            const auto cid = ctx.candidate_id(cand);
+            if (!ctx.usable(cid)) continue;
+            if (st.already_taken(cid)) continue;      // edge-injective
+            if (undirected) {
+                const uint8_t omask = edge_orientation_mask(
+                    true, ctx.edge_vertices(cand), ctx.edge_arity(cand), ctx.pattern_vars(p),
+                    ctx.pattern_arity(p), st.binding, st.bound_mask);
+                if (omask == 0) continue;
+                orient = (omask & 1u) ? uint8_t(0) : uint8_t(1);
+                if (omask == 3u) flip_pending |= 1u << d;
+            }
         }
         const auto id = ctx.candidate_id(cand);
-        if (!ctx.usable(id)) continue;
-        if (st.already_taken(id)) continue;           // edge-injective
+        st.matched[d] = id;
 
-        const uint8_t p = at[d];
         saved[d] = st.bound_mask;
-        if (!bind_pattern_edge(ctx.edge_vertices(cand), ctx.edge_arity(cand),
-                               ctx.pattern_vars(p), ctx.pattern_arity(p),
-                               st.binding, st.bound_mask)) {
+        if (!bind_pattern_edge_oriented(ctx.edge_vertices(cand), ctx.edge_arity(cand), orient,
+                                        ctx.pattern_vars(p), ctx.pattern_arity(p),
+                                        st.binding, st.bound_mask)) {
             // bind_pattern_edge may have bound some variables before hitting the mismatch.
             join_unbind_since(st, saved[d]);
             continue;
         }
+        if (undirected) st.reversed_mask = (st.reversed_mask & ~(1u << p)) | (uint32_t{orient} << p);
         st.pattern[d] = p;
-        st.matched[d] = id;
         ++st.depth;
 
         const uint8_t next = st.depth == n ? 0xFFu : next_position();
@@ -242,24 +272,39 @@ HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
 // The anchor may sit at ANY position, which is why join_dfs takes the next position as the
 // first UNBOUND one in the schedule rather than as order_at(depth): seeding at position 2 must
 // still bind position 0, and taking order_at(1) next would leave it unbound forever.
+//
+// An anchor with two orientations seeds the join twice. Returns whether the anchor bound in
+// either.
 template <typename Ctx, typename St, typename Emit, typename EdgeIdT>
 HG_HD bool join_seed(const Ctx& ctx, St& st, EdgeIdT anchor, uint8_t at_pattern, Emit&& emit) {
     st.reset();
     if (!ctx.usable(anchor)) return false;
 
     const auto cand = ctx.candidate_of(anchor);
-    const uint32_t saved = st.bound_mask;
-    if (!bind_pattern_edge(ctx.edge_vertices(cand), ctx.edge_arity(cand),
-                           ctx.pattern_vars(at_pattern), ctx.pattern_arity(at_pattern),
-                           st.binding, st.bound_mask)) {
-        join_unbind_since(st, saved);
-        return false;
+    const uint8_t omask =
+        edge_orientation_mask(ctx.undirected(), ctx.edge_vertices(cand), ctx.edge_arity(cand),
+                              ctx.pattern_vars(at_pattern), ctx.pattern_arity(at_pattern),
+                              st.binding, st.bound_mask);
+    bool bound = false;
+    for (uint8_t orient = 0; orient < 2; ++orient) {
+        if (!((omask >> orient) & 1u)) continue;
+        if (bound) st.reset();
+        const uint32_t saved = st.bound_mask;
+        if (!bind_pattern_edge_oriented(ctx.edge_vertices(cand), ctx.edge_arity(cand), orient,
+                                        ctx.pattern_vars(at_pattern),
+                                        ctx.pattern_arity(at_pattern), st.binding,
+                                        st.bound_mask)) {
+            join_unbind_since(st, saved);
+            continue;
+        }
+        st.reversed_mask = uint32_t{orient} << at_pattern;
+        st.pattern[0] = at_pattern;
+        st.matched[0] = anchor;
+        st.depth = 1;
+        join_dfs(ctx, st, emit);
+        bound = true;
     }
-    st.pattern[0] = at_pattern;
-    st.matched[0] = anchor;
-    st.depth = 1;
-    join_dfs(ctx, st, emit);
-    return true;
+    return bound;
 }
 
 }  // namespace common

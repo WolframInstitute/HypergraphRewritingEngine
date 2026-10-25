@@ -14,6 +14,7 @@
 #include "hypergraph/rule_analysis.hpp"
 
 #include <algorithm>
+#include <type_traits>
 #include <array>
 #include <cstring>
 #include <functional>
@@ -928,9 +929,9 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
     if (k == 0) return;
     // Keep the first k of each rule and the candidates tied with the k-th
     // (hgcommon::cap_keep_count over each rule's subsequence); the list stays in rank order.
-    std::vector<std::vector<uint32_t>> of_rule(rules_.size());
+    std::vector<std::vector<uint32_t>> of_rule(num_base_rules_);
     for (size_t i = 0; i < out.size(); ++i) {
-        const uint16_t rule = out[i].match->rule_index();
+        const uint16_t rule = user_rule_of(out[i].match->rule_index());
         if (rule < of_rule.size()) of_rule[rule].push_back(static_cast<uint32_t>(i));
     }
     std::vector<uint8_t> keep(out.size(), 0);
@@ -1202,8 +1203,9 @@ void ParallelEvolutionEngine::generation_at_drain(StateId state, uint32_t step) 
         const MatchRecord& a = *own[x];
         const MatchRecord& b = *own[y];
         return hgcommon::event_order_before(hgcommon::kStandardEventOrder, a.matched_edges(),
-                                            a.num_edges(), a.rule_index(), b.matched_edges(),
-                                            b.num_edges(), b.rule_index());
+                                            a.num_edges(), order_rule_key(a.rule_index()),
+                                            b.matched_edges(), b.num_edges(),
+                                            order_rule_key(b.rule_index()));
     });
     std::unordered_set<EdgeId> used;
     std::vector<MatchRecord> taken;
@@ -1224,7 +1226,8 @@ void ParallelEvolutionEngine::ordered_at_drain(StateId state, uint32_t step) {
     HeldMatches* set = join->held;
     join->held = nullptr;
     if (!set) {
-        set = new HeldMatches(max_lhs_edges_, true, event_ordering_);
+        set = new HeldMatches(max_lhs_edges_, true, event_ordering_,
+                              undirected_ ? order_rule_keys_.data() : nullptr);
         if (auto stored = state_matches_.lookup(id_key(state)); stored.has_value())
             (*stored)->for_each([&](const MatchRecord& m) {
                 if (!m.is_forwarded)
@@ -1779,6 +1782,17 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
 }
 
 void ParallelEvolutionEngine::configure_identity_and_quotient() {
+    // "UndirectedEdges": the orientation variants follow the user's rules (expand_undirected_rules),
+    // once, before any match is found.
+    if (undirected_ && !rules_expanded_) {
+        rules_ = expand_undirected_rules(rules_);
+        rules_expanded_ = true;
+        order_rule_keys_.resize(rules_.size());
+        for (size_t t = 0; t < rules_.size(); ++t)
+            order_rule_keys_[t] = order_rule_key(static_cast<uint16_t>(t));
+    }
+    hg_->set_undirected(undirected_);
+
     // Positional identity reads ranks from each raw state's own canonical labelling, and the
     // quotient never materialises raw presentations -- the two cannot agree by construction.
     // The quotient is an optimisation, so the REQUEST wins: full capture runs and the disabled
@@ -1824,7 +1838,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // under None or Automatic states or under MaxStatesPerStep: every state is expanded. The FFI
     // reports it (QuotientNeedsFull, QuotientStepCap).
     explore_from_canonical_states_only_ = hgcommon::quotient_exploration_applies(
-        explore_from_canonical_states_only_, full_states, max_states_per_step_);
+        explore_from_canonical_states_only_, full_states, max_states_per_step_, undirected_);
     // "Generational" and "EventOrderingFunction" expand every state of their histories.
     if (single_history()) explore_from_canonical_states_only_ = false;
     rank_reads_step_ = hgcommon::rank_reads_step(full_states, max_states_per_step_);
@@ -2291,7 +2305,7 @@ void ParallelEvolutionEngine::execute_match_task(
         // matches arrive through inherit_from_parent, at the parent's drain.
         if (task_based_matching_) {
             // Task-based delta matching: spawn SCAN tasks for each rule
-            for (uint16_t r = 0; r < rules_.size(); ++r) {
+            for (uint16_t r = 0; r < num_base_rules_; ++r) {
                 ScanTaskData scan_data;
                 scan_data.state = state;
                 scan_data.rule_index = r;
@@ -2309,7 +2323,7 @@ void ParallelEvolutionEngine::execute_match_task(
         // Synchronous delta matching
         DEBUG_LOG("SYNC_DELTA_MATCH state=%u step=%u rules=%zu produced=%u",
                   state, step, rules_.size(), ctx.num_produced);
-        for (uint16_t r = 0; r < rules_.size(); ++r) {
+        for (uint16_t r = 0; r < num_base_rules_; ++r) {
             find_delta_matches(
                 rules_[r], r, state, s.edges, cands, get_edge, get_signature, on_match,
                 ctx.produced_edges, ctx.num_produced
@@ -2321,7 +2335,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         if (task_based_matching_) {
             // Task-based matching: spawn SCAN tasks for each rule
-            for (uint16_t r = 0; r < rules_.size(); ++r) {
+            for (uint16_t r = 0; r < num_base_rules_; ++r) {
                 ScanTaskData scan_data;
                 scan_data.state = state;
                 scan_data.rule_index = r;
@@ -2336,7 +2350,7 @@ void ParallelEvolutionEngine::execute_match_task(
         // Synchronous matching
         DEBUG_LOG("SYNC_MATCH state=%u step=%u rules=%zu",
                   state, step, rules_.size());
-        for (uint16_t r = 0; r < rules_.size(); ++r) {
+        for (uint16_t r = 0; r < num_base_rules_; ++r) {
             find_matches(rules_[r], r, state, s.edges, cands, get_edge, get_signature, on_match);
         }
     }
@@ -2424,27 +2438,38 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 if (!signature_compatible(data_sig, rule.lhs_sig[pos])) continue;
                 HG_STAT(match_join_for(data.state)->trace.fetch_or(8u, std::memory_order_relaxed));
 
-                // Validate candidate
-                VariableBinding binding;
-                if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, binding)) continue;
-                HG_STAT(match_join_for(data.state)->trace.fetch_or(16u, std::memory_order_relaxed));
+                const VariableBinding unbound;
+                const uint8_t omask =
+                    rule.und.undirected
+                        ? hgcommon::edge_orientation_mask(true, edge.vertices, edge.arity,
+                                                          pattern_edge.vars, pattern_edge.arity,
+                                                          unbound.bindings, unbound.bound_mask)
+                        : uint8_t(1);
+                for (uint8_t orient = 0; orient < 2; ++orient) {
+                    if (!((omask >> orient) & 1u)) continue;
+                    VariableBinding binding;
+                    if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, binding,
+                                            orient))
+                        continue;
+                    HG_STAT(match_join_for(data.state)->trace.fetch_or(16u, std::memory_order_relaxed));
 
-                // Create EXPAND task data
-                ExpandTaskData expand_data;
-                expand_data.state = data.state;
-                expand_data.rule_index = data.rule_index;
-                expand_data.num_pattern_edges = rule.num_lhs_edges;
-                expand_data.matched_edges[0] = produced;
-                expand_data.match_order[0] = pos;
-                expand_data.num_matched = 1;
-                expand_data.binding = binding;
-                expand_data.step = data.step;
+                    ExpandTaskData expand_data;
+                    expand_data.state = data.state;
+                    expand_data.rule_index = data.rule_index;
+                    expand_data.num_pattern_edges = rule.num_lhs_edges;
+                    expand_data.matched_edges[0] = produced;
+                    expand_data.match_order[0] =
+                        static_cast<uint8_t>(pos | (orient ? kTaskReversed : 0u));
+                    expand_data.num_matched = 1;
+                    expand_data.binding = binding;
+                    expand_data.step = data.step;
 
-                if (rule.num_lhs_edges == 1) {
-                    MatchRecord m;
-                    if (complete_match(expand_data, m)) completed.push_back(m);
-                } else {
-                    submit_expand_task(expand_data);
+                    if (rule.num_lhs_edges == 1) {
+                        MatchRecord m;
+                        if (complete_match(expand_data, m)) completed.push_back(m);
+                    } else {
+                        submit_expand_task(expand_data);
+                    }
                 }
             }
         }
@@ -2454,36 +2479,55 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         const PatternEdge& first_edge = rule.lhs[first_pidx];
         const EdgeSignature& first_sig = rule.lhs_sig[first_pidx];
 
-        // Generate candidates for first edge
+        // Generate candidates for first edge. A directed pattern edge binds in orientation 0, an
+        // undirected two-vertex one in the orientations edge_orientation_mask admits: two
+        // instances of the walk, so the directed one tests nothing.
         const VariableBinding unbound;
-        generate_candidates(
+        auto walk = [&](auto unordered_tag) {
+          constexpr bool kUnordered = decltype(unordered_tag)::value;
+          generate_candidates(
             first_edge, first_sig,
-            unbound.bindings, unbound.bound_mask, s.edges, cands, get_edge,
+            unbound.bindings, unbound.bound_mask, s.edges, cands, get_edge, kUnordered,
             [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
 
-                VariableBinding binding;
-                if (!validate_candidate(edge.vertices, edge.arity, first_edge, binding)) return;
+                uint8_t omask = 1u;
+                if constexpr (kUnordered)
+                    omask = hgcommon::edge_orientation_mask(true, edge.vertices, edge.arity,
+                                                            first_edge.vars, first_edge.arity,
+                                                            unbound.bindings, unbound.bound_mask);
+                for (uint8_t orient = 0; omask != 0; ++orient, omask >>= 1) {
+                    if (!(omask & 1u)) continue;
+                    VariableBinding binding;
+                    if (!validate_candidate(edge.vertices, edge.arity, first_edge, binding,
+                                            orient))
+                        continue;
 
-                // Create EXPAND task data
-                ExpandTaskData expand_data;
-                expand_data.state = data.state;
-                expand_data.rule_index = data.rule_index;
-                expand_data.num_pattern_edges = rule.num_lhs_edges;
-                expand_data.matched_edges[0] = candidate;
-                expand_data.match_order[0] = first_pidx;
-                expand_data.num_matched = 1;
-                expand_data.binding = binding;
-                expand_data.step = data.step;
+                    ExpandTaskData expand_data;
+                    expand_data.state = data.state;
+                    expand_data.rule_index = data.rule_index;
+                    expand_data.num_pattern_edges = rule.num_lhs_edges;
+                    expand_data.matched_edges[0] = candidate;
+                    expand_data.match_order[0] =
+                        static_cast<uint8_t>(first_pidx | (orient ? kTaskReversed : 0u));
+                    expand_data.num_matched = 1;
+                    expand_data.binding = binding;
+                    expand_data.step = data.step;
 
-                if (rule.num_lhs_edges == 1) {
-                    MatchRecord m;
-                    if (complete_match(expand_data, m)) completed.push_back(m);
-                } else {
-                    submit_expand_task(expand_data);
+                    if (rule.num_lhs_edges == 1) {
+                        MatchRecord m;
+                        if (complete_match(expand_data, m)) completed.push_back(m);
+                    } else {
+                        submit_expand_task(expand_data);
+                    }
                 }
             }
-        );
+          );
+        };
+        if (rule.und.undirected && hgcommon::undirected_flippable(first_edge.vars, first_edge.arity))
+            walk(std::true_type{});
+        else
+            walk(std::false_type{});
     }
 
     dispatch_expansion(data.state, data.step, completed.data(), completed.size());
@@ -2533,7 +2577,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     // matching, which is why this cannot be match_order[num_matched].
     uint32_t matched_mask = 0;
     for (uint8_t i = 0; i < data.num_matched; ++i) {
-        matched_mask |= (1u << data.match_order[i]);
+        matched_mask |= (1u << (data.match_order[i] & kTaskPattern));
     }
     const uint8_t pattern_idx = hgcommon::join_next_position(
         [&](uint8_t k) { return rule.match_order[k]; }, rule.num_lhs_edges, matched_mask,
@@ -2553,10 +2597,16 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     SVec<MatchRecord> completed;
     [[maybe_unused]] size_t seen = 0;   // stats builds: candidates the walk handed over
 
-    // Generate candidates
-    generate_candidates(
+    // A directed pattern edge binds in orientation 0, an undirected two-vertex one in the
+    // orientations edge_orientation_mask admits: two instances of the walk, so the directed one
+    // tests nothing.
+    const bool unordered = rule.und.undirected != 0 &&
+                           hgcommon::undirected_flippable(pattern_edge.vars, pattern_edge.arity);
+    auto walk = [&](auto unordered_tag) {
+      constexpr bool kUnordered = decltype(unordered_tag)::value;
+      generate_candidates(
         pattern_edge, pattern_sig,
-        data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge,
+        data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge, kUnordered,
         [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;
 
@@ -2565,24 +2615,36 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
             HG_STAT(++seen);
             HG_STAT(match_join_for(data.state)->trace.fetch_or(512u, std::memory_order_relaxed));
 
-            VariableBinding extended = data.binding;
-            if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended)) return;
+            uint8_t omask = 1u;
+            if constexpr (kUnordered)
+                omask = hgcommon::edge_orientation_mask(
+                    true, edge.vertices, edge.arity, pattern_edge.vars, pattern_edge.arity,
+                    data.binding.bindings, data.binding.bound_mask);
+            for (uint8_t orient = 0; omask != 0; ++orient, omask >>= 1) {
+                if (!(omask & 1u)) continue;
+                VariableBinding extended = data.binding;
+                if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended, orient))
+                    continue;
 
-            // Create new EXPAND task with extended match
-            ExpandTaskData new_data = data;
-            new_data.matched_edges[new_data.num_matched] = candidate;
-            new_data.match_order[new_data.num_matched] = pattern_idx;
-            new_data.num_matched++;
-            new_data.binding = extended;
+                ExpandTaskData new_data = data;
+                new_data.matched_edges[new_data.num_matched] = candidate;
+                new_data.match_order[new_data.num_matched] =
+                    static_cast<uint8_t>(pattern_idx | (orient ? kTaskReversed : 0u));
+                new_data.num_matched++;
+                new_data.binding = extended;
 
-            if (new_data.is_complete()) {
-                MatchRecord m;
-                if (complete_match(new_data, m)) completed.push_back(m);
-            } else {
-                submit_expand_task(new_data);
+                if (new_data.is_complete()) {
+                    MatchRecord m;
+                    if (complete_match(new_data, m)) completed.push_back(m);
+                } else {
+                    submit_expand_task(new_data);
+                }
             }
         }
-    );
+      );
+    };
+    if (unordered) walk(std::true_type{});
+    else walk(std::false_type{});
 
     HG_STAT(if (seen == 0) {
         // The same walk again, at once. Candidates now where there were none is the walk
@@ -2590,7 +2652,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         size_t again = 0;
         generate_candidates(
             pattern_edge, pattern_sig,
-            data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge,
+            data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge, unordered,
             [&](EdgeId candidate, const auto&) { if (!data.contains_edge(candidate)) ++again; });
         if (again > 0) {
             expand_retry_found_.fetch_add(1, std::memory_order_relaxed);
@@ -2605,6 +2667,26 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 // =============================================================================
 // SINK Task Execution
 // =============================================================================
+
+// Undirected: the rule id the completed match is emitted under (hgcommon::undirected_resolve), or
+// false when an automorphic match is emitted in its place.
+HG_NOINLINE bool ParallelEvolutionEngine::undirected_rule_of(const ExpandTaskData& data,
+                                                const EdgeId* edges,
+                                                uint16_t& rule) const {
+    const RewriteRule& base = rules_[data.rule_index];
+    auto v0_of = [&](EdgeId e) { return hg_->get_edge(e).vertices[0]; };
+    uint32_t reversed = 0;
+    for (uint8_t i = 0; i < data.num_matched; ++i)
+        if (data.match_order[i] & kTaskReversed)
+            reversed |= 1u << (data.match_order[i] & kTaskPattern);
+    const uint32_t mask = hgcommon::undirected_mask_of_positions(base.und, reversed);
+    uint32_t rid = data.rule_index;
+    if (!hgcommon::undirected_resolve(base.und, data.rule_index, base.num_lhs_edges, edges,
+                                      data.binding.bindings, mask, v0_of, rid))
+        return false;
+    rule = static_cast<uint16_t>(rid);
+    return true;
+}
 
 bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRecord& out) {
     if (should_stop_.load(std::memory_order_relaxed)) return false;
@@ -2624,6 +2706,8 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     // promotes it to an immutable arena-resident MatchCore shared by forwarded copies.
     MatchCore core_tmp;
     core_tmp.rule_index = data.rule_index;
+    if (undirected_ && !undirected_rule_of(data, edges_in_order, core_tmp.rule_index))
+        return false;
     core_tmp.num_edges = data.num_pattern_edges;
     core_tmp.binding = data.binding;
     for (uint8_t i = 0; i < data.num_pattern_edges; ++i) {
@@ -2759,7 +2843,7 @@ bool ExpandTaskData::contains_edge(EdgeId eid) const {
 
 void ExpandTaskData::to_pattern_order(EdgeId* out) const {
     for (uint8_t i = 0; i < num_matched; ++i) {
-        out[match_order[i]] = matched_edges[i];
+        out[match_order[i] & kTaskPattern] = matched_edges[i];
     }
 }
 
@@ -3037,8 +3121,11 @@ void ParallelEvolutionEngine::add_rule(const RewriteRule& rule) {
     for (uint8_t i = 0; i < rule.num_rhs_edges; ++i)
         if (rule.rhs[i].arity == 0)
             throw std::invalid_argument("add_rule: a right-hand side edge has no vertices");
+    if (rules_expanded_)
+        throw std::logic_error("add_rule: the undirected rule table is already built");
     rules_.push_back(rule);
     rules_.back().compute_var_counts();
+    num_base_rules_ = rules_.size();
 }
 
 // The setter is the OVERRIDE, not a hint: a caller that sets this explicitly owns the decision
@@ -3091,7 +3178,8 @@ void ParallelEvolutionEngine::set_random_seed(uint64_t seed) { random_seed_ = se
 // and a rate outside [0,1] is not a probability.
 double ParallelEvolutionEngine::rate_for_rule(uint16_t rule) const {
     return hgcommon::sampling_rate_for_rule(transition_rate_, rule_weights_.data(),
-                                            static_cast<uint32_t>(rule_weights_.size()), rule);
+                                            static_cast<uint32_t>(rule_weights_.size()),
+                                            rule < rules_.size() ? user_rule_of(rule) : rule);
 }
 
 // Whether ANY draw can fail. Testing transition_rate_ < 1.0 alone would skip sampling entirely
@@ -3142,7 +3230,7 @@ void ParallelEvolutionEngine::match_held(StateId state, const MatchContext& ctx)
     // produced edges is found k times and held once.
     const State& s = hg_->get_state(state);
     const AncestryCandidates in_child{hg_, state, &s.edges, &held.adjacency};
-    for (uint16_t r = 0; r < rules_.size(); ++r)
+    for (uint16_t r = 0; r < num_base_rules_; ++r)
         find_delta_matches(rules_[r], r, state, s.edges, in_child, get_edge, get_signature,
                            [&](uint16_t rule, const EdgeId* edges, uint8_t n,
                                const VariableBinding&, StateId) {
@@ -3292,7 +3380,7 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
         }
 #endif
     };
-    for (uint16_t r = 0; r < rules_.size(); ++r)
+    for (uint16_t r = 0; r < num_base_rules_; ++r)
         find_matches(rules_[r], r, state, s.edges, cands, get_edge, get_signature, check);
     if (missing > 0) validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
 }

@@ -540,7 +540,7 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     ev.canonical_id   = INVALID_ID;
     ev.input_state    = m.state_id;
     ev.output_state   = new_sid;
-    ev.rule           = m.rule_id;
+    ev.rule           = hgcommon::undirected_user_rule(rule.und, m.rule_id);
     ev.step           = step;
     ev.num_consumed   = rule.num_lhs_edges;
     ev.num_produced   = rule.num_rhs_edges;
@@ -772,7 +772,7 @@ __device__ AppliedMatch apply_generation(const DeviceState& ds, const DeviceRule
         ev.canonical_id   = INVALID_ID;
         ev.input_state    = m.state_id;
         ev.output_state   = new_sid;
-        ev.rule           = entry[0];
+        ev.rule           = hgcommon::undirected_user_rule(rule.und, entry[0]);
         ev.step           = step;
         ev.num_consumed   = rule.num_lhs_edges;
         ev.num_produced   = rule.num_rhs_edges;

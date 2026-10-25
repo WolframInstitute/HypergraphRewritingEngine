@@ -32,6 +32,12 @@
 #else
   #define HG_INLINE inline __attribute__((always_inline))
 #endif
+// For a cold path called from a hot function, kept out of that function's body.
+#if defined(_MSC_VER) && !defined(__clang__)
+  #define HG_NOINLINE __declspec(noinline)
+#else
+  #define HG_NOINLINE __attribute__((noinline))
+#endif
 
 namespace HG_NAMESPACE {
 namespace common {

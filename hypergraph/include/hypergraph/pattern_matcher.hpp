@@ -107,12 +107,14 @@ inline uint64_t match_branch_count(int i) {
 // =============================================================================
 
 // Validate candidate edge against pattern edge, extending binding
-// Returns true if validation succeeds, binding is modified in place
+// Returns true if validation succeeds, binding is modified in place. `orient` 1 binds a
+// two-vertex edge reversed (hgcommon::edge_orientation_mask).
 bool validate_candidate(
     const VertexId* edge_vertices,
     uint8_t edge_arity,
     const PatternEdge& pattern_edge,
-    VariableBinding& binding
+    VariableBinding& binding,
+    uint8_t orient = 0
 );
 
 // =============================================================================
@@ -189,6 +191,7 @@ void generate_candidates(
     const SparseBitset& state_edges,
     const AncestryCandidates& candidates,
     const EdgeAccessor& get_edge,
+    bool unordered,                            // two orientations: no position check
     CandidateCallback&& on_candidate
 ) {
     // Collect bound vertices and their required positions
@@ -243,8 +246,10 @@ void generate_candidates(
                 // occurrence and checks equality on repeat, which enforces exactly the
                 // repetition constraint signature_compatible would — at O(arity) instead
                 // of O(arity^2) — and rejects every edge the signature test would.
+                // An undirected two-vertex pattern edge holds its bound vertices at either
+                // position, and the binding tests them.
                 bool valid = true;
-                for (uint8_t i = 0; i < num_bound && valid; ++i) {
+                for (uint8_t i = 0; i < num_bound && valid && !unordered; ++i) {
                     if (edge.vertices[bound_positions[i]] != bound_vertices[i]) {
                         valid = false;
                     }
@@ -265,7 +270,9 @@ void generate_candidates(
 // unwind, and the order in which pattern positions are bound. This supplies the two things that
 // are genuinely host-specific: how candidates are enumerated, and what an emitted match is.
 
-template<typename EdgeAccessor, typename SignatureAccessor>
+// `Undirected` is the rule's "UndirectedEdges" reading (hgcommon::join_dfs reads undirected()), a
+// template parameter so a directed join carries no test of it.
+template<typename EdgeAccessor, typename SignatureAccessor, bool Undirected = false>
 struct HostJoinContext {
     using JoinState = hgcommon::JoinState<MAX_PATTERN_EDGES, MAX_VARS, EdgeId, VertexId>;
 
@@ -313,6 +320,8 @@ struct HostJoinContext {
         return mc->should_terminate && mc->should_terminate->load();
     }
 
+    bool undirected() const { return Undirected; }
+
     // A depth's candidates are generated when the depth is opened and read back one at a time.
     // generate_candidates walks its indices through callbacks, so the cursor holds the list the
     // walk produced; each depth has its own buffer, reused across joins on this thread.
@@ -328,6 +337,8 @@ struct HostJoinContext {
             mc->rule->lhs[p], mc->rule->lhs_sig[p],
             st.binding, st.bound_mask, *mc->state_edges,
             *mc->candidates, mc->get_edge,
+            undirected() && hgcommon::undirected_flippable(mc->rule->lhs[p].vars,
+                                                          mc->rule->lhs[p].arity),
             [&](EdgeId eid, const EdgeType& edge) { buf.push_back(Candidate{eid, &edge}); });
         c.items = buf.data();
         c.n = buf.size();
@@ -371,6 +382,16 @@ void emit_match(PatternMatchingContext<EdgeAccessor, SignatureAccessor>& mc,
     std::memset(edges_in_order, 0xFF, sizeof(edges_in_order));
     for (uint8_t d = 0; d < st.depth; ++d) edges_in_order[st.pattern[d]] = st.matched[d];
 
+    // Undirected: the match is emitted under its orientation variant, or not at all when an
+    // automorphic match is emitted in its place.
+    uint32_t rule_id = mc.rule_index;
+    if (mc.rule->und.undirected &&
+        !hgcommon::undirected_resolve(
+            mc.rule->und, mc.rule_index, mc.rule->num_lhs_edges, edges_in_order, st.binding,
+            hgcommon::undirected_mask_of_positions(mc.rule->und, st.reversed_mask),
+            [&](EdgeId e) { return mc.get_edge(e).vertices[0]; }, rule_id))
+        return;
+
     if (mc.on_match) {
         // Only the BOUND variables are copied across. The join's unwind restores the mask and
         // leaves behind the vertex a discarded branch wrote, while resolve_rhs_vertices
@@ -382,7 +403,8 @@ void emit_match(PatternMatchingContext<EdgeAccessor, SignatureAccessor>& mc,
             const uint8_t var = static_cast<uint8_t>(hgcommon::ctz(m));
             scratch.bind(var, st.binding[var]);
         }
-        mc.on_match(mc.rule_index, edges_in_order, mc.rule->num_lhs_edges, scratch, mc.state_id);
+        mc.on_match(static_cast<uint16_t>(rule_id), edges_in_order, mc.rule->num_lhs_edges,
+                    scratch, mc.state_id);
         // Back to all-INVALID_ID for the next match. Callers copy the binding rather than
         // retaining a reference to it.
         for (uint32_t m = st.bound_mask; m; m &= m - 1) {
@@ -409,11 +431,15 @@ void scan_pattern(
 ) {
     if (mc.rule->num_lhs_edges == 0) return;
 
-    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx(&mc);
-    typename decltype(ctx)::JoinState st;
-    st.reset();
     VariableBinding scratch;
-    hgcommon::join_dfs(ctx, st, [&](const auto& s) { emit_match(mc, scratch, s); });
+    auto run = [&](auto undirected) {
+        HostJoinContext<EdgeAccessor, SignatureAccessor, decltype(undirected)::value> ctx(&mc);
+        typename decltype(ctx)::JoinState st;
+        st.reset();
+        hgcommon::join_dfs(ctx, st, [&](const auto& s) { emit_match(mc, scratch, s); });
+    };
+    if (mc.rule->und.undirected) run(std::true_type{});
+    else run(std::false_type{});
 }
 
 // =============================================================================
@@ -500,11 +526,15 @@ void scan_pattern_from_edge(
         return;
     }
 
-    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx(&mc);
-    typename decltype(ctx)::JoinState st;
     VariableBinding scratch;
-    hgcommon::join_seed(ctx, st, starting_edge, pattern_position,
-                        [&](const auto& s) { emit_match(mc, scratch, s); });
+    auto run = [&](auto undirected) {
+        HostJoinContext<EdgeAccessor, SignatureAccessor, decltype(undirected)::value> ctx(&mc);
+        typename decltype(ctx)::JoinState st;
+        hgcommon::join_seed(ctx, st, starting_edge, pattern_position,
+                            [&](const auto& s) { emit_match(mc, scratch, s); });
+    };
+    if (mc.rule->und.undirected) run(std::true_type{});
+    else run(std::false_type{});
 }
 
 // Find matches that include at least one of the produced edges

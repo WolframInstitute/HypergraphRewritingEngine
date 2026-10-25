@@ -278,10 +278,12 @@ static_assert(sizeof(MatchContext) == sizeof(StateId) + 2 * sizeof(EdgeId) * MAX
 //
 // Under "EventOrderingFunction" (`event_order` nonzero) the matches are held in `by_event_order`,
 // in that event order, which is total (hgcommon::event_order_total), and `order` and the keys are
-// not used.
+// not used. `rule_keys`, when given, is the "RuleIndex" key of each rule-table entry
+// (hgcommon::undirected_order_rule_key); without it the key is the entry itself.
 struct HeldMatches {
-    HeldMatches(uint32_t max_lhs, bool handed_on, uint32_t event_order_in = 0)
-        : by_event_order(EventOrderLess{event_order_in}),
+    HeldMatches(uint32_t max_lhs, bool handed_on, uint32_t event_order_in = 0,
+                const uint32_t* rule_keys = nullptr)
+        : by_event_order(EventOrderLess{event_order_in, rule_keys}),
           stride(4u + max_lhs),
           handed(handed_on),
           event_order(event_order_in) {}
@@ -298,9 +300,11 @@ struct HeldMatches {
     };
     struct EventOrderLess {
         uint32_t event_order;
+        const uint32_t* rule_keys;
+        uint32_t key(uint16_t rule) const { return rule_keys ? rule_keys[rule] : rule; }
         bool operator()(const OrderedMatch& a, const OrderedMatch& b) const {
-            return hgcommon::event_order_before(event_order, a.edges, a.n, a.rule, b.edges, b.n,
-                                                b.rule);
+            return hgcommon::event_order_before(event_order, a.edges, a.n, key(a.rule), b.edges,
+                                                b.n, key(b.rule));
         }
     };
 
@@ -449,12 +453,18 @@ static_assert(sizeof(ScanTaskData) == sizeof(StateId) + sizeof(uint32_t) + sizeo
 
 // EXPAND task: Extend partial match by one edge
 // Also carries a completed match into complete_match
+// ExpandTaskData::match_order: the bit of an entry bound reversed, and the pattern index bits.
+constexpr uint8_t kTaskReversed = 0x80u;
+constexpr uint8_t kTaskPattern = 0x7Fu;
+
 struct ExpandTaskData {
     StateId state{INVALID_ID};              // State being matched
     uint32_t step{0};                       // Evolution step
     EdgeId matched_edges[MAX_PATTERN_EDGES]{};  // Data edges matched so far
     VariableBinding binding{};              // Current variable bindings
-    uint8_t match_order[MAX_PATTERN_EDGES]{};   // Pattern indices in match order
+    // Pattern indices in match order, in bits 0-6; bit 7 set when the pattern edge is bound with
+    // its data edge reversed ("UndirectedEdges", kTaskReversed).
+    uint8_t match_order[MAX_PATTERN_EDGES]{};
     uint16_t rule_index{0};                 // Rule being matched
     uint8_t num_pattern_edges{0};           // Total edges in pattern
     uint8_t num_matched{0};                 // Number of edges matched
@@ -535,8 +545,23 @@ public:
     Hypergraph* hg_;
     Rewriter rewriter_;
 
-    // Rules
+    // Rules: the user's rules, then under "UndirectedEdges" their orientation variants
+    // (expand_undirected_rules). Matching runs over the first num_base_rules_.
     std::vector<RewriteRule> rules_;
+    size_t num_base_rules_{0};
+    bool undirected_{false};
+    bool rules_expanded_{false};
+    // order_rule_key of every table entry, for the held sets of "EventOrderingFunction".
+    std::vector<uint32_t> order_rule_keys_;
+
+    // The rule key "RuleIndex" orders a match of table entry `t` by.
+    uint32_t order_rule_key(uint16_t t) const {
+        return hgcommon::undirected_order_rule_key(rules_[t].und, t);
+    }
+    // The user rule of table entry `t`: what a per-rule cap groups and a rule weight reads.
+    uint16_t user_rule_of(uint16_t t) const {
+        return static_cast<uint16_t>(hgcommon::undirected_user_rule(rules_[t].und, t));
+    }
 
     // Global match deduplication (lock-free)
     // Use non-zero EMPTY/LOCKED keys to avoid conflicts with valid hash values
@@ -1104,6 +1129,13 @@ public:
 
     void add_rule(const RewriteRule& rule);
 
+    // "UndirectedEdges": two-vertex edges are unordered pairs (hgcommon/undirected_core.hpp).
+    // Set before the first evolve; the rules are expanded into their orientation variants then.
+    void set_undirected(bool on) { undirected_ = on; }
+    bool undirected() const { return undirected_; }
+    // The rule table the run matches and rewrites with (rules_).
+    const std::vector<RewriteRule>& rule_table() const { return rules_; }
+
     void set_max_steps(size_t max);
     // The depth this run is budgeted to, which evolve_more RAISES rather than replaces. A caller
     // that continues an exploration and then reports on it needs the accumulated depth, not the
@@ -1603,6 +1635,7 @@ private:
     // `out` is ready to rewrite. The caller batches these rather than tasking each one -- the
     // work here is a hash insert and two list pushes, less than the cost of scheduling it.
     bool complete_match(const ExpandTaskData& data, MatchRecord& out);
+    bool undirected_rule_of(const ExpandTaskData& data, const EdgeId* edges, uint16_t& rule) const;
     void execute_rewrite_task(const MatchRecord& match, uint32_t step,
                               HeldMatches* held = nullptr);
 

@@ -12,6 +12,7 @@
 #include "hgcommon/quotient_replay_core.hpp"  // QR_ID_LIMIT
 #include "hgcommon/state_invariants_core.hpp"  // StateInvariantRecord
 #include "hgcommon/state_cost_core.hpp"        // StateCost
+#include "hgcommon/undirected_core.hpp"        // UndirectedRuleInfo
 
 #include <set>
 #include <utility>
@@ -25,6 +26,9 @@ struct RewriteRule {
     std::vector<std::vector<uint8_t>> rhs;
     uint8_t num_lhs_vars = 0;
     uint8_t num_rhs_vars = 0;
+    // "UndirectedEdges": filled by the rule table evolve builds (expand_undirected_rules in
+    // evolve.cu); zero for a directed rule.
+    hgcommon::UndirectedRuleInfo und{};
 };
 
 struct EvolveInput {
@@ -124,6 +128,10 @@ struct EvolveInput {
     // match_state_generation; rewrite.cu, apply_generation). Every state is expanded, the relations
     // come from the edges, and the caps and draws are off (the FFI drops them).
     bool     generational = false;
+    // "UndirectedEdges" (hgcommon/undirected_core.hpp): two-vertex edges are unordered pairs. The
+    // rules are expanded into their orientation variants, the IR and content identity read the
+    // pairs unordered, and quotient exploration and keyed rewrites are off.
+    bool     undirected = false;
     // "EventOrderingFunction" (hgcommon::event_order_compare): one history from each initial
     // state, each state's next state applying its one match first in this order, as a generation
     // of one event. 0: the option is absent.

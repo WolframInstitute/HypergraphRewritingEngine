@@ -12,7 +12,8 @@ __device__ uint64_t content_hash_state_device(const DeviceState& ds, StateId sid
     if (sid >= ds.max_states) return 0;
     // The rule is hgcommon::content_hash_of; the iteration is DeviceContentCursor, which
     // state_claim_content compares through.
-    return hgcommon::content_hash_of(DeviceContentCursor(ds, sid));
+    return hgcommon::content_hash_of(
+        hgcommon::undirected_content_cursor(DeviceContentCursor(ds, sid), ds.undirected != 0u));
 }
 
 }  // namespace gpu

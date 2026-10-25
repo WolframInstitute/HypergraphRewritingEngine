@@ -428,23 +428,49 @@ struct IrSerial {
 };
 
 // -----------------------------------------------------------------------------------------
+// UNDIRECTED EDGES ("UndirectedEdges"). With `Sym` set, positions 0 and 1 of every edge of
+// arity >= 2 are interchangeable: the refinement reads both as position 0, the splitter key
+// holds how many of the two lie in the splitter, and a leaf writes the two labels in ascending
+// order. A state and its copy with any edge's first two vertices swapped reach the same forms
+// and hash equally. A colour-padded edge (ir_colour_pad) keeps its first two positions
+// interchangeable, and the pad vertex at the others keeps the padded state a complete invariant.
+// `Sym` is a template parameter of the refinement, the leaf form and the search, so a directed
+// state runs code with no test of it (ir_canonical_hash takes it as a value and picks the
+// instance).
+// -----------------------------------------------------------------------------------------
+HG_HD inline bool ir_sym_edge(bool sym, uint32_t arity) { return sym && arity >= 2u; }
+HG_HD inline uint32_t ir_pos_class(bool sym, uint32_t arity, uint32_t pos) {
+    return ir_sym_edge(sym, arity) && pos < 2u ? 0u : pos;
+}
+// Vertex `k` of edge e's tuple with its first two positions in ascending order under `sym`.
+HG_HD inline uint32_t ir_sym_at(bool sym, const uint8_t* ea, const uint32_t* eoff,
+                                const uint32_t* ev, uint32_t e, uint32_t k) {
+    if (k >= 2u || !ir_sym_edge(sym, ea[e])) return ev[eoff[e] + k];
+    const uint32_t a = ev[eoff[e]], b = ev[eoff[e] + 1];
+    return (k == 0u) == (a < b) ? a : b;
+}
+
+// -----------------------------------------------------------------------------------------
 // Initial partition: group vertices by degree signature -- the sorted multiset of
 // (arity, position) over their occurrences -- ordering groups by signature and, within a
 // signature, by vertex index. Both keys are structural, so the partition is equivariant.
 // -----------------------------------------------------------------------------------------
-template <class Par = IrSerial>
+template <class Par = IrSerial, bool Sym = false>
 HG_HD inline void ir_initial_partition(
     const uint8_t* ea, const uint32_t* occ_off, const uint32_t* occ_edge, const uint32_t* occ_pos,
     uint32_t n_verts, IrPartition& pi,
     uint64_t* sig_buf, uint32_t* order, Par par = Par{})
 {
+    constexpr bool sym = Sym;
     // sig_buf holds every vertex's signature contiguously at occ_off[v]; (arity, position)
     // packs into one uint64 so the multiset sorts with a scalar comparison. Each vertex's run
     // is its own, so the iterations fan across the policy's lanes.
     par.fan(n_verts, [&](uint32_t v) {
         const uint32_t s = occ_off[v], len = occ_off[v + 1] - s;
-        for (uint32_t k = 0; k < len; ++k)
-            sig_buf[s + k] = (uint64_t(ea[occ_edge[s + k]]) << 32) | uint64_t(occ_pos[s + k]);
+        for (uint32_t k = 0; k < len; ++k) {
+            const uint32_t a = ea[occ_edge[s + k]];
+            sig_buf[s + k] = (uint64_t(a) << 32) | uint64_t(ir_pos_class(sym, a, occ_pos[s + k]));
+        }
         isort_u64(sig_buf + s, len);
         order[v] = v;
     });
@@ -499,7 +525,7 @@ HG_HD inline void ir_initial_partition(
 // only vertices sharing an edge with it, so a split costs O(boundary); keeping the largest
 // piece at the split cell's id bounds the total to ~O(E log n).
 // -----------------------------------------------------------------------------------------
-template <class Par = IrSerial>
+template <class Par = IrSerial, bool Sym = false>
 HG_HD inline void ir_refine(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev, uint32_t n_edges,
     const uint32_t* occ_off, const uint32_t* occ_edge,
@@ -509,6 +535,7 @@ HG_HD inline void ir_refine(
     uint32_t* sig_off, uint32_t* sig_cnt, uint32_t* gstart, uint64_t* sig_buf,
     uint32_t seed0 = 0xFFFFFFFFu, uint32_t seed1 = 0xFFFFFFFFu, Par par = Par{})
 {
+    constexpr bool sym = Sym;
     const uint32_t n = pi.n;
     const uint32_t wl_words = ir_bitset_words(n);
     if (par.leader()) {
@@ -600,12 +627,16 @@ HG_HD inline void ir_refine(
             uint64_t spos = 0;
             for (uint32_t q = 0; q < arity && q < IR_SPOS_BITS; ++q)
                 if (pi.cell_of[ev[eoff[e] + q]] == S) spos |= (uint64_t(1) << q);
+            // Interchangeable positions: how many of the two are in S, as 0, 1 or 3. The members
+            // of one cell are all in S or all outside it, so the count loses nothing.
+            if (ir_sym_edge(sym, arity) && (spos & 3u) == 2u) spos ^= 3u;
             for (uint32_t q = 0; q < arity; ++q) {
                 const uint32_t u = ev[eoff[e] + q];
                 if (!on_touched[u]) continue;
                 const uint32_t w2 = par.fetch_add(sig_cnt + u, 1u);
-                sig_buf[sig_off[u] + w2] =
-                    (uint64_t(arity & 0xFF) << 56) | (uint64_t(q & 0xFF) << 48) | spos;
+                sig_buf[sig_off[u] + w2] = (uint64_t(arity & 0xFF) << 56) |
+                                           (uint64_t(ir_pos_class(sym, arity, q) & 0xFF) << 48) |
+                                           spos;
             }
         });
         par.fan(n_touched, [&](uint32_t i) {
@@ -729,11 +760,15 @@ HG_HD inline void ir_refine(
 // Canonical form at a discrete leaf: every edge relabeled and the edge list sorted.
 // Stored flat as [arity, v0, v1, ...] runs so two forms compare with one linear scan.
 // -----------------------------------------------------------------------------------------
+template <bool Sym = false>
 HG_HD inline void ir_build_form(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order, uint32_t* tmp,
     uint64_t* keys)
 {
+    // Under `Sym` an edge's first two labels are written in ascending order.
+    constexpr bool sym = Sym;
+    //
     // order[] sorts edge indices by the relabeled vertex tuple, prefix-shorter first, ties
     // broken by INPUT INDEX. Tied edges have identical canonical content and so contribute the
     // same bytes to the form either way -- the tie-break does not move the hash. It is there so
@@ -749,6 +784,11 @@ HG_HD inline void ir_build_form(
         order[e] = e;
         const uint32_t la = ea[e];
         for (uint32_t k = 0; k < la; ++k) rel[eoff[e] + k] = labeling[ev[eoff[e] + k]];
+        if (ir_sym_edge(sym, la) && rel[eoff[e]] > rel[eoff[e] + 1]) {
+            const uint32_t t = rel[eoff[e]];
+            rel[eoff[e]] = rel[eoff[e] + 1];
+            rel[eoff[e] + 1] = t;
+        }
         keys[e] = (uint64_t(rel[eoff[e]] + 1u) << 32) | (la > 1 ? rel[eoff[e] + 1] + 1u : 0u);
     }
     struct EdgeCmp {
@@ -866,16 +906,20 @@ struct IrWork {
 // orbits, which is why they too come from this pass. Requires every edge to have arity >= 1
 // (both engines' flatteners guarantee it): the orbit scratch overlays cur_form/first_form,
 // whose size covers 2 * n_edges words only then.
-template <class Par = IrSerial>
-HG_HD inline IrResult ir_canonical_hash(
+//
+// ir_canonical_hash below takes `sym` (the state's edges are undirected, ir_sym_edge) as a value
+// and runs the instance of this body for it.
+template <bool Sym, class Par>
+HG_HD inline IrResult ir_canonical_hash_of(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
-    uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
-    uint32_t max_generators = IR_HOST_GENERATORS,
-    uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr,
-    uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr,
-    IrWork* out_work = nullptr, Par par = Par{})
+    uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank,
+    uint32_t max_generators,
+    uint32_t* out_edge_orbit, uint32_t* out_edge_class,
+    uint32_t* out_canonical_form, uint32_t* out_vertex_label,
+    IrWork* out_work, Par par)
 {
+    constexpr bool sym = Sym;
     IrResult out{0, IR_EMPTY, 0};
     if (out_work) { out_work->leaves = 0; out_work->nodes = 0;
                     out_work->max_depth = 0; out_work->searched = 0; }
@@ -948,11 +992,11 @@ HG_HD inline IrResult ir_canonical_hash(
     pi.ncells = 0; pi.n = n;
     IrTrail tr;
     tr.e = p_trail; tr.count = 0;
-    ir_initial_partition(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder, par);
+    ir_initial_partition<Par, Sym>(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder, par);
     // Root splits carry tag 0: no undo reaches below the root.
-    ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, 0u,
-              worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-              sig_off, sig_cnt, gstart, sig_buf, 0xFFFFFFFFu, 0xFFFFFFFFu, par);
+    ir_refine<Par, Sym>(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, 0u,
+                        worklist, inc_edges, edge_epoch, touched, on_touched, torder,
+                        sig_off, sig_cnt, gstart, sig_buf, 0xFFFFFFFFu, 0xFFFFFFFFu, par);
 
     uint32_t n_gens = 0;
     // Set when an automorphism was found and the table was already full. Only consulted when
@@ -977,7 +1021,8 @@ HG_HD inline IrResult ir_canonical_hash(
     auto leaf = [&](const IrPartition& p, uint32_t depth) {
         if (out_work) ++out_work->leaves;
         for (uint32_t v = 0; v < n; ++v) labeling[v] = p.cell_of[v];
-        ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order, inc_edges, sig_buf);
+        ir_build_form<Sym>(ea, eoff, ev, n_edges, labeling, cur_form, form_order, inc_edges,
+                           sig_buf);
         if (!has_best || ir_cmp_form(cur_form, best_form, form_words) < 0) {
             for (uint32_t i = 0; i < form_words; ++i) best_form[i] = cur_form[i];
             // The winning leaf's edge order IS the canonical rank assignment, and the winner
@@ -1091,12 +1136,14 @@ HG_HD inline IrResult ir_canonical_hash(
             // are one class already, so any member of a tie serves.
             uint32_t* tuple_order = form_order;         // [n_edges]
             for (uint32_t e2 = 0; e2 < n_edges; ++e2) tuple_order[e2] = e2;
+            // Tuples under `Sym` read their first two vertices in ascending order (ir_sym_at).
             struct TupCmp {
                 const uint8_t* ea; const uint32_t* eoff; const uint32_t* ev;
                 HG_HD int operator()(uint32_t a, uint32_t b) const {
                     const uint32_t la = ea[a], lb = ea[b], m = la < lb ? la : lb;
                     for (uint32_t k = 0; k < m; ++k) {
-                        const uint32_t x = ev[eoff[a] + k], y = ev[eoff[b] + k];
+                        const uint32_t x = ir_sym_at(Sym, ea, eoff, ev, a, k);
+                        const uint32_t y = ir_sym_at(Sym, ea, eoff, ev, b, k);
                         if (x != y) return x < y ? -1 : 1;
                     }
                     if (la != lb) return la < lb ? -1 : 1;
@@ -1108,8 +1155,15 @@ HG_HD inline IrResult ir_canonical_hash(
             // Compare edge `cand`'s tuple with g applied to `src`'s tuple, lazily.
             auto cmp_img = [&](uint32_t cand, const uint32_t* g, uint32_t src) -> int {
                 const uint32_t lc = ea[cand], ls = ea[src], m = lc < ls ? lc : ls;
+                const bool pair = ir_sym_edge(sym, ls);
+                const uint32_t g0 = g[ev[eoff[src]]];
+                const uint32_t g1 = ls > 1 ? g[ev[eoff[src] + 1]] : 0u;
                 for (uint32_t k = 0; k < m; ++k) {
-                    const uint32_t x = ev[eoff[cand] + k], y = g[ev[eoff[src] + k]];
+                    const uint32_t x = ir_sym_at(sym, ea, eoff, ev, cand, k);
+                    uint32_t y;
+                    if (pair && k == 0) y = g0 < g1 ? g0 : g1;
+                    else if (pair && k == 1) y = g0 < g1 ? g1 : g0;
+                    else y = g[ev[eoff[src] + k]];
                     if (x != y) return x < y ? -1 : 1;
                 }
                 if (lc != ls) return lc < ls ? -1 : 1;
@@ -1271,10 +1325,10 @@ HG_HD inline IrResult ir_canonical_hash(
         pi.ncells = par.bcast(pi.ncells);
         // The singleton keeps the target's start and the remainder begins one past it, so
         // those two names seed the refinement; its splits carry the child's tag.
-        ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, d + 1,
-                  worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-                  sig_off, sig_cnt, gstart, sig_buf,
-                  target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu, par);
+        ir_refine<Par, Sym>(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, d + 1,
+                            worklist, inc_edges, edge_epoch, touched, on_touched, torder,
+                            sig_off, sig_cnt, gstart, sig_buf,
+                            target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu, par);
         ++d;
         if (out_work && par.leader()) {
             ++out_work->nodes;
@@ -1297,6 +1351,28 @@ HG_HD inline IrResult ir_canonical_hash(
     out.status = (out_edge_orbit && (leader_state & 2u)) ? IR_NEED_GENERATORS : IR_OK;
     out.n_verts = n;
     return out;
+}
+
+// `sym`: the state's edges are undirected (ir_sym_edge).
+template <class Par = IrSerial>
+HG_HD inline IrResult ir_canonical_hash(
+    const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
+    uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
+    uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
+    uint32_t max_generators = IR_HOST_GENERATORS,
+    uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr,
+    uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr,
+    IrWork* out_work = nullptr, Par par = Par{}, bool sym = false)
+{
+    if (sym)
+        return ir_canonical_hash_of<true, Par>(ea, eoff, ev, n_edges, n_verts, total_occ, scratch,
+                                               max_depth, out_edge_rank, max_generators,
+                                               out_edge_orbit, out_edge_class, out_canonical_form,
+                                               out_vertex_label, out_work, par);
+    return ir_canonical_hash_of<false, Par>(ea, eoff, ev, n_edges, n_verts, total_occ, scratch,
+                                            max_depth, out_edge_rank, max_generators,
+                                            out_edge_orbit, out_edge_class, out_canonical_form,
+                                            out_vertex_label, out_work, par);
 }
 
 }  // namespace common
