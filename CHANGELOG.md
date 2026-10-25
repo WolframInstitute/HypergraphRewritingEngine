@@ -40,6 +40,10 @@
   step applies the state's one match first in that order, as SetReplace's `WolframModel` does.
   The events, final states and causal graphs equal `WolframModel`'s on 119 recorded cases, on
   both devices. An order that leaves two matches tied, `"Random"` and `"Any"` are refused.
+- `"BrillLindquistDimension" -> 3` places the `"BrillLindquist"` points in a box whose z range
+  is `"BrillLindquistBoxZ"`, with point density ψ⁶. `"BrillLindquistPeriodic" -> True` measures
+  every distance to the nearest periodic image of a point. The 2D output for a given
+  `"RandomSeed"` is unchanged.
 - `"CausalEdges"` and `"BranchialEdges"` list their records in ascending order, on both devices.
   In rc2 the order was the order the run registered the pairs in, which two identical runs on
   several threads could give differently.

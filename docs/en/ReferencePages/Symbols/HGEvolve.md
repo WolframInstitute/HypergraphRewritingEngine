@@ -219,6 +219,9 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"BrillLindquistSeparation"` | `10.` | the distance between the black holes (key `"Separation"`) |
 | `"BrillLindquistBoxX"` | `{-15., 15.}` | the x range of the `"BrillLindquist"` domain (key `"BoxX"`) |
 | `"BrillLindquistBoxY"` | `{-15., 15.}` | the y range of the `"BrillLindquist"` domain (key `"BoxY"`) |
+| `"BrillLindquistBoxZ"` | `{-15., 15.}` | the z range of the `"BrillLindquist"` domain in three dimensions (key `"BoxZ"`) |
+| `"BrillLindquistDimension"` | `2` | the number of spatial dimensions of the `"BrillLindquist"` points, 2 or 3 (key `"Dimension"`) |
+| `"BrillLindquistPeriodic"` | `False` | whether `"BrillLindquist"` distances wrap around the faces of the box (key `"Periodic"`) |
 | `"EdgeThreshold"` | `Automatic` | the largest distance joined by an edge of `"BrillLindquist"`, `"Poisson"` and `"Uniform"`; `Automatic` is `2.` for `"BrillLindquist"`, twice `"PoissonMinDistance"` for `"Poisson"` and 1.5 times the expected point spacing for `"Uniform"` (key `"EdgeThreshold"`) |
 | `"PoissonMinDistance"` | `1.` | the least separation of the points of `"Poisson"` (key `"MinDistance"`) |
 
@@ -1028,6 +1031,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "S
 With `"MaxStatesPerStep"`, a cost function keeps each step's successor states of lowest cost. The cost here is the negated incidence mean distance, so each step keeps the two states whose vertices and hyperedges are farthest apart. The mean of `"IncidenceMeanDistance"` over the kept states at each step:
 
 ```wl
+loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
 meanDistance[opts___] := N[Round[Lookup[#["Invariants", "IncidenceMeanDistance"], "Mean"], 1/100]] & /@ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "StepStatistics", "CanonicalizeStates" -> Full, "MaxStatesPerStep" -> 2, "RandomSeed" -> 7, opts];
 meanDistance["StateCost" -> (-#IncidenceMeanDistance &)]
 ```
@@ -1677,6 +1681,15 @@ bl[opts___] := Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "Sp
 
 <!-- => {12, 7} -->
 
+`"BrillLindquistDimension" -> 3` places the points in a box whose z range is `"BrillLindquistBoxZ"`. With `"BrillLindquistPeriodic" -> True`, two points near opposite faces of the box are also joined:
+
+```wl
+<|"Plane" -> bl[], "Box" -> bl["BrillLindquistDimension" -> 3, "BrillLindquistBoxZ" -> {-5., 5.}],
+  "Periodic box" -> bl["BrillLindquistDimension" -> 3, "BrillLindquistBoxZ" -> {-5., 5.}, "BrillLindquistPeriodic" -> True]|>
+```
+
+<!-- => <|"Plane" -> 26, "Box" -> 14, "Periodic box" -> 17|> -->
+
 ### "EdgeThreshold"
 
 The largest distance joined by an edge of a Brill-Lindquist, a Poisson or a uniform initial condition. Ten Poisson points with the default threshold:
@@ -1730,7 +1743,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-161.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-162.png)
 
 Two steps reach 239 states up to isomorphism:
 
@@ -1884,7 +1897,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-177.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-178.png)
 
 ---
 

@@ -5,7 +5,7 @@ Title: Science with Step Statistics
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/tutorial/ScienceWithStepStatistics
-Keywords: [hypergraph, multiway, step statistics, dimension, curvature, Ollivier-Ricci, Moran's I, Brill-Lindquist, torus, branchial, mutual information, matrix, spectral embedding, StateCost, beam search, tutorial]
+Keywords: [hypergraph, multiway, step statistics, dimension, curvature, causal graph, Myrheim-Meyer, black hole merger, causal invariance, Ollivier-Ricci, Moran's I, Brill-Lindquist, torus, branchial, mutual information, matrix, spectral embedding, StateCost, beam search, tutorial]
 RelatedGuides: [HypergraphRewriting]
 RelatedTutorials: [GettingStarted, InitialConditions, SamplingAndPruning]
 ---
@@ -415,3 +415,127 @@ Grid[Table[heat[SelectFirst[Values[r["States"]], Function[st, st["Step"] == s]]]
 ```
 
 ![A kept state of each guided beam at steps 0, 4, 8, 12 and 16, the beam of the total curvature above and the beam of dimension 2.5 below, each vertex coloured by its Ollivier-Ricci curvature from blue (the state's lowest) to red (its highest)](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-44.png)
+
+## The dimension of a causal graph
+
+`coneDimension` reads a dimension from the growth of forward causal cones. For each source event s, C(r) is the number of events within causal distance r of s, for r up to R, the largest distance reached. The dimension is the slope of log C(r) against log r over the middle half of the radii, R/4 to 3R/4, averaged over the sources with at least four radii in that range. The sources are a seeded sample of the first half of the events. `myrheimMeyer` reads a dimension from the fraction f of the pairs of events that are causally related. In an interval of d-dimensional Minkowski space the mean of f is Γ(d + 1) Γ(d/2) / (2 Γ(3d/2)), and the measure solves this for d, over the whole causal set and over sampled intervals of at least `minSize` events. An interval is the set of events between two related events a and b, together with a and b.
+
+```wl
+coneDimension[pairs_List, sources_List] := Module[{ev = DeleteDuplicates[Flatten[pairs]], idx, adj, fits},
+  idx = AssociationThread[ev -> Range[Length[ev]]];
+  adj = SparseArray[Thread[Map[idx, DeleteDuplicates[pairs], {2}] -> 1], {Length[ev], Length[ev]}];
+  fits = Table[Module[{seen = SparseArray[{idx[s] -> 1}, Length[ev]], front, sizes = {1}, rMax, radii, c},
+      front = seen;
+      While[(front = SparseArray[Unitize[front . adj] (1 - seen)]; Total[front] > 0), AppendTo[sizes, Total[front]]; seen += front];
+      rMax = Length[sizes] - 1; c = Accumulate[sizes];
+      radii = Range[Max[1, Ceiling[rMax/4]], Floor[3 rMax/4]];
+      If[Length[radii] < 4, Nothing, D[Fit[Log[N[{#, c[[# + 1]]}]] & /@ radii, {1, x}, x], x]]],
+    {s, sources}];
+  If[fits === {}, Missing["NoCone"], <|"Sources" -> Length[fits], "Mean" -> Mean[fits], "StandardDeviation" -> If[Length[fits] > 1, StandardDeviation[fits], 0.]|>]];
+coneDimension[pairs_List, k_Integer, seed_Integer] := With[{ev = Sort[DeleteDuplicates[Flatten[pairs]]]},
+  coneDimension[pairs, BlockRandom[SeedRandom[seed]; RandomSample[Take[ev, Ceiling[Length[ev]/2]], UpTo[k]]]]];
+mmDimension[f_] := Which[f >= 1, 1., f <= 0, Indeterminate, True, d /. FindRoot[Gamma[d + 1] Gamma[d/2]/(2 Gamma[3 d/2]) == f, {d, 2., 0.3, 20.}]];
+myrheimMeyer[pairs_List, k_Integer, minSize_Integer, seed_Integer] := Module[{g = Graph[DirectedEdge @@@ Sort[pairs]], order, idx, n, desc, anc, bits, iv = {}, tries = 0},
+  order = TopologicalSort[g]; n = Length[order]; idx = AssociationThread[order -> Range[0, n - 1]];
+  desc = anc = ConstantArray[0, n];
+  Do[desc[[i + 1]] = BitOr @@ Prepend[(2^# + desc[[# + 1]]) & /@ (idx /@ VertexOutComponent[g, order[[i + 1]], {1}]), 0], {i, n - 1, 0, -1}];
+  Do[anc[[i + 1]] = BitOr @@ Prepend[(2^# + anc[[# + 1]]) & /@ (idx /@ VertexInComponent[g, order[[i + 1]], {1}]), 0], {i, 0, n - 1}];
+  bits[x_] := Flatten[Position[Reverse[IntegerDigits[x, 2]], 1]] - 1;
+  BlockRandom[SeedRandom[seed]; While[Length[iv] < k && tries++ < 50 k,
+    Module[{a = RandomInteger[{0, Floor[n/2]}], later, b, mask, members},
+      later = bits[desc[[a + 1]]];
+      If[Length[later] >= minSize,
+        b = RandomChoice[Take[later, -Floor[Length[later]/2]]];
+        mask = BitOr[BitAnd[desc[[a + 1]], anc[[b + 1]]], 2^a, 2^b]; members = bits[mask];
+        If[Length[members] >= minSize, AppendTo[iv, mmDimension[N[Total[DigitCount[BitAnd[desc[[# + 1]], mask], 2, 1] & /@ members]/Binomial[Length[members], 2]]]]]]]]];
+  <|"WholeSet" -> mmDimension[N[Total[DigitCount[#, 2, 1] & /@ desc]/Binomial[n, 2]]], "Intervals" -> Length[iv], "IntervalMedian" -> If[iv === {}, Missing["NoInterval"], Median[iv]]|>];
+```
+
+A chain of 300 events, the forward cone of radius 60 on the lattice where event (t, x) precedes (t + 1, x - 1) and (t + 1, x + 1), and 300 points sprinkled in a causal diamond of 1+1-dimensional Minkowski space give dimensions 1, 2 and 2:
+
+```wl
+chain = Table[{i, i + 1}, {i, 299}];
+lattice = Flatten[Table[{{1000 t + x, 1000 (t + 1) + x - 1}, {1000 t + x, 1000 (t + 1) + x + 1}}, {t, 0, 59}, {x, -61, 61}], 2];
+diamond = With[{p = BlockRandom[SeedRandom[3]; Select[RandomReal[{-1, 1}, {2000, 2}], Total[Abs[#]] < 1 &][[;; 300]]]}, Flatten[Table[If[p[[j, 1]] - p[[i, 1]] > Abs[p[[j, 2]] - p[[i, 2]]], {i, j}, Nothing], {i, 300}, {j, 300}], 1]];
+N[Round[100 {coneDimension[chain, 50, 1]["Mean"], coneDimension[lattice, {0}]["Mean"], myrheimMeyer[diamond, 20, 30, 1]["WholeSet"]}]/100]
+```
+
+<!-- => {0.99, 1.89, 2.01} -->
+
+At a finite radius the cone measure is below the dimension. The same lattice gives 1.97 at radius 200, and the lattices with two and three spatial dimensions give 2.76 at radius 40 and 3.08 at radius 12.
+
+The cone measure does not reproduce the dimension of a sprinkled causal set, so it is not a dimension measure for causal sets. On the link graphs of 500 to 5000 points sprinkled in a causal diamond, it gives 3.00 to 4.21 in 1+1 dimensions. In 2+1 and 3+1 dimensions no cone has four radii in the middle half of its radii, and the measure has no value. The whole-set Myrheim-Meyer value of the same sprinklings gives 1.94 to 2.01 in 1+1 dimensions, 2.94 to 2.97 in 2+1 and 3.96 to 4.09 in 3+1. The interval median gives 1.93 to 1.99, 2.81 to 2.89 and 3.31 to 3.60.
+
+## Gorard's binary black hole merger
+
+J. Gorard, Hypergraph Discretization of the Cauchy Problem in General Relativity via Wolfram Model Evolution, arXiv:2102.09363v2 (2021), compares a numerical solution of the Einstein field equations with an evolution under `ruleA` alone. The paper states that this evolution, from Brill-Lindquist initial data for two black holes, reproduces the merger of the two holes by t = 12M and the ringdown of the merged hole by t = 24M, at 200, 400, 800 and 1600 vertices.
+
+The paper states the setup. Two Schwarzschild black holes of mass 0.5M each are 1M apart, with their centre of mass at the centre of the domain. A Poisson process of density ρc places the vertices, and two vertices are joined when they are closer than a cut-off defined relative to Vc = 1/ρc. The numerical runs of the same paper use a periodic domain of side 20M.
+
+The paper applies the rule at each step to every match that shares no hyperedge with another match applied in the step. It does not state the value of the cut-off, the number of steps per unit of t, the order among matches that share a hyperedge, or the direction of each edge.
+
+The runs here use the three-dimensional `"BrillLindquist"` cloud of [Generated Initial Conditions](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/InitialConditions) in a periodic box of side 20, with a cut-off of c times the mean spacing (8000/n)^(1/3) and edges in random directions. `"Generational" -> True` applies the update the paper describes. Each step applies every match that shares no hyperedge with a match before it in the standard order, so the evolution follows one history. From 200 points with c = 1.25, 105 steps reach 10 events per edge of the initial state:
+
+```wl
+gorard[n_, c_, seed_] := <|"Type" -> "BrillLindquist", "Dimension" -> 3, "Periodic" -> True, "Density" -> n, "Mass1" -> 0.5, "Mass2" -> 0.5, "Separation" -> 1., "BoxX" -> {-10., 10.}, "BoxY" -> {-10., 10.}, "BoxZ" -> {-10., 10.}, "EdgeThreshold" -> c (8000./n)^(1/3), "Seed" -> seed|>;
+merger = HGEvolve[ruleA, gorard[200, 1.25, 1], 105, {"StepStatistics", "CausalEdges", "NumEvents"}, "Generational" -> True, "CausalTransitiveReduction" -> False, "StepStatisticsMeasures" -> {"VolumeGrowth"}];
+{Length[HGEvolve[ruleA, gorard[200, 1.25, 1], 0, "GlobalEdges"]], merger["NumEvents"]}
+```
+
+<!-- => {877, 8829} -->
+
+The steps that reach 10 events per initial edge at each number of points, with c = 1.25 and seed 1:
+
+| points | initial edges | steps | events |
+|---|---|---|---|
+| 200 | 877 | 105 | 8829 |
+| 400 | 1813 | 109 | 18,205 |
+| 800 | 3587 | 128 | 36,131 |
+| 1600 | 7219 | 110 | 72,217 |
+
+The ball dimension, the sphere dimension and the dimension of the largest component of the spatial hypergraph at each step:
+
+```wl
+ListLinePlot[Table[perStep[merger["StepStatistics"], "Invariants", key, "Mean"], {key, {"BallDimension", "SphereDimension", "LargestComponentDimension"}}], AxesLabel -> {"step", "dimension"}, PlotLegends -> {"ball", "sphere", "largest component"}, PlotRange -> All, ImageSize -> 400]
+```
+
+![The ball dimension, the sphere dimension and the dimension of the largest component of the spatial hypergraph at each step](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-48.png)
+
+The ball dimension falls from 1.72 at step 0 to 1.08 at step 105. The ball dimension of a uniform sample of a flat 3D periodic box reads 1.64 to 2.57 at 200 points and 2.05 to 2.38 at 1000 points. It reads 3 within 0.1 only near 10,000 points, so at 200 to 1600 points the reading does not give the dimension of the space the points sample.
+
+The ball scalar curvature and the number of components at each step:
+
+```wl
+GraphicsRow[{ListLinePlot[perStep[merger["StepStatistics"], "Invariants", "BallScalarCurvature", "Mean"], AxesLabel -> {"step", "ball curvature"}], ListLinePlot[perStep[merger["StepStatistics"], "Invariants", "Components", "Mean"], AxesLabel -> {"step", "components"}]}, ImageSize -> 600]
+```
+
+![The ball scalar curvature and the number of components at each step](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-49.png)
+
+From about step 17 the state has 159 components, and the readings repeat a cycle of a few steps. The state of step 105 has 1036 vertices. The ball scalar curvature is negative on a uniform sample of a flat 3D box at 200 and at 1000 points, where the scalar curvature is 0. It reads the known curvature of a sphere or a torus within 25% only near 10,000 points.
+
+### The dimension of the causal graph
+
+The causal graph of the run has 17,742 causal pairs. `myrheimMeyer` of the section on the dimension of a causal graph gives its whole-set value and the median over 30 sampled intervals of at least 40 events:
+
+```wl
+pairs = DeleteDuplicates[Lookup[merger["CausalEdges"], {"From", "To"}]];
+With[{mm = myrheimMeyer[pairs, 30, 40, 1]}, {N[Round[100 mm["WholeSet"]]/100], mm["Intervals"], mm["IntervalMedian"]}]
+```
+
+<!-- => {6.03, 30, 1.} -->
+
+The Myrheim-Meyer formula holds for an interval. The whole causal graph of an evolution is not an interval, so its whole-set value of 6.03 is outside the calibration on sprinkled diamonds. The sampled intervals give a median of 1. The cone measure does not apply here, since it does not reproduce the dimension of sprinkled causal sets.
+
+### Causal invariance
+
+The rule is not causal invariant. The path of five edges has two complete histories, one of a single event and one of two events, so their causal graphs differ. The number of events of each complete history:
+
+```wl
+path5 = {{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}};
+With[{g = Graph[DirectedEdge @@@ Lookup[Values[HGEvolve[ruleA, path5, 3, "Events"]], {"InputState", "OutputState"}]]},
+  Sort[GraphDistance[g, First[Select[VertexList[g], VertexInDegree[g, #] == 0 &]], #] & /@ Select[VertexList[g], VertexOutDegree[g, #] == 0 &]]]
+```
+
+<!-- => {1, 2} -->
+
+`"Generational" -> True` applies one order among matches that share a hyperedge, so it gives one of the causal graphs the rule admits.

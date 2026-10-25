@@ -75,6 +75,9 @@ Options[HGEvolve] = {
   "BrillLindquistSeparation" -> 10.0,  (* Distance between black holes *)
   "BrillLindquistBoxX" -> {-15.0, 15.0},  (* X domain *)
   "BrillLindquistBoxY" -> {-15.0, 15.0},  (* Y domain *)
+  "BrillLindquistBoxZ" -> {-15.0, 15.0},  (* Z domain, read when the dimension is 3 *)
+  "BrillLindquistDimension" -> 2,  (* 2 or 3 spatial dimensions *)
+  "BrillLindquistPeriodic" -> False,  (* distances and midpoints wrap around the box *)
   (* Sampling options *)
   "EdgeThreshold" -> Automatic,  (* Max distance for edge creation *)
   "PoissonMinDistance" -> 1.0,  (* Minimum separation for Poisson disk *)
@@ -473,6 +476,7 @@ HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but the GPU cannot be used
 HGEvolve::nogpu = "TargetDevice -> {\"GPU\", \"Strict\" -> True} requested but the GPU cannot be used: `1`.";
 HGEvolve::noengine = "This paclet carries no engine for `1`: LibraryResources/`1` holds neither an hg_evolve binary nor a HypergraphRewriting library. Build the paclet for this platform, or install one that was.";
 HGEvolve::badmultiedge = "\"MultiedgeStyle\" -> `1` is not valid; use Automatic or \"Merged\". Using Automatic.";
+HGEvolve::baddim = "\"BrillLindquistDimension\" -> `1` is not valid; use 2 or 3. Using 2.";
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
@@ -1053,8 +1057,11 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[{HGEvolve, Graph}, opts, "EdgeThreshold"]];
     If[edgeThreshold === Automatic, edgeThreshold = 2.0];
     icResult = HGBrillLindquist[sprinklingDensity, {mass1, mass2}, separation,
+      "Dimension" -> Lookup[initialSpec, "Dimension", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistDimension"]],
+      "Periodic" -> Lookup[initialSpec, "Periodic", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistPeriodic"]],
       "BoxX" -> boxX,
       "BoxY" -> boxY,
+      "BoxZ" -> Lookup[initialSpec, "BoxZ", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistBoxZ"]],
       "EdgeThreshold" -> edgeThreshold,
       "RandomSeed" -> seed
     ];
@@ -2460,102 +2467,111 @@ HGMinkowskiSprinkling[n_Integer, opts:OptionsPattern[]] := Module[
 (* ---------------------------------------------------------------------------- *)
 
 Options[HGBrillLindquist] = Join[$ICCommonOptions, {
+  "Dimension" -> 2,
+  "Periodic" -> False,
   "BoxX" -> {-15.0, 15.0},
   "BoxY" -> {-15.0, 15.0},
+  "BoxZ" -> {-15.0, 15.0},
   "EdgeThreshold" -> 2.0,
   "RandomizeDirections" -> True
 }];
 
+(* Points are drawn one at a time: one coordinate per axis, then, for a point outside both
+   horizons, one acceptance draw against psi^(2 d) / maxVol. psi^(2 d) is the volume element of
+   the metric psi^4 delta_ij in d dimensions. Outside the horizons each m/(2 r) is at most 1, so
+   psi <= 3 and psi^(2 d) <= 3^(2 d) <= maxVol. *)
 HGBrillLindquist[n_Integer, {mass1_, mass2_}, separation_, opts:OptionsPattern[]] := Module[
-  {boxX, boxY, edgeThreshold, seed, randomize, result,
-   bh1Center, bh2Center, bh1Radius, bh2Radius,
-   insideHorizon, conformalFactor, volumeElement,
-   points, coords, edges, maxVol, attempts, maxAttempts,
-   pt, vol, i, j, dist, mid, v1, v2},
+  {dim, periodic, boxes, lo, len, edgeThreshold, seed, randomize, result,
+   centers, radii, disp, wrap, centerDistances, insideHorizon, r12, count, packed, sq,
+   points, coords, edges, maxVol, attempts, maxAttempts, pt, vol, i, j, delta, mid},
 
-  boxX = OptionValue["BoxX"];
-  boxY = OptionValue["BoxY"];
+  dim = OptionValue["Dimension"];
+  If[!MatchQ[dim, 2 | 3], Message[HGEvolve::baddim, dim]; dim = 2];
+  periodic = TrueQ[OptionValue["Periodic"]];
+  boxes = Take[{OptionValue["BoxX"], OptionValue["BoxY"], OptionValue["BoxZ"]}, dim];
+  lo = N[boxes[[All, 1]]];
+  len = N[boxes[[All, 2]] - boxes[[All, 1]]];
   edgeThreshold = OptionValue["EdgeThreshold"];
   seed = OptionValue["RandomSeed"];
   randomize = OptionValue["RandomizeDirections"];
 
   If[seed =!= Automatic, SeedRandom[seed]];
 
-  (* Black hole positions and horizon radii *)
-  bh1Center = {separation / 2, 0};
-  bh2Center = {-separation / 2, 0};
-  bh1Radius = mass1 / 2;
-  bh2Radius = mass2 / 2;
+  (* Black hole positions on the x axis and horizon radii (isotropic coordinates) *)
+  centers = {PadRight[{separation / 2}, dim], PadRight[{-separation / 2}, dim]};
+  radii = {mass1 / 2, mass2 / 2};
 
-  (* Check if point is inside either horizon *)
-  insideHorizon[{x_, y_}] :=
-    Norm[{x, y} - bh1Center] < bh1Radius || Norm[{x, y} - bh2Center] < bh2Radius;
+  (* Displacement from a to b; with "Periodic" the nearest periodic image of b *)
+  disp = If[periodic, Function[{a, b}, With[{d = b - a}, d - len Round[d / len]]], Function[{a, b}, b - a]];
+  wrap = If[periodic, Function[p, lo + Mod[p - lo, len]], Identity];
 
-  (* Brill-Lindquist conformal factor: psi = 1 + m1/(2*r1) + m2/(2*r2) *)
-  conformalFactor[{x_, y_}] := Module[{r1, r2},
-    r1 = Max[Norm[{x, y} - bh1Center], 0.001];
-    r2 = Max[Norm[{x, y} - bh2Center], 0.001];
-    1 + mass1 / (2 r1) + mass2 / (2 r2)
-  ];
+  (* Distances to the two centres; a point inside either horizon is rejected *)
+  centerDistances[p_] := {Norm[disp[centers[[1]], p]], Norm[disp[centers[[2]], p]]};
+  insideHorizon[p_] := With[{r = centerDistances[p]}, r[[1]] < radii[[1]] || r[[2]] < radii[[2]]];
 
-  (* Volume element is psi^4 *)
-  volumeElement[pt_] := conformalFactor[pt]^4;
-
-  (* Maximum volume element for rejection sampling *)
-  maxVol = 100.0;
+  maxVol = Max[100.0, 3.0^(2 dim)];
 
   (* Rejection sampling *)
-  points = {};
+  points = Internal`Bag[];
+  count = 0;
   attempts = 0;
-  maxAttempts = n * 1000;
+  maxAttempts = n * 10 * Round[maxVol];
 
-  While[Length[points] < n && attempts < maxAttempts,
+  While[count < n && attempts < maxAttempts,
     attempts++;
-    pt = {
-      RandomReal[boxX],
-      RandomReal[boxY]
-    };
+    pt = Table[RandomReal[boxes[[k]]], {k, dim}];
+    r12 = centerDistances[pt];
 
     (* Reject if inside horizon *)
-    If[insideHorizon[pt], Continue[]];
+    If[r12[[1]] < radii[[1]] || r12[[2]] < radii[[2]], Continue[]];
 
-    (* Accept with probability proportional to volume element *)
-    vol = volumeElement[pt];
+    (* Accept with probability proportional to the volume element psi^(2 d),
+       psi = 1 + m1/(2*r1) + m2/(2*r2) *)
+    vol = (1 + mass1 / (2 Max[r12[[1]], 0.001]) + mass2 / (2 Max[r12[[2]], 0.001]))^(2 dim);
     If[RandomReal[] < vol / maxVol,
-      AppendTo[points, pt]
+      Internal`StuffBag[points, pt]; count++
     ]
   ];
+  points = Internal`BagPart[points, All];
 
-  (* Build coordinate association *)
   coords = Association[Table[i -> points[[i]], {i, Length[points]}]];
 
-  (* Build edges *)
-  edges = {};
-  Do[
+  (* Join two points closer than the threshold unless their midpoint is inside a horizon.
+     A vectorised squared distance with a 1e-9 relative margin selects the candidates of row i;
+     the exact test below decides each one, in increasing j, so the draws follow the pair order. *)
+  packed = Developer`ToPackedArray[N[points]];
+  edges = Reap[
     Do[
-      dist = Norm[points[[i]] - points[[j]]];
-      If[dist < edgeThreshold,
-        mid = (points[[i]] + points[[j]]) / 2;
-        If[!insideHorizon[mid],
-          AppendTo[edges,
-            If[randomize && RandomReal[] < 0.5, {j, i}, {i, j}]
-          ]
+      With[{rest = packed[[i + 1 ;;]]},
+        sq = Total[Transpose[With[{dT = Transpose[rest] - packed[[i]]},
+          If[periodic, dT - len Round[dT / len], dT]]]^2, {2}];
+        Do[
+          delta = disp[points[[i]], points[[j]]];
+          If[Norm[delta] < edgeThreshold,
+            mid = If[periodic, wrap[points[[i]] + delta / 2], (points[[i]] + points[[j]]) / 2];
+            If[!insideHorizon[mid],
+              Sow[If[randomize && RandomReal[] < 0.5, {j, i}, {i, j}]]
+            ]
+          ],
+          {j, i + Flatten[Position[UnitStep[sq - edgeThreshold^2 (1 + 1*^-9)], 0]]}
         ]
       ],
-      {j, i + 1, Length[points]}
-    ],
-    {i, Length[points] - 1}
-  ];
+      {i, Length[points] - 1}
+    ]
+  ][[2]];
+  edges = If[edges === {}, {}, First[edges]];
 
   result = <|
     "Edges" -> edges,
     "VertexCoordinates" -> coords,
     "Topology" -> "BrillLindquist",
+    "Dimension" -> dim,
+    "Periodic" -> periodic,
     "Mass1" -> mass1,
     "Mass2" -> mass2,
     "Separation" -> separation,
-    "HorizonCenters" -> {bh1Center, bh2Center},
-    "HorizonRadii" -> {bh1Radius, bh2Radius},
+    "HorizonCenters" -> centers,
+    "HorizonRadii" -> radii,
     "VertexCount" -> Length[points],
     "EdgeCount" -> Length[edges]
   |>;
