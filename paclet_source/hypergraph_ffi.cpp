@@ -60,6 +60,15 @@ namespace ffi {
 // exactly what a linker is entitled to drop, and a stamp that can be dropped proves nothing.
 extern const char kBuildStamp[];
 const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+
+static hgcommon::TransitionCostHook& transition_cost_hook_slot() {
+    static hgcommon::TransitionCostHook hook;
+    return hook;
+}
+void set_transition_cost_hook(hgcommon::TransitionCostHook hook) {
+    transition_cost_hook_slot() = std::move(hook);
+}
+const hgcommon::TransitionCostHook& transition_cost_hook() { return transition_cost_hook_slot(); }
 }  // namespace ffi
 }  // namespace HG_NAMESPACE
 
@@ -460,6 +469,65 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                                 else if (name != "None")
                                     req.event_ordering_names.push_back(std::move(name));
                             }
+                        } else if (option_key == "TransitionCost") {
+                            // None, or <|"Field" -> name, "TimeStep" -> dt|>
+                            // (docs/TRANSITION_COST.md). A value that does not parse refuses
+                            // the job (refuse_invalid_input).
+                            req.transition_cost = hgcommon::TransitionCostSpec{};
+                            req.transition_cost_function = false;
+                            req.transition_cost_error.clear();
+                            std::string field;
+                            double dt = 0.0;
+                            bool have_dt = false;
+                            try {
+                                const std::string s = option_parser.template read<std::string>();
+                                if (s != "None")
+                                    req.transition_cost_error =
+                                        "TransitionCost is None or <|\"Field\" -> name, "
+                                        "\"TimeStep\" -> dt|>, got " + s;
+                            } catch (const wxf::TypeError&) {
+                                option_parser.seek(option_value_start);
+                                option_parser.read_association([&](const std::string& k, P& p) {
+                                    if (k == "Field") field = p.template read<std::string>();
+                                    else if (k == "TimeStep") {
+                                        dt = p.template read<double>();
+                                        have_dt = true;
+                                    } else {
+                                        p.skip_value();
+                                        req.transition_cost_error =
+                                            "TransitionCost has no key \"" + k + "\"";
+                                    }
+                                });
+                                static const std::pair<const char*, uint32_t> kFields[] = {
+                                    {"Degree", hgcommon::TC_FIELD_DEGREE},
+                                    {"Curvature", hgcommon::TC_FIELD_CURVATURE},
+                                    {"LoopCount", hgcommon::TC_FIELD_LOOP_COUNT},
+                                    {"EdgeMultiplicity", hgcommon::TC_FIELD_EDGE_MULTIPLICITY}};
+                                for (const auto& [name, f] : kFields)
+                                    if (field == name) req.transition_cost.field = f;
+                                if (field == "Function") req.transition_cost_function = true;
+                                if (req.transition_cost_error.empty()) {
+                                    if (!req.transition_cost_function &&
+                                        !hgcommon::tc_active(req.transition_cost))
+                                        req.transition_cost_error =
+                                            "TransitionCost \"Field\" is not one of Degree, "
+                                            "Curvature, LoopCount and EdgeMultiplicity: \"" +
+                                            field + "\"";
+                                    else if (hgcommon::tc_active(req.transition_cost) &&
+                                             (!have_dt || !std::isfinite(dt)))
+                                        req.transition_cost_error =
+                                            "TransitionCost needs a finite real \"TimeStep\"";
+                                }
+                                req.transition_cost.dt = dt;
+                            }
+                        } else if (option_key == "Search") {
+                            const std::string s = option_parser.template read<std::string>();
+                            if (s == "BestFirst") req.best_first = true;
+                            else if (s == "Automatic" || s == "None") req.best_first = false;
+                            else throw std::runtime_error(
+                                "Search '" + s + "' is not Automatic or BestFirst");
+                        } else if (option_key == "SearchBudget") {
+                            req.search_budget = read_cap();
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
                             req.graph_properties = option_parser.template read<std::vector<std::string>>();
@@ -607,6 +675,10 @@ static std::vector<hypergraph::RewriteRule> build_rules(const hgffi::ParsedJob& 
 
 static void refuse_invalid_input(const hgffi::ParsedJob& req) {
     if (!req.state_cost_error.empty()) throw std::runtime_error(req.state_cost_error);
+    if (!req.transition_cost_error.empty()) throw std::runtime_error(req.transition_cost_error);
+    if (req.transition_cost_function && !hgffi::transition_cost_hook())
+        throw std::runtime_error("TransitionCost \"Field\" -> \"Function\" needs a function from "
+                                 "the in-process Python client (hgevolve, transition_cost=f)");
     if (req.initial_states_raw.empty())
         throw std::runtime_error("InitialStates is empty; give at least one state with at least one edge");
     for (size_t si = 0; si < req.initial_states_raw.size(); ++si) {
@@ -886,6 +958,10 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     else engine.set_max_states_per_step(req.max_states_per_step);
     engine.set_matches_per_state_rule(req.matches_per_state_rule);
     engine.set_state_cost(req.state_cost);
+    engine.set_transition_cost(req.transition_cost, req.transition_cost_function
+                                                        ? hgffi::transition_cost_hook()
+                                                        : hgcommon::TransitionCostHook{});
+    engine.set_best_first(req.best_first, req.search_budget);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
     engine.set_generational(req.generational);
@@ -1115,8 +1191,13 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
         // A job replied in arrays (in-process) runs on the CPU engine: the device replies in WXF.
         const bool cpu_reply = !Out::kWire;
+        // "TransitionCost" and "Search" -> "BestFirst" run on the CPU engine: the device has
+        // neither (rc3 item: device port).
+        const bool cost_search = req.best_first || hgcommon::tc_active(req.transition_cost) ||
+                                 req.transition_cost_function;
         const bool on_cpu =
-            req.positional_event_identity || custom_keys || cpu_session || cpu_reply;
+            req.positional_event_identity || custom_keys || cpu_session || cpu_reply ||
+            cost_search;
         if (req.positional_event_identity && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
@@ -1125,6 +1206,10 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
                 "Full and Automatic"});
+        else if (cost_search && !cpu_session && !cpu_reply)
+            req.ffi_warnings.push_back({"Engine", 1,
+                "\"TransitionCost\" and \"Search\" -> \"BestFirst\" run on the CPU engine: the "
+                "device has neither"});
 #endif
         if (req.session_op == "InitialCondition") {
             // A generated initial condition, on either device: no rules and no evolution.
@@ -1185,6 +1270,33 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
 
         if (!held_session) refuse_invalid_input(req);
         if (!held_session) req.event_ordering = parse_event_ordering(req);
+        // "Search" -> "BestFirst" chooses every transition by path cost, one at a time
+        // (docs/TRANSITION_COST.md). The step caps, the draws, quotient exploration and the
+        // event orders choose transitions too, so the job drops them.
+        if (!held_session && req.best_first) {
+            if (req.session_op == "Open")
+                throw std::runtime_error("\"Search\" -> \"BestFirst\" does not apply to a session");
+            if (req.matches_per_step != 0 || req.max_states_per_step != 0 ||
+                req.max_successor_states_per_parent != 0 || req.matches_per_state_rule != 0 ||
+                req.transition_rate < 1.0 || !req.rule_weights.empty() ||
+                req.exploration_probability < 1.0 || req.explore_from_canonical_states_only ||
+                req.generational || req.event_ordering != 0)
+                req.ffi_warnings.push_back({"BestFirstOptions", 1,
+                    "\"Search\" -> \"BestFirst\" chooses the transitions by path cost: the caps, "
+                    "\"TransitionRate\", \"RuleWeights\", \"ExplorationProbability\", "
+                    "\"ExploreFromCanonicalStatesOnly\", \"Generational\" and "
+                    "\"EventOrderingFunction\" do not apply with it."});
+            req.matches_per_step = 0;
+            req.max_states_per_step = 0;
+            req.max_successor_states_per_parent = 0;
+            req.matches_per_state_rule = 0;
+            req.transition_rate = 1.0;
+            req.rule_weights.clear();
+            req.exploration_probability = 1.0;
+            req.explore_from_canonical_states_only = false;
+            req.generational = false;
+            req.event_ordering = 0;
+        }
 
         // quotient_route_requested counts two requests; each is named only when the job made it.
         if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full) {
@@ -1216,15 +1328,20 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                 "state is expanded."});
             req.explore_from_canonical_states_only = false;
         }
+        const auto transition_costed = [&] {
+            return hgcommon::tc_active(req.transition_cost) || req.transition_cost_function;
+        };
         if (!held_session && (req.generational || req.event_ordering != 0) &&
             (req.matches_per_step != 0 || req.max_states_per_step != 0 ||
              req.max_successor_states_per_parent != 0 || req.matches_per_state_rule != 0 ||
              req.transition_rate < 1.0 || !req.rule_weights.empty() ||
-             req.exploration_probability < 1.0 || hgcommon::state_cost_active(req.state_cost))) {
+             req.exploration_probability < 1.0 || hgcommon::state_cost_active(req.state_cost) ||
+             transition_costed())) {
             req.ffi_warnings.push_back({"GenerationalCaps", 1,
                 "\"Generational\" and \"EventOrderingFunction\" choose the matches of a state "
                 "by an event order: the caps, \"TransitionRate\", \"RuleWeights\", "
-                "\"ExplorationProbability\" and \"StateCost\" do not apply with them."});
+                "\"ExplorationProbability\", \"StateCost\" and \"TransitionCost\" do not apply "
+                "with them."});
             req.matches_per_step = 0;
             req.max_states_per_step = 0;
             req.max_successor_states_per_parent = 0;
@@ -1233,13 +1350,25 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             req.rule_weights.clear();
             req.exploration_probability = 1.0;
             req.state_cost = hgcommon::StateCost{};
+            req.transition_cost = hgcommon::TransitionCostSpec{};
+            req.transition_cost_function = false;
         }
-        if (!held_session && hgcommon::state_cost_active(req.state_cost) &&
+        if (!held_session && hgcommon::state_cost_active(req.state_cost) && !req.best_first &&
             effective_max_states_per_step(req) == 0) {
             req.ffi_warnings.push_back({"StateCostNeedsStepCap", 1,
-                "\"StateCost\" applies with \"MaxStatesPerStep\" or with \"UniformRandom\" and "
-                "\"MatchesPerStep\": the evolution is not guided by the cost."});
+                "\"StateCost\" applies with \"MaxStatesPerStep\", with \"UniformRandom\" and "
+                "\"MatchesPerStep\", or with \"Search\" -> \"BestFirst\": the evolution is not "
+                "guided by the cost."});
             req.state_cost = hgcommon::StateCost{};
+        }
+        if (!held_session && transition_costed() && !req.best_first &&
+            effective_max_states_per_step(req) == 0) {
+            req.ffi_warnings.push_back({"TransitionCostNeedsSelection", 1,
+                "\"TransitionCost\" applies with \"MaxStatesPerStep\", with \"UniformRandom\" and "
+                "\"MatchesPerStep\", or with \"Search\" -> \"BestFirst\": the evolution is not "
+                "guided by the cost."});
+            req.transition_cost = hgcommon::TransitionCostSpec{};
+            req.transition_cost_function = false;
         }
 
 #ifdef HG_GPU_BACKEND
@@ -2329,6 +2458,21 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                     for (uint8_t k = 0; k < edge.arity; ++k) f(static_cast<int64_t>(edge.vertices[k]));
                 });
             });
+        }
+
+        // "PathCosts": under best-first search each state's path cost by state id, the states
+        // as "States" lists them.
+        if (engine.best_first()) {
+            std::vector<std::pair<uint32_t, double>> costs;
+            for (const auto& [sid, cost] : engine.path_costs())
+                if (!full_canonicalization || hg.get_canonical_state(sid) == sid)
+                    costs.emplace_back(sid, cost);
+            std::sort(costs.begin(), costs.end());
+            wxf::WXFValueAssociation pc;
+            pc.reserve(costs.size());
+            for (const auto& [sid, cost] : costs)
+                pc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(cost)});
+            reply.value("PathCosts", wxf::WXFValue(pc));
         }
 
         if (req.include_device) {

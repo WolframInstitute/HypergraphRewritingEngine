@@ -20,7 +20,7 @@ from ._cost import state_cost_program
 
 __all__ = ["evolve", "Session", "encode_job", "initial_condition", "Result", "Table", "Relation",
            "Ragged", "EdgeLists", "VertexReals", "EngineError", "EngineWarning", "OPTIONS",
-           "DATA", "DEFAULT_DATA", "state_cost_program", "build_stamp"]
+           "DATA", "DEFAULT_DATA", "state_cost_program", "heat_residual", "build_stamp"]
 
 
 class EngineError(RuntimeError):
@@ -43,9 +43,26 @@ def _job(rules, initial, steps, data, options):
             "Steps": int(steps), "Options": job_options(options, data)}
 
 
-def _run(job):
+def heat_residual(parent, child, field="Degree", time_step=0.0, statistics_graph="Consecutive"):
+    """The engine's "TransitionCost" residual (docs/TRANSITION_COST.md): the sum over the vertices
+    of both states of (f_child(v) - f_parent(v) - time_step * ((A - D) f_parent)(v))^2, A - D the
+    parent's graph Laplacian. `parent` and `child` are lists of edges of vertex ids; a vertex of
+    both has one id in both. `field` is "Degree", "Curvature", "LoopCount" or
+    "EdgeMultiplicity"."""
+    return _core.heat_residual([list(map(int, e)) for e in parent],
+                               [list(map(int, e)) for e in child], str(field), float(time_step),
+                               str(statistics_graph))
+
+
+def _cost_function(options):
+    """The callable given as transition_cost, or None."""
+    f = options.get("transition_cost")
+    return f if callable(f) else None
+
+
+def _run(job, transition_cost=None):
     try:
-        reply = _core.run(job)
+        reply = _core.run(job, transition_cost)
     except RuntimeError as e:
         raise EngineError(str(e)) from None
     result = Result(reply)
@@ -64,7 +81,7 @@ def evolve(rules, initial, steps, *, data=None, **options):
     data     what the reply holds: a list of names from hgevolve.DATA (default DEFAULT_DATA).
     options  HGEvolve's options under the names in hgevolve.OPTIONS.
     """
-    return _run(_job(rules, initial, steps, data, options))
+    return _run(_job(rules, initial, steps, data, options), _cost_function(options))
 
 
 def encode_job(rules, initial, steps, *, data=None, graph_properties=None, **options):
@@ -96,7 +113,7 @@ class Session:
                                                                  "random_seed")
         job = _job(rules, initial, 0, data, self._options)
         job["Op"] = "Open"
-        self.result = _run(job)
+        self.result = _run(job, _cost_function(self._options))
         self.handle = self.result.session
         self.frontier = self.result.frontier
 
@@ -107,7 +124,7 @@ class Session:
                "Options": job_options(self._options, data)}
         if start is not None:
             job["From"] = [int(x) for x in start]
-        result = _run(job)
+        result = _run(job, _cost_function(self._options))
         self.frontier = result.frontier
         return result
 

@@ -16,12 +16,16 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
 
+#include <cmath>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "ffi_job.hpp"   // set_transition_cost_hook
+#include "hgcommon/transition_cost_core.hpp"
 #include "reply_out.hpp"
 #include "state_statistics.hpp"
 
@@ -255,21 +259,110 @@ struct Reply {
     }
 };
 
-Reply run(nb::handle job) {
+// A state's hyperedges as a list of lists of vertex ids.
+nb::list edge_lists(const HG_NAMESPACE::common::TcEdges& e) {
+    nb::list out;
+    for (uint32_t i = 0; i < e.count(); ++i) {
+        nb::list edge;
+        for (uint32_t k = 0; k < e.arity(i); ++k) edge.append(nb::int_(e.at(i, k)));
+        out.append(edge);
+    }
+    return out;
+}
+
+// THE TRANSITION COST CALLBACK. The engine calls it from its workers with the GIL released by
+// run(), so each call takes the GIL; the calls run one at a time. The first exception the
+// callable raises is kept and raised by run() after the job, and its transition costs +Infinity.
+struct CostCallback {
+    nb::object fn;
+    std::unique_ptr<nb::python_error> error;
+
+    double operator()(const HG_NAMESPACE::common::TcEdges& parent,
+                      const HG_NAMESPACE::common::TcEdges& child) {
+        nb::gil_scoped_acquire gil;
+        if (error) return HUGE_VAL;
+        try {
+            return nb::cast<double>(fn(edge_lists(parent), edge_lists(child)));
+        } catch (nb::python_error& e) {
+            error = std::make_unique<nb::python_error>(std::move(e));
+        } catch (const std::exception& e) {
+            PyErr_SetString(PyExc_TypeError,
+                            (std::string("transition_cost returned no real number: ") + e.what())
+                                .c_str());
+            error = std::make_unique<nb::python_error>();
+        }
+        return HUGE_VAL;
+    }
+};
+
+Reply run(nb::handle job, nb::object transition_cost) {
     const wxf::WXFValue value = to_value(job);
     HostBridge host;
     host.progress = [](const std::string& line) {
         std::fprintf(stderr, "%s\n", line.c_str());
         std::fflush(stderr);
     };
+    auto callback = std::make_shared<CostCallback>();
+    callback->fn = transition_cost;
     std::shared_ptr<hgffi::ArrayReply> reply;
+    std::exception_ptr failed;
     {
         nb::gil_scoped_release release;
         std::lock_guard<std::mutex> lock(g_job_mutex);
-        reply = std::make_shared<hgffi::ArrayReply>(run_rewriting_arrays(value, host));
+        if (!transition_cost.is_none())
+            hgffi::set_transition_cost_hook(
+                [callback](const HG_NAMESPACE::common::TcEdges& p,
+                           const HG_NAMESPACE::common::TcEdges& c) { return (*callback)(p, c); });
+        try {
+            reply = std::make_shared<hgffi::ArrayReply>(run_rewriting_arrays(value, host));
+        } catch (...) {
+            failed = std::current_exception();
+        }
+        hgffi::set_transition_cost_hook(nullptr);
         release_job_memory(0);
     }
+    if (callback->error) {
+        std::unique_ptr<nb::python_error> e = std::move(callback->error);
+        e->restore();
+        throw nb::python_error();
+    }
+    if (failed) std::rethrow_exception(failed);
     return Reply{std::move(reply)};
+}
+
+// hgcommon::tc_transition_cost, the engine's heat residual, on two edge lists.
+double heat_residual(nb::handle parent, nb::handle child, const std::string& field,
+                     double time_step, const std::string& graph) {
+    namespace hc = HG_NAMESPACE::common;
+    hc::TransitionCostSpec spec;
+    if (field == "Degree") spec.field = hc::TC_FIELD_DEGREE;
+    else if (field == "Curvature") spec.field = hc::TC_FIELD_CURVATURE;
+    else if (field == "LoopCount") spec.field = hc::TC_FIELD_LOOP_COUNT;
+    else if (field == "EdgeMultiplicity") spec.field = hc::TC_FIELD_EDGE_MULTIPLICITY;
+    else throw nb::value_error(("field is one of 'Degree', 'Curvature', 'LoopCount' and "
+                                "'EdgeMultiplicity', got '" + field + "'").c_str());
+    if (graph == "Consecutive") spec.graph = hc::SG_GRAPH_CONSECUTIVE;
+    else if (graph == "AllPairs") spec.graph = hc::SG_GRAPH_ALL_PAIRS;
+    else throw nb::value_error(("statistics_graph is 'Consecutive' or 'AllPairs', got '" +
+                                graph + "'").c_str());
+    spec.dt = time_step;
+    hc::TcEdgeLists p, c;
+    auto fill = [](nb::handle edges, hc::TcEdgeLists& out) {
+        std::vector<uint32_t> verts;
+        for (nb::handle e : edges) {
+            verts.clear();
+            for (nb::handle v : e) {
+                const int64_t x = nb::cast<int64_t>(v);
+                if (x < 0 || x > 0xFFFFFFFEll)
+                    throw nb::value_error("a vertex id is an integer from 0 to 2^32 - 2");
+                verts.push_back(static_cast<uint32_t>(x));
+            }
+            out.add(verts.data(), static_cast<uint32_t>(verts.size()));
+        }
+    };
+    fill(parent, p);
+    fill(child, c);
+    return hc::tc_transition_cost(p.view(), c.view(), spec);
 }
 
 nb::bytes encode(nb::handle job) {
@@ -288,8 +381,13 @@ NB_MODULE(_core, m) {
         g_symbol_type = std::move(symbol);
         g_function_type = std::move(function);
     });
-    m.def("run", &run, nb::arg("job"),
-          "Run a job (the paclet's envelope as Python objects) and return its Reply.");
+    m.def("run", &run, nb::arg("job"), nb::arg("transition_cost") = nb::none(),
+          "Run a job (the paclet's envelope as Python objects) and return its Reply. "
+          "`transition_cost`, when given, is the callable a job with "
+          "TransitionCost <|Field -> Function|> calls.");
+    m.def("heat_residual", &heat_residual, nb::arg("parent"), nb::arg("child"),
+          nb::arg("field"), nb::arg("time_step"), nb::arg("statistics_graph"),
+          "The engine's heat residual of `field` from `parent` to `child`.");
     m.def("encode", &encode, nb::arg("job"), "The job's WXF bytes, as hg_evolve reads them.");
     m.def("build_stamp", []() { return std::string(hgffi::kBuildStamp); });
     m.def("measure_names", []() {

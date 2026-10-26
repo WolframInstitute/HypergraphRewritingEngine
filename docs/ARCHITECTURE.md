@@ -306,9 +306,20 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   with the whole block, the matches on a consumed edge found by joins anchored at it in the
   parent and dropped, the matches on a produced edge found by joins anchored at it in the child.
   A transition not kept is not taken.
+- **Transition cost and best-first search** (docs/TRANSITION_COST.md). A transition's cost is
+  `hgcommon::tc_transition_cost` over its parent's hyperedges and its child's, built before the
+  rewrite (`Hypergraph::transition_edge_lists`, the same `SuccessorCursor` the successor hashes
+  read), plus a caller's hook and the child's "StateCost" (`successor_identity`). Under
+  `MaxStatesPerStep` a successor's cost is the lowest cost of a transition into it
+  (`keep_lowest_successors`). Under "Search" -> "BestFirst" each drain adds its transitions with
+  the child's path cost to `bf_pending_` (`best_first_at_drain`), and `run_best_first` takes the
+  lowest (path cost, rank, parent's path key) from a heap, rewrites it and waits for the child's
+  matching before taking the next. One transition is in flight at a time, so the states created
+  depend on the inputs alone; the matching of each state runs on every worker. The device has
+  neither: the GPU binary runs such a job on the CPU engine with a warning.
 
 Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;
-the drain fires once per state), `RuleWeights.*`.
+the drain fires once per state), `RuleWeights.*`, `TransitionCost.*` and `BestFirst.*`.
 
 ## Validation
 

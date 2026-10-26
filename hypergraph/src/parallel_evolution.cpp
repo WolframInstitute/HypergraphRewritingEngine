@@ -147,6 +147,7 @@ void ParallelEvolutionEngine::evolve(
     // Create or get the canonical state (canonical hash computed inside, mode-aware).
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), 0, INVALID_ID);
+    seed_best_first(raw_state, 0);
 
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -221,6 +222,7 @@ void ParallelEvolutionEngine::evolve(
     // Single synchronization point at the end
     job_system_->wait_for_completion();
     raise_worker_error();
+    if (best_first_) run_best_first();
 
     finalize_evolution();
 }
@@ -248,6 +250,7 @@ void ParallelEvolutionEngine::evolve(
     roots.reserve(initial_states.size());
     for (const auto& state_edges : initial_states) {
         roots.push_back(create_and_register_initial_state(state_edges));
+        seed_best_first(roots.back(), roots.size() - 1);
         note_initial_class(roots.back());
     }
     std::sort(initial_classes_.begin(), initial_classes_.end());
@@ -260,6 +263,7 @@ void ParallelEvolutionEngine::evolve(
     // Single synchronization point at the end
     job_system_->wait_for_completion();
     raise_worker_error();
+    if (best_first_) run_best_first();
 
     finalize_evolution();
 }
@@ -955,6 +959,10 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     // Every drain below rewrites from the root, and label_rewrite reads the root's label.
     label_root(state);
+    if (best_first_) {
+        best_first_at_drain(state, step);
+        return;
+    }
     if (event_ordering_ != 0) {
         ordered_at_drain(state, step);
         return;
@@ -964,7 +972,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         return;
     }
     const size_t k = max_successor_states_per_parent_;
-    const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
+    const bool costed = max_states_per_step_ != 0 && cost_active();
     if (max_states_per_step_ != 0 && step_cap_counts_matches_ && !costed) {
         // MatchesPerStep: the state's kept transitions go to the step as one block in step
         // order. A child handed its parent's set holds it already (match_held); any other state
@@ -1016,7 +1024,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         // own ranks do not bound it, and then every candidate is offered.
         bool all_unique = true;
         for (const RankedMatch& c : cands) all_unique = all_unique && c.succ.unique != 0;
-        if (all_unique) keep_lowest_successors(cands, max_states_per_step_, costed);
+        if (all_unique) keep_lowest_successors(cands, max_states_per_step_, costed, transition_costed());
         if (auto* list = step_candidates(step)) {
             for (const RankedMatch& c : cands) list->push(c, match_arena(step));
             HG_STAT(step_candidates_offered_.fetch_add(cands.size(), std::memory_order_relaxed));
@@ -1033,13 +1041,22 @@ hgcommon::SuccessorIdentity ParallelEvolutionEngine::successor_identity(StateId 
     const StateCanonicalizationMode mode = hg_->state_canonicalization_mode();
     const RewriteRule& rule = rules_[m.rule_index()];
     if (cost) {
-        // The cost reads the successor's canonical form, which under Full states is also its
-        // identity.
-        HG_THREAD_LOCAL(std::vector<uint32_t>, form);
-        const uint64_t h = hg_->successor_canonical_hash(state, m.matched_edges(), m.num_edges(),
-                                                         rule, m.binding().bindings, &form);
-        *cost = successor_cost(h, form);
-        if (mode == StateCanonicalizationMode::Full) return {h, 0};
+        const double tc = transition_costed() ? transition_cost_of(state, m) : 0.0;
+        if (!hgcommon::state_cost_active(state_cost_)) {
+            *cost = hgcommon::state_cost_key(tc);
+        } else {
+            // The state cost reads the successor's canonical form, which under Full states is
+            // also its identity.
+            HG_THREAD_LOCAL(std::vector<uint32_t>, form);
+            const uint64_t h = hg_->successor_canonical_hash(state, m.matched_edges(),
+                                                             m.num_edges(), rule,
+                                                             m.binding().bindings, &form);
+            const uint64_t s = successor_cost(h, form);
+            *cost = transition_costed()
+                        ? hgcommon::state_cost_key(tc + hgcommon::sp_value_of(s))
+                        : s;
+            if (mode == StateCanonicalizationMode::Full) return {h, 0};
+        }
     }
     if (mode == StateCanonicalizationMode::None) return {0, 1};
     if (mode == StateCanonicalizationMode::Automatic) {
@@ -1063,7 +1080,7 @@ uint64_t ParallelEvolutionEngine::successor_cost(uint64_t hash,
 }
 
 void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k,
-                                                     bool costed) {
+                                                     bool costed, bool per_transition) {
     const uint32_t n = static_cast<uint32_t>(cands.size());
     if (n == 0 || k == 0) return;
     std::vector<uint64_t> rank(n), succ_rank(n);
@@ -1076,6 +1093,15 @@ void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& c
     if (costed) {
         std::vector<uint64_t> cost(n);
         for (uint32_t i = 0; i < n; ++i) cost[i] = cands[i].cost;
+        if (per_transition) {
+            // A successor's cost is the lowest cost of a transition into it.
+            std::unordered_map<uint64_t, uint64_t> lowest;
+            for (uint32_t i = 0; i < n; ++i) {
+                auto [it, fresh] = lowest.emplace(succ_rank[i], cost[i]);
+                if (!fresh && cost[i] < it->second) it->second = cost[i];
+            }
+            for (uint32_t i = 0; i < n; ++i) cost[i] = lowest.find(succ_rank[i])->second;
+        }
         hgcommon::cost_successor_ranks(cost.data(), succ_rank.data(), n, order.data(),
                                        rank.data());
         succ_rank.swap(rank);
@@ -1103,7 +1129,7 @@ void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& c
 void ParallelEvolutionEngine::select_step(uint32_t step) {
     DepthExtra* x = depth_join_.storage().find_extra(step);
     if (!x) return;
-    if (step_cap_counts_matches_ && !hgcommon::state_cost_active(state_cost_)) {
+    if (step_cap_counts_matches_ && !cost_active()) {
         select_positions(step, *x);
         return;
     }
@@ -1111,7 +1137,8 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
-    keep_lowest_successors(cands, max_states_per_step_, hgcommon::state_cost_active(state_cost_));
+    keep_lowest_successors(cands, max_states_per_step_, cost_active(),
+                           transition_costed());
     for (const RankedMatch& c : cands) submit_rewrite_task(*c.match, step, step + 1);
     if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
 }
@@ -1289,6 +1316,151 @@ void ParallelEvolutionEngine::execute_generation_task(StateId state, uint32_t st
     total_rewrites_.fetch_add(r.num_events, std::memory_order_relaxed);
     total_events_.fetch_add(r.num_events, std::memory_order_relaxed);
     submit_match_task(r.raw_state, step + 1);
+}
+
+// The parent's part of the residual (hgcommon::tc_parent_of) is built once per parent on each
+// thread: a state's drain costs its transitions on one thread, one after another. The cache is
+// keyed by the run (tc_run_, unique in the process) and the state.
+double ParallelEvolutionEngine::transition_cost_of(StateId state, const MatchRecord& m) {
+    const RewriteRule& rule = rules_[m.rule_index()];
+    double c = 0.0;
+    if (hgcommon::tc_active(transition_cost_)) {
+        struct ParentCache {
+            uint64_t run = 0;
+            StateId state = INVALID_ID;
+            hgcommon::TcEdgeLists edges;
+            std::vector<EdgeId> ids;
+            std::vector<std::pair<EdgeId, uint32_t>> position;   // by edge id
+            hgcommon::TcParent parent;
+        };
+        HG_THREAD_LOCAL(ParentCache, cache);
+        HG_THREAD_LOCAL(hgcommon::TcEdgeLists, produced);
+        hgcommon::TransitionCostSpec spec = transition_cost_;
+        spec.graph = hg_->statistics_graph();
+        if (cache.run != tc_run_ || cache.state != state) {
+            hg_->state_edge_lists(state, cache.edges, cache.ids);
+            hgcommon::tc_parent_of(cache.edges.view(), spec, cache.parent);
+            cache.position.clear();
+            for (uint32_t i = 0; i < cache.ids.size(); ++i)
+                cache.position.emplace_back(cache.ids[i], i);
+            std::sort(cache.position.begin(), cache.position.end());
+            cache.run = tc_run_;
+            cache.state = state;
+        }
+        uint32_t consumed[MAX_PATTERN_EDGES];
+        const uint8_t nc = m.num_edges();
+        for (uint8_t k = 0; k < nc; ++k)
+            consumed[k] = std::lower_bound(cache.position.begin(), cache.position.end(),
+                                           std::make_pair(m.matched_edges()[k], uint32_t{0}))
+                              ->second;
+        hg_->produced_edge_lists(rule, m.binding().bindings, produced);
+        c += hgcommon::tc_child_cost(cache.parent, consumed, nc, produced.view(), spec);
+    }
+    if (transition_cost_hook_) {
+        HG_THREAD_LOCAL(hgcommon::TcEdgeLists, parent);
+        HG_THREAD_LOCAL(hgcommon::TcEdgeLists, child);
+        hg_->transition_edge_lists(state, m.matched_edges(), m.num_edges(), rule,
+                                   m.binding().bindings, parent, child);
+        c += transition_cost_hook_(parent.view(), child.view());
+    }
+    return c;
+}
+
+void ParallelEvolutionEngine::seed_best_first(StateId root, size_t index) {
+    if (!best_first_) return;
+    bf_path_cost_[root] = 0.0;
+    bf_path_key_[root] = hgcommon::splitmix64(static_cast<uint64_t>(index) + 1u);
+}
+
+// A state's transitions join the best-first frontier with the child's path cost. A state of a
+// class the search already holds adds none: its class's transitions are on the frontier.
+void ParallelEvolutionEngine::best_first_at_drain(StateId state, uint32_t step) {
+    if (hg_->state_canonicalization_mode() != StateCanonicalizationMode::None &&
+        hg_->get_canonical_state(state) != state)
+        return;
+    const auto cost_at = bf_path_cost_.find(state);
+    const auto key_at = bf_path_key_.find(state);
+    if (cost_at == bf_path_cost_.end() || key_at == bf_path_key_.end()) return;
+    std::vector<RankedMatch> cands;
+    drain_candidates(state, step, cands);
+    const bool costed = cost_active();
+    for (const RankedMatch& c : cands) {
+        uint64_t cost = 0;
+        const hgcommon::SuccessorIdentity succ =
+            successor_identity(state, *c.match, costed ? &cost : nullptr);
+        const double path = cost_at->second + (costed ? hgcommon::sp_value_of(cost) : 0.0);
+        bf_pending_.push(BfCandidate{hgcommon::state_cost_key(path), c.rank, key_at->second,
+                                     path, succ, *c.match, step},
+                         hg_->arena());
+    }
+}
+
+// THE BEST-FIRST DRIVER. One transition at a time: the frontier's first in (path cost, rank,
+// parent's path key), then a wait for the rewrite and the child's matching, whose drain adds the
+// child's transitions. A transition into a state the search already created is dropped. The
+// order is a function of the transitions alone, so the states created do not depend on the
+// thread count.
+void ParallelEvolutionEngine::run_best_first() {
+    const auto after = [](const BfCandidate& a, const BfCandidate& b) {
+        if (a.cost_key != b.cost_key) return a.cost_key > b.cost_key;
+        if (a.rank != b.rank) return a.rank > b.rank;
+        return a.parent_path > b.parent_path;
+    };
+    std::vector<BfCandidate> heap;
+    std::unordered_set<uint64_t> reached;
+    // The initial states' identities, by the successor identity of a rewrite that consumes and
+    // produces nothing, so a transition back into an initial state's class is dropped.
+    const StateCanonicalizationMode mode = hg_->state_canonicalization_mode();
+    const RewriteRule nothing{};
+    for (const auto& [root, cost] : bf_path_cost_) {
+        if (mode == StateCanonicalizationMode::Full)
+            reached.insert(hg_->successor_canonical_hash(root, nullptr, 0, nothing, nullptr));
+        else if (mode == StateCanonicalizationMode::Automatic)
+            reached.insert(hg_->successor_content_hash(root, nullptr, 0, nothing, nullptr));
+    }
+    size_t created = 0;
+    for (;;) {
+        bf_pending_.for_each([&](const BfCandidate& c) {
+            heap.push_back(c);
+            std::push_heap(heap.begin(), heap.end(), after);
+        });
+        bf_pending_.reset();
+        if (created >= search_budget_ || should_stop_.load(std::memory_order_relaxed) ||
+            last_error() != job_system::ErrorType::None)
+            break;
+        bool found = false;
+        BfCandidate next{};
+        while (!heap.empty()) {
+            std::pop_heap(heap.begin(), heap.end(), after);
+            next = heap.back();
+            heap.pop_back();
+            if (next.succ.unique == 0 && !reached.insert(next.succ.key).second) continue;
+            found = true;
+            break;
+        }
+        if (!found) break;
+        bf_next_ = BfNode{next.path_cost, hgcommon::splitmix64(next.parent_path ^ next.rank)};
+        submit_rewrite_task(next.match, next.step);
+        job_system_->wait_for_completion();
+        ++created;
+    }
+    raise_worker_error();
+}
+
+void ParallelEvolutionEngine::set_transition_cost(const hgcommon::TransitionCostSpec& spec,
+                                                  hgcommon::TransitionCostHook hook) {
+    static std::atomic<uint64_t> runs{0};
+    transition_cost_ = spec;
+    transition_cost_hook_ = std::move(hook);
+    tc_run_ = runs.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+void ParallelEvolutionEngine::set_best_first(bool on, size_t budget) {
+    best_first_ = on;
+    search_budget_ = budget;
+    bf_path_cost_.clear();
+    bf_path_key_.clear();
+    bf_pending_.reset();
 }
 
 void ParallelEvolutionEngine::drop_blocks(DepthExtra& x) {
@@ -1657,8 +1829,8 @@ void ParallelEvolutionEngine::reset_depth_join() {
 
 // Called by evolve() after reset_depth_join, with no task live.
 void ParallelEvolutionEngine::begin_match_epochs() {
-    match_epochs_on_ = !continuable_ && !enable_match_forwarding_ && depth_signal_available_ &&
-                       !validate_match_forwarding_;
+    match_epochs_on_ = !continuable_ && !best_first_ && !enable_match_forwarding_ &&
+                       depth_signal_available_ && !validate_match_forwarding_;
 }
 
 ParallelEvolutionEngine::MatchEpoch* ParallelEvolutionEngine::match_epoch(uint32_t step) {
@@ -1829,7 +2001,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // A step's selection hands each kept transition's state's matches to its child when nothing
     // else chooses among a state's matches at its drain.
     inherit_matches_ =
-        hgcommon::held_matches_apply(lineage_on_, hgcommon::state_cost_active(state_cost_),
+        hgcommon::held_matches_apply(lineage_on_, cost_active(),
                                      static_cast<uint32_t>(matches_per_state_rule_),
                                      static_cast<uint32_t>(max_successor_states_per_parent_),
                                      exploration_probability_) &&
@@ -1843,7 +2015,8 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     explore_from_canonical_states_only_ = hgcommon::quotient_exploration_applies(
         explore_from_canonical_states_only_, full_states, max_states_per_step_, undirected_);
     // "Generational" and "EventOrderingFunction" expand every state of their histories.
-    if (single_history()) explore_from_canonical_states_only_ = false;
+    // Best-first search expands every state it creates, once.
+    if (single_history() || best_first_) explore_from_canonical_states_only_ = false;
     rank_reads_step_ = hgcommon::rank_reads_step(full_states, max_states_per_step_);
     // A generation's events are not class-frame transitions of one match each, so "Generational"
     // records the relations from the edges.
@@ -2035,6 +2208,11 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     if (rr.new_state == INVALID_ID) return;
     if (lineage_on_) label_rewrite(match, rr.raw_state, rr.produced_edges, rr.num_produced);
+    // Best-first search has one rewrite in flight, and its child's drain reads these.
+    if (best_first_) {
+        bf_path_cost_[rr.raw_state] = bf_next_.path_cost;
+        bf_path_key_[rr.raw_state] = bf_next_.path_key;
+    }
 
     total_rewrites_.fetch_add(1, std::memory_order_relaxed);
     total_events_.fetch_add(1, std::memory_order_relaxed);
@@ -2895,7 +3073,7 @@ void ParallelEvolutionEngine::set_rule_weights(std::vector<double> w) { rule_wei
 const std::vector<double>& ParallelEvolutionEngine::rule_weights() const { return rule_weights_; }
 
 bool ParallelEvolutionEngine::defers_to_drain() const {
-    return single_history() ||
+    return single_history() || best_first_ ||
            hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
                                    static_cast<uint32_t>(max_successor_states_per_parent_),
                                    static_cast<uint32_t>(max_states_per_step_)) != 0;

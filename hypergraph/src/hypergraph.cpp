@@ -1560,6 +1560,59 @@ uint64_t Hypergraph::successor_canonical_hash(StateId parent, const EdgeId* cons
     return h;
 }
 
+void Hypergraph::transition_edge_lists(StateId parent, const EdgeId* consumed,
+                                       uint8_t num_consumed, const RewriteRule& rule,
+                                       const VertexId* binding, hgcommon::TcEdgeLists& parent_out,
+                                       hgcommon::TcEdgeLists& child_out) const {
+    parent_out.clear();
+    child_out.clear();
+    auto mk = worker_scratch().mark();
+    {
+        SVec<EdgeId> ids;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        get_state(parent).edges.for_each([&](EdgeId e) {
+            ids.push_back(e);
+            const Edge& edge = edges_[e];
+            parent_out.add(edge.vertices, edge.arity);
+        });
+        hgcommon::SuccessorCursor<HostEdgeCursor, PatternEdge> c(
+            HostEdgeCursor{edges_, ids}, consumed, num_consumed, rule.rhs, rule.num_rhs_edges,
+            rule.new_var_mask(), binding, num_vertices());
+        uint32_t arity = 0;
+        const uint32_t* v = nullptr;
+        while (c.next(arity, v)) child_out.add(v, arity);
+    }
+    worker_scratch().release(mk);
+}
+
+void Hypergraph::state_edge_lists(StateId state, hgcommon::TcEdgeLists& out,
+                                  std::vector<EdgeId>& ids) const {
+    out.clear();
+    ids.clear();
+    std::atomic_thread_fence(std::memory_order_acquire);
+    get_state(state).edges.for_each([&](EdgeId e) {
+        ids.push_back(e);
+        out.add(edges_[e].vertices, edges_[e].arity);
+    });
+}
+
+void Hypergraph::produced_edge_lists(const RewriteRule& rule, const VertexId* binding,
+                                     hgcommon::TcEdgeLists& out) const {
+    out.clear();
+    auto mk = worker_scratch().mark();
+    {
+        // The successor cursor over no parent edges: the right-hand side alone.
+        SVec<EdgeId> none;
+        hgcommon::SuccessorCursor<HostEdgeCursor, PatternEdge> c(
+            HostEdgeCursor{edges_, none}, nullptr, 0, rule.rhs, rule.num_rhs_edges,
+            rule.new_var_mask(), binding, num_vertices());
+        uint32_t arity = 0;
+        const uint32_t* v = nullptr;
+        while (c.next(arity, v)) out.add(v, arity);
+    }
+    worker_scratch().release(mk);
+}
+
 // =============================================================================
 // Edge Correspondence Dispatch
 // =============================================================================

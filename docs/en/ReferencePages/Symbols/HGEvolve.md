@@ -63,6 +63,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"StepStatistics"` | for each step, statistics of the states at that step |
 | `"Debug"` | an association of the four counts |
 | `"Device"` | the device that ran the evolution and the tuning values it used, an association with the keys `"Type"` (`"CPU"` or `"GPU"`), `"Threads"`, `"MemoryLimit"` and `"OSMemoryLimit"` (the operating-system limit the engine process runs under, `0` for none); on the CPU `"CausalSetCapacity"`; on the GPU `"Name"`, `"ComputeCapability"`, `"MemoryCap"`, `"Blocks"`, `"Backlog"` and `"L2Persist"` |
+| `"PathCosts"` | with `"Search" -> "BestFirst"`, an association from each state id to its path cost |
 | `"All"` | an association of the states, the events, the two relations and the four counts, with a `"Warnings"` key when the run warns |
 
 - A list of properties gives an association keyed by the property names, computed from one evolution.
@@ -162,6 +163,9 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"MaxSuccessorStatesPerParent"` | `0` | the number of successor states kept per state, the lowest-ranked, with every transition into them and ties at the cut kept (`0` for no cap) |
 | `"MaxStatesPerStep"` | `0` | the number of successor states kept per step, the lowest-ranked, with every transition into them and ties at the cut kept (`0` for no cap) |
 | `"StateCost"` | `None` | a pure function of `"Invariants"` names, such as `Abs[#BallDimension - 3] &`; with `"MaxStatesPerStep"`, or `"UniformRandom"` and `"MatchesPerStep"`, each step keeps its successor states of lowest cost |
+| `"TransitionCost"` | `None` | `<\|"Field" -> f, "TimeStep" -> dt\|>`: a transition costs the heat residual of the vertex field f (`"Degree"`, `"Curvature"`, `"LoopCount"` or `"EdgeMultiplicity"`) from its parent to its child, plus the child's `"StateCost"`; read by `"MaxStatesPerStep"` and `"Search"` |
+| `"Search"` | `Automatic` | `"BestFirst"`: take the transition of lowest path cost next, one at a time |
+| `"SearchBudget"` | `1000` | the number of states `"Search" -> "BestFirst"` creates after the initial states |
 | `"ExplorationProbability"` | `1.` | the probability of exploring each state |
 | `"TransitionRate"` | `1.` | the probability of keeping each transition |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order |
@@ -199,6 +203,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - Under `"CanonicalizeStates" -> Full`, a transition's identity uses the symmetry class of each matched hyperedge, so transitions related by a symmetry of the state are kept or dropped together.
 - `"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` count successor states as `"CanonicalizeStates"` identifies them: under `None` every transition makes its own state, under `Automatic` transitions that make identical edge lists make one state, and under `Full` transitions that make isomorphic states make one state. A successor state ranks by the lowest rank of the transitions into it, and every transition into a kept successor state is kept. `"MatchesPerStateRule"` and `"MatchesPerStep"` count transitions.
 - `"StateCost"` orders the successor states of `"MaxStatesPerStep"`, or the transitions of `"UniformRandom"` with `"MatchesPerStep"`, by the cost of the state each one makes, the rank ordering states of equal cost. The cost is a pure function of the `"Invariants"` names (`#VertexCount`, `#BallDimension`, ...) built from real numbers, `+`, `-`, `*`, `/`, `Abs`, `Min`, `Max`, `Sqrt`, `Log`, `Exp` and powers with a constant exponent; any other expression returns `$Failed` with the message `HGEvolve::statecost`. A state with no value for a name the cost reads, or whose cost is not a real number, has cost `Infinity`. The cost of a state is the same on both devices, so a cost-guided evolution keeps the same states at any thread count and on either device. Without a step cap the cost has no effect and the reply carries a warning.
+- `"TransitionCost"` scores a transition from its parent state and its child state. A rewrite keeps the ids of the vertices it does not delete, so a vertex of both states has one id in both. For a field f on the vertices and a time step dt, the residual at a vertex v of both states is f_child(v) - f_parent(v) - dt (A - D) f_parent(v), where A - D is the graph Laplacian of the parent under `"StatisticsGraph"`, and the cost is the sum of the squared residuals that are real numbers. The fields are `"Degree"` (the degree of v in that graph), `"Curvature"` (the `"VertexCurvature"` of v), `"LoopCount"` (the hyperedges whose every vertex is v) and `"EdgeMultiplicity"` (the hyperedges that contain v and are not loops, each copy counted). Under `"MaxStatesPerStep"` a successor state's cost is the lowest cost of a transition into it. Without a step cap or `"Search" -> "BestFirst"` the cost has no effect and the reply carries a warning.
+- `"Search" -> "BestFirst"` starts from the initial states with path cost 0 and repeatedly takes the transition whose child has the lowest path cost, the parent's path cost plus the transition's cost, the transition's rank breaking ties. Under `Automatic` or `Full` states a transition into a state already created is dropped. The search stops after `"SearchBudget"` states or when no transition is left, and a state at the last step is not expanded. One transition is taken at a time, so a search with a given `"RandomSeed"` creates the same states at any thread count. The step caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"`, `"ExploreFromCanonicalStatesOnly"`, `"Generational"` and `"EventOrderingFunction"` do not apply with it, and the reply carries a warning when one is given. `"TransitionCost"` and `"Search"` run on the CPU engine; with `"TargetDevice" -> "GPU"` the reply carries a warning.
 - `"TransitionRate"` keeps a state's lowest-keyed transitions when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
 - Without a `"RandomSeed"` each call draws a new seed, as other random functions do; give `"RandomSeed"` or call `SeedRandom` first to repeat a sampled run.
 - `"Threads"` and `"Tuning"` change how fast an evolution runs and how much memory it takes; the states, events and relations are the same at every setting. `"Tuning"` takes an association of names and integers: `"CausalSetCapacity"` (the first table size, per shard, of the CPU engine's causal relation sets), `"ExpandChunk"` (the matches of one state rewritten per task on the CPU), `"GPUBlocks"` (the blocks of the GPU's persistent kernel), `"GPUBacklog"` (the waiting matches below which a GPU block takes one at a time), `"GPUMemoryLimit"` (the bytes of device memory a GPU evolution may use), `"GPUL2Persist"` (the bytes of L2 cache the GPU keeps for its state table; `0` keeps none) and `"MemoryLimit"` (the bytes of host memory an evolution may use). A name it does not list is skipped with the message `HGEvolve::warn`. The environment variables `HG_TUNE_THREADS`, `HG_TUNE_CAUSAL_SET_CAPACITY`, `HG_TUNE_EXPAND_CHUNK`, `HG_TUNE_GPU_BLOCKS`, `HG_TUNE_GPU_BACKLOG`, `HG_TUNE_GPU_MEMORY_LIMIT`, `HG_TUNE_GPU_L2_PERSIST` and `HG_TUNE_MEMORY_LIMIT` set the same values for every evolution of the engine process; an option given to [HGEvolve]() takes precedence.
@@ -1067,6 +1073,37 @@ HGEvolve[loops, {{1, 1}, {1, 1}}, 2, "NumStates", "MaxStatesPerStep" -> 2, "Stat
 ```
 
 <!-- => $Failed; the message HGEvolve::statecost is issued -->
+
+### "TransitionCost"
+
+A rule that moves a loop along a hyperedge, from a 4-cycle with two loops at vertex 1. With the loop count as the field and a time step of 1/4, one step of the heat equation spreads the two loops to (1, 1/2, 0, 1/2) over the four vertices. Moving one loop to vertex 2 gives (1, 1, 0, 0), a residual of 1/2:
+
+```wl
+HGEvolve[{{x, x}, {x, y}} -> {{x, y}, {y, y}}, {{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 1}, {1, 1}}, 1, "PathCosts", "CanonicalizeStates" -> Full, "Search" -> "BestFirst", "TransitionCost" -> <|"Field" -> "LoopCount", "TimeStep" -> 0.25|>]
+```
+
+<!-- => <|0 -> 0., 1 -> 0.5|> -->
+
+### "Search"
+
+With `"BestFirst"`, the evolution takes the transition of lowest path cost next. `"PathCosts"` gives the path cost of each state the search created:
+
+```wl
+grow = {{{x, y}, {y, z}} -> {{x, y}, {y, w}, {w, z}}, {{x, y}} -> {{x, y}, {y, y}}};
+Length @ HGEvolve[grow, {{1, 2}, {2, 3}, {3, 4}, {4, 1}}, 4, "PathCosts", "CanonicalizeStates" -> Full, "Search" -> "BestFirst", "SearchBudget" -> 10, "TransitionCost" -> <|"Field" -> "Degree", "TimeStep" -> 0.25|>]
+```
+
+<!-- => 11 -->
+
+### "SearchBudget"
+
+The number of states a best-first search creates after the initial states. With a budget of 100 the search above stops when no transition is left within four steps:
+
+```wl
+Length @ HGEvolve[grow, {{1, 2}, {2, 3}, {3, 4}, {4, 1}}, 4, "PathCosts", "CanonicalizeStates" -> Full, "Search" -> "BestFirst", "SearchBudget" -> 100, "TransitionCost" -> <|"Field" -> "Degree", "TimeStep" -> 0.25|>]
+```
+
+<!-- => 83 -->
 
 ### "ExplorationProbability"
 

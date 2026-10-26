@@ -11,6 +11,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <unordered_set>
 #include <functional>
 #include <thread>
@@ -26,6 +27,7 @@
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
 #include "hgcommon/sampling_core.hpp"
+#include "hgcommon/transition_cost_core.hpp"
 #include "hypergraph/scratch_alloc.hpp"
 #include "pattern.hpp"
 #include "pattern_matcher.hpp"
@@ -902,6 +904,50 @@ private:
     hgcommon::StateCost state_cost_{};
     uint64_t state_cost_fingerprint_{0};
     ConcurrentMap<uint64_t, uint64_t> state_costs_;
+    // "TransitionCost" (set_transition_cost).
+    hgcommon::TransitionCostSpec transition_cost_{};
+    hgcommon::TransitionCostHook transition_cost_hook_;
+    // Unique in the process for each set_transition_cost: the key of transition_cost_of's
+    // per-thread parent cache, with the state.
+    uint64_t tc_run_{0};
+    bool transition_costed() const {
+        return hgcommon::tc_active(transition_cost_) || static_cast<bool>(transition_cost_hook_);
+    }
+    // Whether a transition has a cost: "StateCost" or "TransitionCost".
+    bool cost_active() const {
+        return hgcommon::state_cost_active(state_cost_) || transition_costed();
+    }
+    // The transition cost of `match` from `state`: the residual and the hook's value.
+    double transition_cost_of(StateId state, const MatchRecord& match);
+
+    // "Search" -> "BestFirst" (set_best_first). A state's drain adds its transitions to
+    // bf_pending_ (best_first_at_drain); run_best_first moves them to its heap between
+    // transitions, takes the first, and waits for the child's matching before the next.
+    // bf_path_cost_ and bf_path_key_ are written by the driver before a root is submitted and
+    // by the one rewrite in flight (execute_rewrite_task, with bf_next_), and read by drains
+    // that run after the write.
+    struct BfCandidate {
+        uint64_t cost_key;      // hgcommon::state_cost_key of the child's path cost
+        uint64_t rank;          // the transition's rank (drain_candidates)
+        uint64_t parent_path;   // the parent's path key
+        double path_cost;
+        hgcommon::SuccessorIdentity succ;
+        MatchRecord match;
+        uint32_t step;
+    };
+    struct BfNode {
+        double path_cost = 0.0;
+        uint64_t path_key = 0;
+    };
+    bool best_first_{false};
+    size_t search_budget_{0};
+    LockFreeList<BfCandidate> bf_pending_;
+    std::unordered_map<StateId, double> bf_path_cost_;
+    std::unordered_map<StateId, uint64_t> bf_path_key_;
+    BfNode bf_next_{};
+    void seed_best_first(StateId root, size_t index);
+    void best_first_at_drain(StateId state, uint32_t step);
+    void run_best_first();
     hgcommon::TuningOverrides tuning_;
     size_t causal_set_capacity_{0};
     // Keep at most this many of a state's own transitions per RULE (0 = all). Chosen at the
@@ -976,7 +1022,8 @@ private:
         // The state the transition makes, which the successor caps count by
         // (successor_identity); its own unless a cap counts successors.
         hgcommon::SuccessorIdentity succ{0, 1};
-        // Under "StateCost", the successor's cost (hgcommon::state_cost_key); 0 otherwise.
+        // Under "StateCost" or "TransitionCost", the transition's cost (hgcommon::state_cost_key);
+        // 0 otherwise.
         uint64_t cost = 0;
     };
 
@@ -1221,6 +1268,18 @@ public:
     // successors of lowest cost under `cost`, the successor rank breaking ties. A program with
     // n == 0 ranks by the successor rank alone.
     void set_state_cost(const hgcommon::StateCost& cost);
+    // "TransitionCost": the cost of a transition is the heat residual of `spec`
+    // (hgcommon/transition_cost_core.hpp), plus `hook`'s value when `hook` is set, plus the
+    // child's "StateCost". The step cap and the best-first search read it.
+    void set_transition_cost(const hgcommon::TransitionCostSpec& spec,
+                             hgcommon::TransitionCostHook hook = nullptr);
+    // "Search" -> "BestFirst" (docs/TRANSITION_COST.md): from the initial states, take the
+    // transition of lowest path cost next, one at a time, until `budget` states are created or
+    // no transition is left. The step caps, the draws and sessions do not apply with it.
+    void set_best_first(bool on, size_t budget);
+    bool best_first() const { return best_first_; }
+    // Under best-first search, each state's path cost by raw state id.
+    const std::unordered_map<StateId, double>& path_costs() const { return bf_path_cost_; }
     // Seed for the keyed draws (exploration_probability, transition_rate, the spine and the
     // matches_per_state_rule ranking) and for the rule-order shuffle. 0 is an ordinary seed for
     // the keyed draws, so their sample repeats run to run; only the rule-order shuffle draws
@@ -1721,7 +1780,8 @@ private:
     }
     void drain_candidates(StateId state, uint32_t step, std::vector<RankedMatch>& out);
     // The identity of the state `match` makes from `state` (hgcommon::SuccessorIdentity).
-    // With `cost`, also the successor's cost (successor_cost) into *cost.
+    // With `cost`, also the transition's cost into *cost: its transition_cost_of plus the
+    // successor's "StateCost" (successor_cost).
     hgcommon::SuccessorIdentity successor_identity(StateId state, const MatchRecord& match,
                                                    uint64_t* cost = nullptr);
     // The cost key (hgcommon::state_cost_key) of the class with canonical hash `hash` and IR
@@ -1730,9 +1790,10 @@ private:
     // Keeps the candidates whose successor is among the k lowest-ranked successors, ties at the
     // cut kept, in their order (hgcommon::successor_ranks, then the k-th smallest successor
     // rank, hgcommon::rank_cut). With `costed`, successors rank by (cost, successor rank)
-    // (hgcommon::cost_successor_ranks).
+    // (hgcommon::cost_successor_ranks). With `per_transition` (a "TransitionCost") the costs of
+    // the transitions into one successor can differ, and the successor's cost is the lowest.
     static void keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k,
-                                       bool costed = false);
+                                       bool costed = false, bool per_transition = false);
     // At a state's drain: the chosen matches -- drain_candidates, and under
     // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under
     // MaxStatesPerStep added to their step's candidates (step_candidates_).

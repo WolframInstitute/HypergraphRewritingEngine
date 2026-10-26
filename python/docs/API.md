@@ -54,6 +54,7 @@ The stamp of the engine build: commit, variant (`python`) and configuration.
 | `device` | dict | `"Device"` |
 | `warnings` | list of dicts (`Kind`, `Count`, `Context`, `Partial`) | `"Warnings"` |
 | `session`, `frontier` | session handle, frontier state ids | `"Session"`, `"Frontier"` |
+| `path_costs` | dict of state id to path cost, under `search="BestFirst"` | `"PathCosts"` |
 | `reduced` | `True` when the evolution ran out of memory and the reply holds the counts only | `"Reduced"` |
 | `values` | dict of every key that is not a table or relation | |
 
@@ -91,6 +92,9 @@ Every array is a read-only NumPy view of the reply the engine built; nothing is 
 | `transition_rate` | `"TransitionRate"` | float |
 | `rule_weights` | `"RuleWeights"` | list of floats |
 | `state_cost` | `"StateCost"` | `None`, an expression string, or `{"Code": [...], "Constants": [...]}` |
+| `transition_cost` | `"TransitionCost"` | `None`, `{"Field": name, "TimeStep": dt}`, or a callable `f(parent_edges, child_edges) -> float` |
+| `search` | `"Search"` | `"Automatic"`, `"BestFirst"` |
+| `search_budget` | `"SearchBudget"` | int; the states best-first search creates (default 1000) |
 | `random_seed` | `"RandomSeed"` | int; `None` (the default) draws one from Python's `random` |
 | `branchial_step` | `"BranchialStep"` | int (1-based step, negative from the end) or `"all"`; default -1 |
 | `include_canonical_hashes` | `"IncludeCanonicalHashes"` | bool |
@@ -106,6 +110,8 @@ Every array is a read-only NumPy view of the reply the engine built; nothing is 
 | `show_progress` | `"ShowProgress"` | bool; progress lines go to stderr |
 
 `state_cost` as a string is a Python expression over "Invariants" statistic names. It may use `+ - * /`, `**` with a real exponent, unary `-`, `abs`, `sqrt`, `exp`, `log`, `min` and `max`: `state_cost="abs(BallDimension - 1.5)"`. It compiles to the engine's postfix program in the shapes HGEvolve uses.
+
+`transition_cost` scores a transition from its parent and child states (docs/TRANSITION_COST.md). The built-in cost is the heat residual of a per-vertex field (`"Degree"`, `"Curvature"`, `"LoopCount"` or `"EdgeMultiplicity"`) with time step `dt`. A callable receives the two states' edges as lists of vertex ids, in which a vertex the rewrite keeps has one id in both, and returns the cost. The engine calls it from its workers, one call at a time under the GIL. An exception it raises is raised by `evolve`. `hg.heat_residual(parent, child, field="Degree", time_step=0.0, statistics_graph="Consecutive")` is the engine's residual, so a callable can combine it with other terms. `search="BestFirst"` takes the transition of lowest path cost next and returns each state's path cost in `r.path_costs`.
 
 The HGEvolve options for graphs and display (`"EdgeDeduplication"`, `"ColorByRule"`, `"MultiedgeStyle"`, Graph options), `"TargetDevice"` and the initial-condition generator options have no Python counterpart. The package runs the CPU engine.
 

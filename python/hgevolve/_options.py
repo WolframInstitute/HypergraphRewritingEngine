@@ -109,6 +109,22 @@ def _matrix_limit(value, option):
     return 0 if value is None else _count(value, option)
 
 
+def _transition_cost(value, option):
+    """None, {"Field": name, "TimeStep": dt}, or a callable f(parent_edges, child_edges) -> float,
+    which the job names as {"Field": "Function"} (evolve passes the callable to the module)."""
+    if value is None:
+        return Symbol("None")
+    if callable(value):
+        return {"Field": "Function"}
+    if isinstance(value, dict):
+        out = {"Field": str(value["Field"])}
+        if "TimeStep" in value:
+            out["TimeStep"] = float(value["TimeStep"])
+        return out
+    raise TypeError(f"{option} is None, a dict with Field and TimeStep or a callable, "
+                    f"got {value!r}")
+
+
 # Python name -> (HGEvolve option, conversion of the value). The order is the documentation's.
 OPTIONS = {
     "canonicalize_states": ("CanonicalizeStates", _enum("None", "Automatic", "Full")),
@@ -128,6 +144,9 @@ OPTIONS = {
     "transition_rate": ("TransitionRate", _real),
     "rule_weights": ("RuleWeights", _reals),
     "state_cost": ("StateCost", state_cost_program),
+    "transition_cost": ("TransitionCost", _transition_cost),
+    "search": ("Search", _enum("Automatic", "BestFirst")),
+    "search_budget": ("SearchBudget", _count),
     "random_seed": ("RandomSeed", _seed),
     "branchial_step": ("BranchialStep", _branchial_step),
     "include_canonical_hashes": ("IncludeCanonicalHashes", _bool),

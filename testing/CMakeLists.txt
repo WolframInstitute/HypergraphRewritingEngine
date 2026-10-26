@@ -186,6 +186,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
     ../hypergraph/tests/test_sampling_reproducibility.cpp
+    ../hypergraph/tests/test_transition_cost.cpp
     ../hypergraph/tests/test_event_ordering.cpp
     ../hypergraph/tests/test_undirected.cpp
     ../hypergraph/tests/test_causal_branchial.cpp
@@ -259,6 +260,7 @@ create_test_executable(evolution_tests
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
     ../hypergraph/tests/test_sampling_reproducibility.cpp
+    ../hypergraph/tests/test_transition_cost.cpp
     ../hypergraph/tests/test_event_ordering.cpp
     ../hypergraph/tests/test_undirected.cpp
 )

@@ -48,6 +48,9 @@ Options[HGEvolve] = {
   "UndirectedEdges" -> False,  (* True: every edge of two vertices is an unordered pair {u, v}. A rule's left edge {x, y} matches an edge in either order, matches that consume the same edges and differ by a symmetry of the rule count once, and the canonical hash does not depend on the order within an edge. Edges of three or more vertices are refused. Provisional name. *)
   "EventOrderingFunction" -> None,  (* None, Automatic, or one of SetReplace's event ordering names or a list of them in priority order: one history from each initial state, and each step applies the state's one match first in that order, as SetReplace's WolframModel does. Automatic is SetReplace's default {"LeastRecentEdge", "RuleOrdering", "RuleIndex"}. The caps and draws do not apply with it. *)
   "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps a state's transitions regardless of rule, and "MaxStatesPerStep" a step's. Applies on both devices. *)
+  "TransitionCost" -> None,  (* None, or <|"Field" -> "Degree" | "Curvature" | "LoopCount" | "EdgeMultiplicity", "TimeStep" -> dt|>: a transition costs the heat residual of the field from parent to child (docs/TRANSITION_COST.md), plus the child's "StateCost". Read by "MaxStatesPerStep" and by "Search" -> "BestFirst". Runs on the CPU engine. *)
+  "Search" -> Automatic,  (* Automatic, or "BestFirst": take the transition of lowest path cost next, one at a time, until "SearchBudget" states are created; the "PathCosts" property gives each state's path cost. Runs on the CPU engine. *)
+  "SearchBudget" -> 1000,  (* The states a best-first search creates after the initial states. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
      fiber of the rule -> multiway functor). Applies to the styled graph
      properties, whose edge payloads carry RuleIndex; Structure variants ship
@@ -504,6 +507,8 @@ propertyRequirementsBase = <|
   "Debug" -> {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
   (* The device that ran the evolution *)
   "Device" -> {"Device"},
+  (* Each state's path cost under "Search" -> "BestFirst"; the reply carries it with no request *)
+  "PathCosts" -> {},
   "All" -> {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"}
 |>;
 
@@ -1221,7 +1226,11 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "Generational" -> ov["Generational"],
     "UndirectedEdges" -> ov["UndirectedEdges"],
     "EventOrderingFunction" -> eventOrdering,
-    "MatchesPerStateRule" -> ov["MatchesPerStateRule"]
+    "MatchesPerStateRule" -> ov["MatchesPerStateRule"],
+    "TransitionCost" -> Replace[ov["TransitionCost"],
+      a_Association :> MapAt[N, a, Key["TimeStep"]] /; KeyExistsQ[a, "TimeStep"]],
+    "Search" -> ov["Search"],
+    "SearchBudget" -> ov["SearchBudget"]
   |>
 ]
 
@@ -1770,6 +1779,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     |>,
     (* <|"Type" -> "CPU"|>, or <|"Type" -> "GPU", "Name" -> ..., "ComputeCapability" -> "8.9"|> *)
     "Device", Lookup[wxfData, "Device", Missing["NotAvailable"]],
+    "PathCosts", Lookup[wxfData, "PathCosts", <||>],
     "All", Module[{result = wxfData},
       result
     ],

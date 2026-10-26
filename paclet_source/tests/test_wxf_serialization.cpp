@@ -6759,6 +6759,58 @@ TEST(FfiInput, StateCostRefusesABadProgramAndNeedsAStepCap) {
     EXPECT_EQ(read_int_key(capped, "NumStates"), 4);
 }
 
+// "TransitionCost" and "Search" -> "BestFirst" through the WXF job: the reply's "PathCosts" holds
+// each state's path cost, the hand value 1/2 for the loop move on the 4-cycle
+// (hypergraph/tests/test_transition_cost.cpp); a field the engine does not know, a field with no
+// "TimeStep", and "Function" with no in-process caller refuse the job.
+TEST(FfiInput, TransitionCostAndBestFirstThroughTheJob) {
+    auto put_cost = [](wxf::Writer& w, const std::string& field, bool with_dt) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("TransitionCost"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(with_dt ? 2 : 1);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Field"));
+        w.write(field);
+        if (with_dt) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("TimeStep"));
+            w.write(0.25);
+        }
+    };
+    const StateList seed = {{{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 1}, {1, 1}}};
+    const EdgeList lhs = {{1, 1}, {1, 2}};
+    const EdgeList rhs = {{1, 2}, {2, 2}};
+    HostBridge host;
+    const auto out = run_rewriting_core(build_input(seed, lhs, rhs, 1, [&](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_option(w, "Search", "BestFirst");
+        put_cost(w, "LoopCount", true);
+    }, 4), host);
+    std::vector<double> costs;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "PathCosts") return vp.skip_value();
+        vp.read_association_generic([&](wxf::Parser& key, wxf::Parser& value) {
+            key.skip_value();
+            costs.push_back(value.read<double>());
+        });
+    });
+    EXPECT_EQ(costs, (std::vector<double>{0.0, 0.5}));
+    EXPECT_EQ(read_int_key(out, "NumStates"), 2);
+    EXPECT_NE(run_error(job_with_option([&](wxf::Writer& w) { put_cost(w, "Mass", true); }))
+                  .find("\"Field\" is not one of"),
+              std::string::npos);
+    EXPECT_NE(run_error(job_with_option([&](wxf::Writer& w) { put_cost(w, "Degree", false); }))
+                  .find("needs a finite real \"TimeStep\""),
+              std::string::npos);
+    EXPECT_NE(run_error(job_with_option([&](wxf::Writer& w) { put_cost(w, "Function", false); }))
+                  .find("needs a function from the in-process Python client"),
+              std::string::npos);
+}
+
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
 // device. The GPU reply read every state as empty when no state contents were requested (their
 // edge counts were not read back), so every state fell into one class and NumStates was 1.

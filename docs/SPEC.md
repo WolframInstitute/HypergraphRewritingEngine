@@ -294,6 +294,23 @@ exact configuration. Sampling and capping options refine this as follows:
   successor is canonicalised for its cost only, and the identity in force still decides which
   successors are distinct. `MaxSuccessorStatesPerParent` and `MatchesPerStateRule` are not
   guided by the cost; they bound the candidates a step's cost is computed for.
+- **`TransitionCost`** scores a transition from its parent and its child state
+  (docs/TRANSITION_COST.md). For a field f on the vertices and a time step dt, the cost is the
+  sum over the vertices of both states of (f_C(v) - f_P(v) - dt ((A - D) f_P)(v))^2, A - D the
+  graph Laplacian of the parent under `"StatisticsGraph"`, over the vertices with a finite
+  residual. A vertex the rewrite keeps has one id in both states. The fields are the degree in
+  that graph, the Ollivier-Ricci curvature k_v, the loop count and the edge multiplicity
+  (`hgcommon::tc_transition_cost`). The cost of a transition is its `TransitionCost` plus its
+  child's `StateCost`. Under a step cap a successor's cost is the lowest cost of a transition
+  into it. CPU engine only: the GPU binary runs such a job on the CPU engine with a warning.
+- **`Search` -> `"BestFirst"`** takes, from the initial states, the transition whose child has
+  the lowest path cost (the parent's path cost plus the transition's cost), ties broken by the
+  transition's rank and then by a key of the parent's history, one transition at a time, until
+  `SearchBudget` states are created or no transition is left. Under `Automatic` and `Full`
+  states a transition into a state already created is dropped. A search with a given
+  `RandomSeed` creates the same states at any thread count. The reply's `"PathCosts"` gives each
+  state's path cost. The step caps, the draws, quotient exploration, `Generational` and
+  `EventOrderingFunction` do not apply with it, and sessions refuse it. CPU engine only.
 - **`Generational`** is the Wolfram model's single-way update. The evolution
   follows one history from each initial state, and each step is one generation. A state's
   matches are ordered by the standard order (`hgcommon::event_order_before` with

@@ -24,6 +24,7 @@
 #include "hgcommon/token_core.hpp"
 #include "hgcommon/state_invariants_core.hpp"
 #include "hgcommon/state_cost_core.hpp"
+#include "hgcommon/transition_cost_core.hpp"
 #include "hgcommon/depth_join.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
@@ -1924,6 +1925,23 @@ public:
     // record of only the measures the program reads, in the worker's scratch. A kept successor's
     // reply record is computed when the state is created (record_state_invariants).
     double state_cost_of_form(const hgcommon::StateCost& cost, const std::vector<uint32_t>& form);
+
+    // The hyperedges of `parent` into `parent_out`, and those of the state a rewrite of `parent`
+    // makes into `child_out` (hgcommon::SuccessorCursor), before the rewrite runs. A kept vertex
+    // has its own id in both; fresh vertices are numbered from the run's vertex count.
+    void transition_edge_lists(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
+                               const RewriteRule& rule, const VertexId* binding,
+                               hgcommon::TcEdgeLists& parent_out,
+                               hgcommon::TcEdgeLists& child_out) const;
+    // A state's hyperedges into `out`, with their ids in the same order into `ids`.
+    void state_edge_lists(StateId state, hgcommon::TcEdgeLists& out,
+                          std::vector<EdgeId>& ids) const;
+    // The hyperedges a rewrite produces, the right-hand side under `binding`, fresh vertices
+    // numbered as transition_edge_lists numbers them.
+    void produced_edge_lists(const RewriteRule& rule, const VertexId* binding,
+                             hgcommon::TcEdgeLists& out) const;
+    // "StatisticsGraph" (hgcommon::SG_GRAPH_*).
+    uint32_t statistics_graph() const { return statistics_graph_.load(std::memory_order_relaxed); }
 
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const;

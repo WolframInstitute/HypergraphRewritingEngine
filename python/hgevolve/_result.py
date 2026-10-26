@@ -195,6 +195,7 @@ class Result:
         device              dict
         warnings            list of dicts (Kind, Count, Context, Partial)
         session, frontier   the session handle and its frontier's state ids (Session verbs)
+        path_costs          {state id: path cost} under search="BestFirst"
         reduced             True when the evolution ran out of memory and the reply carries the
                             counts only
 
@@ -227,6 +228,7 @@ class Result:
         self.warnings = get("Warnings", [])
         self.session = get("Session")
         self.frontier = get("Frontier")
+        self.path_costs = get("PathCosts")
         self.reduced = get("Reduced", 0) == 1
 
     def __repr__(self):

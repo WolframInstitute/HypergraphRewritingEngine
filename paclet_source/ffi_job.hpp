@@ -22,6 +22,7 @@
 
 #include "hgcommon/initial_condition_core.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/transition_cost_core.hpp"
 #include "hgcommon/tuning.hpp"
 #include "hypergraph/types.hpp"
 #include "state_statistics.hpp"
@@ -143,6 +144,15 @@ struct ParsedJob {
     // and the job is refused.
     hgcommon::StateCost state_cost{};
     std::string state_cost_error;
+    // "TransitionCost" (docs/TRANSITION_COST.md): the heat residual of a field, or with
+    // transition_cost_function the in-process caller's hook (set_transition_cost_hook). A value
+    // that does not parse leaves its message in transition_cost_error, and the job is refused.
+    hgcommon::TransitionCostSpec transition_cost{};
+    bool transition_cost_function = false;
+    std::string transition_cost_error;
+    // "Search" -> "BestFirst" and "SearchBudget": the states best-first search creates.
+    bool best_first = false;
+    size_t search_budget = 1000;
 
     // Data selection flags - which components to include in output
     // By default all are included for backward compatibility
@@ -195,6 +205,11 @@ struct ParsedJob {
     // measured from what the caller actually holds.
     bool delivery_delta = false;
 };
+
+// The transition cost a job with "TransitionCost" -> <|"Field" -> "Function"|> uses: the Python
+// client sets it around its call (python/src/module.cpp) and clears it after. Null otherwise.
+void set_transition_cost_hook(hgcommon::TransitionCostHook hook);
+const hgcommon::TransitionCostHook& transition_cost_hook();
 
 }  // namespace ffi
 }  // namespace HG_NAMESPACE
