@@ -25,6 +25,7 @@
 #include <hgcommon/rendezvous.hpp>
 #include <hgcommon/park_gate.hpp>
 #include <hgcommon/affinity.hpp>
+#include <hgcommon/diag.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -446,13 +447,17 @@ private:
         // them all. A worker count beyond that set shares it through the modulo in worker_loop.
         std::vector<unsigned> packed = hgcommon::default_worker_cpus();
         if (packed.empty()) return;
+#if !defined(HG_VERIFICATION)
         if (dbg) {
             const std::vector<unsigned> dom = hgcommon::cache_domains_of(packed);
-            std::fprintf(stderr, "[placement] worker cpus, domain-major:");
-            for (size_t i = 0; i < packed.size() && i < 8; ++i)
-                std::fprintf(stderr, " %u(d%u)", packed[i], dom[i]);
-            std::fprintf(stderr, "%s (%zu cpus)\n", packed.size() > 8 ? " ..." : "", packed.size());
+            char line[256];
+            int at = std::snprintf(line, sizeof line, "[placement] worker cpus, domain-major:");
+            for (size_t i = 0; i < packed.size() && i < 8 && at > 0 && at < int(sizeof line); ++i)
+                at += std::snprintf(line + at, sizeof line - at, " %u(d%u)", packed[i], dom[i]);
+            hgcommon::diag_printf("%s%s (%zu cpus)\n", line, packed.size() > 8 ? " ..." : "",
+                                  packed.size());
         }
+#endif
         worker_cpus_ = std::move(packed);
     }
 

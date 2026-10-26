@@ -182,10 +182,9 @@ TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
            "output:\n" << out;
 }
 
-// NO CALL OPENS A SOCKET. Wolfram 15.0's SocketConnect faulted inside libzeromqlink.dll in 7 of
-// 40 fresh wolframscript kernels on Windows, ending the kernel. reference/no_socket_check.wl runs
-// HGEvolve and every session verb on the CPU and on the GPU and compares Sockets[] before and
-// after each call.
+// NO CALL OPENS A SOCKET: Wolfram 15.0's SocketConnect can end the kernel on Windows.
+// reference/no_socket_check.wl runs HGEvolve and every session verb on the CPU and on the GPU and
+// compares Sockets[] before and after each call.
 TEST_F(PacletTest, NoCallOpensASocket) {
     const std::string paclet_dir =
         test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
@@ -211,11 +210,43 @@ TEST_F(PacletTest, NoCallOpensASocket) {
         << "a paclet call opened a socket. WolframScript output:\n" << out;
 }
 
+// A WORKER THAT DOES NOT ANSWER THE HANDSHAKE IS NOT USED. With no time allowed for the handshake
+// (as on a Wolfram version whose process streams do not carry the bytes), hgWorkerStart kills the
+// worker, the CPU transport is marked broken, and HGEvolve runs the job in a one-shot RunProcess
+// and returns its result.
+TEST_F(PacletTest, AWorkerWithoutAHandshakeSendsCallsToRunProcess) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+    const std::string code =
+        "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
+        "<< \"HypergraphRewriting`\"; "
+        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"SHAKE_LOAD_FAIL\"]; Exit[0]]; "
+        "HypergraphRewriting`Private`$hgHandshakeSeconds = 0; "
+        "n = HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
+        "  {{1, 2}, {2, 3}}, 4, \"NumStates\", \"Tuning\" -> <|\"MemoryLimit\" -> 2^30|>]; "
+        "b = TrueQ[HypergraphRewriting`Private`$hgWorkerBroken[\"CPU\"]]; "
+        "w = KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, \"CPU\"]; "
+        "If[n === 27 && b && !w, Print[\"SHAKE_OK\"], Print[\"SHAKE_FAIL: \", {n, b, w}]]";
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        if (out.find("SHAKE_OK") != std::string::npos ||
+            out.find("SHAKE_FAIL") != std::string::npos ||
+            out.find("SHAKE_LOAD_FAIL") != std::string::npos)
+            break;
+    }
+    ASSERT_EQ(out.find("SHAKE_LOAD_FAIL"), std::string::npos) << out;
+    EXPECT_NE(out.find("SHAKE_OK"), std::string::npos) << "WolframScript output:\n" << out;
+}
+
 // THE WORKER TRANSPORT: hg_evolve --serve on the process's standard streams, no socket. Two calls
 // use one worker; "ShowProgress" prints the worker's progress frames; a worker killed during a
 // job gives HGEvolve::workerlost and $Failed, and the next call starts a new worker and returns.
-// The killer is a separate process that ends the worker by its PID 0.3 s after it starts, during
-// a call of about three seconds (Wolfram's rule, 6 steps, Full states, one thread).
+// The killer is a separate process that ends the worker by its PID once the worker has used 0.5 s
+// of CPU time, which only the job does, during a call of about three seconds (Wolfram's rule,
+// 6 steps, Full states, one thread).
 TEST_F(PacletTest, TheWorkerServesOverItsStandardStreams) {
     const std::string paclet_dir =
         test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
@@ -235,8 +266,10 @@ TEST_F(PacletTest, TheWorkerServesOverItsStandardStreams) {
         "pid = First[HypergraphRewriting`Private`$hgWorkerProc[\"CPU\"]][\"PID\"]; "
         "StartProcess[If[$OperatingSystem === \"Windows\", "
         "  {\"powershell\", \"-NoProfile\", \"-Command\", "
-        "   \"Start-Sleep -Milliseconds 300; Stop-Process -Force -Id \" <> ToString[pid]}, "
-        "  {\"sh\", \"-c\", \"sleep 0.3; kill -9 \" <> ToString[pid]}]]; "
+        "   \"while ((Get-Process -Id \" <> ToString[pid] <> \").CPU -lt 0.5) "
+        "    { Start-Sleep -Milliseconds 20 }; Stop-Process -Force -Id \" <> ToString[pid]}, "
+        "  {\"sh\", \"-c\", \"while [ $(awk '{print $14}' /proc/\" <> ToString[pid] <> "
+        "    \"/stat) -lt 50 ]; do sleep 0.02; done; kill -9 \" <> ToString[pid]}]]; "
         "lost = Check[HypergraphRewriting`HGEvolve[{{x, y}, {x, z}} -> "
         "  {{x, y}, {x, w}, {y, w}, {z, w}}, {{0, 0}, {0, 0}}, 6, \"NumStates\", "
         "  \"CanonicalizeStates\" -> Full, \"Threads\" -> 1, "

@@ -38,9 +38,12 @@ HGEvolve[...]
 Process isolation: the paclet shells out to the standalone `hg_evolve` binary over
 WXF. `HGEvolve` and every session verb go to a persistent worker, `hg_evolve --serve` (or
 `hg_evolve_gpu --serve`) started with `StartProcess`, which keeps the CUDA context and the
-session: length-prefixed jobs on its standard input, reply, progress and error frames on its
-standard output. The kernel opens no socket: Wolfram 15.0's `SocketConnect` faulted inside
-libzeromqlink.dll in 7 of 40 fresh wolframscript kernels on Windows. When no worker can start, a
+session: length-prefixed jobs on its standard input, and reply, progress, error and log frames
+on its standard output (paclet_source/frame_writer.hpp). One writer thread writes every frame.
+Engine threads report through `hgcommon::diag_printf` into a ring of their own, which never blocks
+them; the worker points fd 1 and fd 2 at a pipe it reads, so library output (device printf, the
+CUDA runtime) arrives as log frames and the kernel never reads the worker's standard error. The kernel opens no socket: Wolfram 15.0's `SocketConnect` can end the kernel
+on Windows. When no worker can start or a new worker does not answer a handshake job within 10 s, a
 call runs a one-shot `hg_evolve` through `RunProcess`. A crash or an Alt-. abort is a process
 kill, so it never takes down the notebook. The binary is
 shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the

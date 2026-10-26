@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstring>
 #include <cerrno>
@@ -37,6 +40,7 @@
 #include "paclet_source/reply_out.hpp"
 #include "paclet_source/state_statistics.hpp"
 #include "paclet_source/cpu_engine_holder.hpp"
+#include "paclet_source/frame_writer.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
@@ -2276,6 +2280,8 @@ struct WorkerPipes {
     int in_fd = -1, out_fd = -1;
     bool started = false;
     std::string last_error;   // the last error frame's message
+    std::string logs;         // the last call's log frames, concatenated
+    int err_read = -1;        // with extra_env: the read end of the worker's stderr pipe, never read
 };
 
 // Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
@@ -2285,7 +2291,7 @@ struct WorkerPipes {
 // worker, and a non-null `memory_limit` sets HG_TUNE_MEMORY_LIMIT.
 bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0,
                   const char* cuda_visible_devices = nullptr,
-                  const char* memory_limit = nullptr) {
+                  const char* memory_limit = nullptr, const char* extra_env = nullptr) {
     static int next_worker = 0;
     w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo." + std::to_string(::getpid()) + "." +
             std::to_string(next_worker++);
@@ -2304,6 +2310,8 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
     // the exec succeeded and the child's errno when it did not.
     int exec_pipe[2];
     if (::pipe2(exec_pipe, O_CLOEXEC) != 0) return false;
+    int err_pipe[2] = {-1, -1};
+    if (extra_env && ::pipe2(err_pipe, O_CLOEXEC) != 0) return false;
     w.pid = ::fork();
     if (w.pid < 0) return false;
     if (w.pid == 0) {
@@ -2318,12 +2326,20 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
         }
         if (cuda_visible_devices) ::setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices, 1);
         if (memory_limit) ::setenv("HG_TUNE_MEMORY_LIMIT", memory_limit, 1);
+        if (extra_env) {
+            ::putenv(const_cast<char*>(extra_env));
+            ::dup2(err_pipe[1], 2);
+        }
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
         const int err = errno;
         [[maybe_unused]] const ssize_t written = ::write(exec_pipe[1], &err, sizeof(err));
         ::_exit(127);
     }
     ::close(exec_pipe[1]);
+    if (extra_env) {
+        ::close(err_pipe[1]);
+        w.err_read = err_pipe[0];
+    }
     w.in_fd  = ::open(w.in_path.c_str(),  O_WRONLY | O_CLOEXEC);
     w.out_fd = ::open(w.out_path.c_str(), O_RDONLY | O_CLOEXEC);
     int err = 0;
@@ -2376,6 +2392,7 @@ int read_exact_fd(int fd, size_t n, std::vector<uint8_t>& out) {
 // or gave no reply; the message is in w.last_error.
 std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job) {
     w.last_error.clear();
+    w.logs.clear();
     auto failed_read = [&](int rc) {
         w.last_error = worker_gone(w, "reading the reply", rc > 0 ? rc : 0);
         return std::vector<uint8_t>{};
@@ -2401,11 +2418,14 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
         if (const int rc = read_exact_fd(w.out_fd, 8, lenbuf)) return failed_read(rc);
         reply_len = 0;
         for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
-        if (!(reply_len >> 63)) break;
-        // A progress frame (bit 63) precedes the reply; its text is skipped.
-        std::vector<uint8_t> progress;
-        if (const int rc = read_exact_fd(w.out_fd, reply_len & ~(1ull << 63), progress))
+        const bool progress = (reply_len >> 63) != 0;
+        const bool log = !progress && ((reply_len >> 61) & 3u) == 1u;   // bit 61 alone
+        if (!progress && !log) break;
+        // Progress (bit 63) and log (bit 61) frames precede the reply; log text is kept.
+        std::vector<uint8_t> text;
+        if (const int rc = read_exact_fd(w.out_fd, reply_len & ~(7ull << 61), text))
             return failed_read(rc);
+        if (log) w.logs.append(text.begin(), text.end());
     }
     if (reply_len == 0) {
         w.last_error = "the worker sent an empty frame";
@@ -2439,6 +2459,88 @@ struct CpuWorker {
 };
 
 }  // namespace
+
+// THE WORKER NEVER BLOCKS ON ITS OWN OUTPUT. hg_evolve --serve points fd 1 and fd 2 at a pipe it
+// drains (frame_writer.hpp); nothing reads the worker's standard error. HG_DEBUG_OUTPUT_BYTES makes
+// every job write that many bytes to stdout and to stderr first; here the worker's stderr is a pipe nobody reads,
+// as StartProcess leaves it. 400 KB per job, three jobs: each reply arrives, the log frames carry
+// the written lines, and the output not forwarded is reported (left out over the per-job cap, or
+// dropped from a full ring). The capture is read while the job runs, so some of a job's output can
+// arrive with the next job's frames.
+void expect_output_forwarded(const std::string& exe) {
+    WorkerPipes w;
+    std::string logs;
+    static char env[] = "HG_DEBUG_OUTPUT_BYTES=400000";
+    ASSERT_TRUE(worker_start(w, exe, 0, nullptr, nullptr, env)) << w.last_error;
+    for (int job = 0; job < 3; ++job) {
+        // The worker's stderr is a pipe nobody reads. A worker that writes to it stops once the
+        // pipe holds 64 KB; after 30 s the call is ended by killing the worker.
+        std::vector<uint8_t> reply;
+        std::atomic<bool> finished{false};
+        std::thread call([&] {
+            reply = worker_call(w, build_input_with_op(2, "Evolve"));
+            finished.store(true);
+        });
+        const auto t0 = std::chrono::steady_clock::now();
+        bool done = false;
+        while (!done && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(30)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            done = finished.load();
+        }
+        if (!done && w.pid > 0) ::kill(w.pid, SIGKILL);
+        call.join();
+        ASSERT_TRUE(done) << "job " << job << " did not finish in 30 s";
+        ASSERT_FALSE(reply.empty()) << job << ": " << w.last_error;
+        logs += w.logs;
+    }
+    EXPECT_NE(logs.find(std::string(99, 'x') + "\n"), std::string::npos) << "stderr";
+    EXPECT_NE(logs.find(std::string(99, 'o') + "\n"), std::string::npos) << "stdout";
+    EXPECT_TRUE(logs.find("were left out") != std::string::npos ||
+                logs.find("were dropped") != std::string::npos)
+        << "2.4 MB written to fd 1 and fd 2 and none of it reported as not forwarded";
+    worker_stop(w);
+    ::close(w.err_read);
+}
+
+TEST(WorkerOutput, AJobWritingMoreThanAPipeToItsOutputCompletes) {
+    expect_output_forwarded(cpu_binary_path());
+}
+
+// The same on the GPU binary, whose CUDA runtime prints device printf to stdout.
+TEST(WorkerOutput, AGpuJobWritingMoreThanAPipeToItsOutputCompletes) {
+    if (::access(gpu_binary_path().c_str(), X_OK) != 0) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    expect_output_forwarded(gpu_binary_path());
+}
+
+// A job frame over the 1 GiB cap is read through and refused with an error frame, and the worker
+// serves the next job.
+TEST(WorkerOutput, AJobFrameOverTheCapIsRefusedAndTheWorkerServesOn) {
+    WorkerPipes w;
+    ASSERT_TRUE(worker_start(w, cpu_binary_path())) << w.last_error;
+    const uint64_t len = (1ull << 30) + 1;
+    uint8_t hdr[8];
+    for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(len >> (8 * i));
+    ASSERT_EQ(::write(w.in_fd, hdr, 8), 8);
+    std::vector<uint8_t> zeros(1 << 20, 0);
+    for (uint64_t sent = 0; sent < len;) {
+        const size_t n = static_cast<size_t>(std::min<uint64_t>(zeros.size(), len - sent));
+        const ssize_t r = ::write(w.in_fd, zeros.data(), n);
+        ASSERT_GT(r, 0);
+        sent += static_cast<uint64_t>(r);
+    }
+    std::vector<uint8_t> lenbuf, text;
+    uint64_t reply_len = 0;
+    do {
+        ASSERT_EQ(read_exact_fd(w.out_fd, 8, lenbuf), 0);
+        reply_len = 0;
+        for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
+        ASSERT_EQ(read_exact_fd(w.out_fd, reply_len & ~(7ull << 61), text), 0);
+    } while ((reply_len >> 61) != 2u);   // the error frame: bit 62 alone
+    EXPECT_NE(std::string(text.begin(), text.end()).find("exceeds the"), std::string::npos);
+    const auto reply = worker_call(w, build_input_with_op(2, "Evolve"));
+    EXPECT_FALSE(reply.empty()) << w.last_error;
+    worker_stop(w);
+}
 
 TEST(GpuBinaryGate, AQuotientSessionSteppedHoldsWhatOneEvolveReconstructs) {
     {

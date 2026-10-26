@@ -21,6 +21,8 @@
 // -DHG_STANDALONE_BINARY, so it links no Wolfram SDK.
 
 #include "hg_core.hpp"
+#include "frame_writer.hpp"
+#include "hgcommon/diag.hpp"
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
 #include "hgcommon/tuning.hpp"
@@ -88,30 +90,13 @@ void take_reply_stream() {
 #endif
 }
 
-// A reply frame's 8-byte length with this bit set is a PROGRESS frame: its payload is one
-// progress message as UTF-8 text, and the job's reply frame still follows. The kernel's
-// hgReadFrame prints or skips progress frames and returns the reply.
-constexpr uint64_t kProgressFrameBit = 1ull << 63;
-
-// A reply frame's length with this bit set (and bit 63 clear) is an ERROR frame: the job failed,
-// its payload is the error message as UTF-8 text, and no reply frame follows. hgReadFrame returns
-// it as hgEngineError[message].
-constexpr uint64_t kErrorFrameBit = 1ull << 62;
-
 // Empty, or kNoUsableDevicePrefix + reason when this is the GPU binary and its device probe failed
 // at startup. When set, every job is refused with this message.
 std::string g_no_device;
 
-// The 8-byte little-endian header of a frame of `len` bytes.
-void frame_header(uint64_t len, uint8_t hdr[8]) {
-    for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(len >> (8 * i));
-}
-
 // Read exactly n bytes from stdin into out. Returns false on EOF before any
-// byte of a new frame (clean end), on a short read mid-frame (caller decides),
-// or if n exceeds the frame cap.
+// byte of a new frame (clean end) or on a short read mid-frame (caller decides).
 bool read_exact(size_t n, std::vector<uint8_t>& out) {
-    if (static_cast<uint64_t>(n) > kMaxJobBytes) return false;
     out.resize(n);
     size_t got = 0;
     while (got < n) {
@@ -120,31 +105,6 @@ bool read_exact(size_t n, std::vector<uint8_t>& out) {
         got += r;
     }
     return true;
-}
-
-void write_frame(const HG_NAMESPACE::wxf::Pieces& payload) {
-    uint8_t hdr[8];
-    frame_header(static_cast<uint64_t>(payload.size()), hdr);
-    std::fwrite(hdr, 1, 8, reply());
-    for (const auto& part : payload.parts)
-        if (!part.empty()) std::fwrite(part.data(), 1, part.size(), reply());
-    std::fflush(reply());
-}
-
-void write_error_frame(const std::string& message) {
-    uint8_t hdr[8];
-    frame_header(kErrorFrameBit | static_cast<uint64_t>(message.size()), hdr);
-    std::fwrite(hdr, 1, 8, reply());
-    std::fwrite(message.data(), 1, message.size(), reply());
-    std::fflush(reply());
-}
-
-void write_progress_frame(const std::string& message) {
-    uint8_t hdr[8];
-    frame_header(kProgressFrameBit | static_cast<uint64_t>(message.size()), hdr);
-    std::fwrite(hdr, 1, 8, reply());
-    std::fwrite(message.data(), 1, message.size(), reply());
-    std::fflush(reply());
 }
 
 int run_one_shot(const HostBridge& host) {
@@ -187,29 +147,71 @@ void release_job_memory() {
 #endif
 }
 
+// Reads and drops n bytes of stdin in pieces; false on EOF first.
+bool skip_exact(uint64_t n) {
+    char buf[65536];
+    while (n > 0) {
+        const size_t want = n < sizeof buf ? static_cast<size_t>(n) : sizeof buf;
+        const size_t r = std::fread(buf, 1, want, stdin);
+        if (r == 0) return false;
+        n -= r;
+    }
+    return true;
+}
+
+// The worker: length-prefixed jobs on stdin until EOF, every frame written by one FrameWriter
+// (frame_writer.hpp). Engine diagnostics (hgcommon::diag_printf) and progress go to the reporting
+// thread's ring; main has pointed fd 1 and fd 2 at the capture pipe.
+// HG_DEBUG_OUTPUT_BYTES=n writes n bytes to stdout (the C runtime stream device printf reaches)
+// and n bytes to stderr at the start of every job, which tests the capture.
 int run_serve(const HostBridge& host_in) {
+    hgframe::FrameWriter writer(reply());
+    hgcommon::set_diag_sink([](const char* text, std::size_t length) {
+        hgframe::post_message(hgframe::MessageKind::Log, text, length);
+    });
     HostBridge host = host_in;
-    host.progress = [](const std::string& m) { write_progress_frame(m); };
+    host.progress = [](const std::string& m) {
+        hgframe::post_message(hgframe::MessageKind::Progress, m.data(), m.size());
+    };
+    const char* debug_env = std::getenv("HG_DEBUG_OUTPUT_BYTES");
+    const size_t debug_bytes = debug_env ? std::strtoull(debug_env, nullptr, 10) : 0;
     std::vector<uint8_t> lenbuf, job;
     for (;;) {
         if (!read_exact(8, lenbuf)) break;  // clean EOF between frames
         uint64_t len = 0;
         for (int i = 0; i < 8; ++i) len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
-        if (!read_exact(len, job)) {
+        writer.begin_job();
+        // A frame over the cap is read and dropped, so the stream stays in step, and refused.
+        if (len > kMaxJobBytes) {
+            if (!skip_exact(len)) break;
+            writer.write_error("job frame of " + std::to_string(len) + " bytes exceeds the " +
+                               std::to_string(kMaxJobBytes) + "-byte cap");
+            continue;
+        }
+        if (!read_exact(static_cast<size_t>(len), job)) {
             std::fprintf(stderr, "HGEvolve: truncated job frame\n");
             return 1;
         }
+        if (debug_bytes) {
+            const std::string out(99, 'o'), err(99, 'x');
+            for (size_t done = 0; done < debug_bytes; done += 100) {
+                std::fprintf(stdout, "%s\n", out.c_str());
+                std::fprintf(stderr, "%s\n", err.c_str());
+            }
+        }
         if (!g_no_device.empty()) {
-            write_error_frame(g_no_device);
+            writer.write_error(g_no_device);
             continue;
         }
         try {
-            write_frame(run_rewriting_core_pieces(job, host));
+            const HG_NAMESPACE::wxf::Pieces out = run_rewriting_core_pieces(job, host);
+            writer.write_reply(out);
         } catch (const std::exception& e) {
-            write_error_frame(e.what());
+            writer.write_error(e.what());
         }
         release_job_memory();
     }
+    hgcommon::set_diag_sink(nullptr);
     return 0;
 }
 
@@ -425,6 +427,8 @@ int main(int argc, char** argv) {
     }
 
     take_reply_stream();
+    // The worker's startup messages (memory limit, device probe) are captured as well.
+    if (serve) hgframe::start_output_capture();
 
     // THE HOST MEMORY LIMIT (hgcommon/memory_limit.hpp), installed before any job, so an
     // allocation beyond it fails in this process and the run returns a partial result. Each job

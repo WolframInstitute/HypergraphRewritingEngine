@@ -213,6 +213,8 @@ create_test_executable(all_tests
     # The session handle space and lifetime rule, asserted while the slot is still small enough
     # to read in one sitting -- these are the contract the verbs get written against.
     ../paclet_source/tests/test_session.cpp
+    ../paclet_source/tests/test_frame_writer.cpp
+    ../paclet_source/frame_writer.cpp
     ../paclet_source/hypergraph_ffi.cpp
     ../paclet_source/paclet_support.cpp
 )

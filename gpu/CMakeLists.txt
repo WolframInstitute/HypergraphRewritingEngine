@@ -40,6 +40,8 @@ add_library(hg_gpu STATIC
     src/vertex_curvature.cu
     src/device_probe.cu
 )
+# hgcommon::diag_printf (the host diagnostics of evolve.cu and persistent.cu) is defined in job_system.
+target_link_libraries(hg_gpu PUBLIC job_system)
 # The probe's message names the architectures this build carries kernels for. Commas, because a
 # semicolon would split the definition in two.
 string(REPLACE ";" "," HG_GPU_ARCH_LIST_DEF "${CMAKE_CUDA_ARCHITECTURES}")

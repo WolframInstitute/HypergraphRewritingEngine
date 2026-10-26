@@ -6,6 +6,7 @@ add_library(job_system STATIC
     src/park.cpp
     src/capacity.cpp
     src/memory_limit.cpp
+    src/diag.cpp
 )
 target_include_directories(job_system PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

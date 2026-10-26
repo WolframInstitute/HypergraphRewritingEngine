@@ -1,4 +1,5 @@
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/diag.hpp"
 #include "hgcommon/termination_core.hpp"
 // Device-resident scheduling: workers that pull work from a queue rather than being launched
 // once per phase per step. See gpu/include/hg_gpu/persistent.hpp and
@@ -3292,7 +3293,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     const double t_seed = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_seed0).count();
     if (dbgt)
-        std::fprintf(stderr, "[persistent setup] dedup_maps=%.2f allocs=%.2f seed=%.2f (ms)\n",
+        hgcommon::diag_printf("[persistent setup] dedup_maps=%.2f allocs=%.2f seed=%.2f (ms)\n",
                      t_maps, t_alloc, t_seed);
 
     // D22 (docs/TUNING.md): the state claim map is read by every child's dedup claim; when it

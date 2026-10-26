@@ -1,4 +1,5 @@
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/diag.hpp"
 #include <limits>
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/evolve.hpp"
@@ -671,7 +672,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                double(st.cycles_canon) + double(st.cycles_idle) +
                                double(st.cycles_wait);
             const double pct = tot > 0 ? 100.0 / tot : 0.0;
-            std::fprintf(stderr,
+            hgcommon::diag_printf(
                          "[persistent] states=%u matches=%u arena_words=%llu cycles: "
                          "match=%.1f%% rewrite=%.1f%% canon=%.1f%% idle=%.1f%% wait=%.1f%% "
                          "keyed_twins=%u\n",
@@ -681,13 +682,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                          st.cycles_canon * pct, st.cycles_idle * pct,
                          st.cycles_wait * pct, st.keyed_twins);
             if (in.max_states_per_step != 0)
-                std::fprintf(stderr, "[persistent select] cycles=%llu\n",
+                hgcommon::diag_printf("[persistent select] cycles=%llu\n",
                              (unsigned long long)st.cycles_select);
             const double rw = double(st.cycles_rw_sub[0]) + double(st.cycles_rw_sub[1]) +
                               double(st.cycles_rw_sub[2]) + double(st.cycles_rw_sub[3]) +
                               double(st.cycles_rw_sub[4]) + double(st.cycles_rw_sub[5]);
             const double rpct = rw > 0 ? 100.0 / rw : 0.0;
-            std::fprintf(stderr,
+            hgcommon::diag_printf(
                          "[persistent rw] reserve=%.1f%% emit=%.1f%% csr=%.1f%% event=%.1f%% "
                          "causal=%.1f%% branchial=%.1f%%\n",
                          st.cycles_rw_sub[0] * rpct, st.cycles_rw_sub[1] * rpct,
@@ -700,7 +701,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                               double(st.cycles_canon_sub[2]) + double(st.cycles_canon_sub[3]) +
                               double(st.cycles_canon_sub[4]);
             const double cpct = cb > 0 ? 100.0 / cb : 0.0;
-            std::fprintf(stderr,
+            hgcommon::diag_printf(
                          "[persistent canon] irkey=%.1f%% evkey=%.1f%% qc=%.1f%% qe=%.1f%% "
                          "dedup=%.1f%%\n",
                          st.cycles_canon_sub[0] * cpct, st.cycles_canon_sub[1] * cpct,
@@ -780,7 +781,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::chrono::steady_clock::now() - t_total_start).count();
 
     if (dbg) {
-        std::fprintf(stderr,
+        hgcommon::diag_printf(
             "[evolve dbg] total=%.2f init=%.2f qcsetup=%.2f persist=%.2f recon=%.2f "
             "match=%.2f rewrite=%.2f hash=%.2f dedup=%.2f "
             "readback{copy=%.2f states=%.2f} unattributed=%.2f (ms)\n",
@@ -966,9 +967,9 @@ static void log_config_growth(const char* header, const EngineConfig& initial,
                               const EngineConfig& winning) {
 #define LOG_FIELD(field) \
     if (winning.field != initial.field) { \
-        std::fprintf(stderr, "  %s: %u → %u\n", #field, initial.field, winning.field); \
+        hgcommon::diag_printf("  %s: %u → %u\n", #field, initial.field, winning.field); \
     }
-    std::fprintf(stderr, "hg_gpu::evolve: %s (estimated %llu MB):\n", header,
+    hgcommon::diag_printf("hg_gpu::evolve: %s (estimated %llu MB):\n", header,
                  (unsigned long long)(estimated_device_bytes(winning) >> 20));
     LOG_FIELD(max_edges);
     LOG_FIELD(max_vertices);
@@ -997,7 +998,7 @@ static void log_config_growth(const char* header, const EngineConfig& initial,
     LOG_FIELD(canonical_form_words);
     LOG_FIELD(state_invariant_words);
     if (winning.held_pool_words != initial.held_pool_words)
-        std::fprintf(stderr, "  held_pool_words: %llu → %llu\n",
+        hgcommon::diag_printf("  held_pool_words: %llu → %llu\n",
                      (unsigned long long)initial.held_pool_words,
                      (unsigned long long)winning.held_pool_words);
 #undef LOG_FIELD
@@ -1158,7 +1159,7 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
     // grows back over the cap.
     if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
         fit_config_to_cap(cfg, mem_cap);
-        std::fprintf(stderr,
+        hgcommon::diag_printf(
             "hg_gpu::evolve: initial config exceeded the memory cap (%llu MB) — "
             "scaled pools down to ~%llu MB; result may be partial.\n",
             (unsigned long long)(mem_cap >> 20),
@@ -1176,7 +1177,7 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
     for (int attempt_no = 0; attempt_no <= kMaxRetries; ++attempt_no) {
         EvolveResult result;
         if (dbg_config)
-            std::fprintf(stderr,
+            hgcommon::diag_printf(
                          "[hg_gpu config] attempt %d: ~%llu MB, cap %llu MB, states %u, events %u, "
                          "edges %u\n",
                          attempt_no + 1, (unsigned long long)(estimated_device_bytes(cfg) >> 20),
@@ -1193,7 +1194,7 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
             if (attempt_no == 0 && first_shrinks < kFirstShrinks) {
                 ++first_shrinks;
                 fit_config_to_cap(cfg, estimated_device_bytes(cfg) / 2);
-                std::fprintf(stderr,
+                hgcommon::diag_printf(
                     "hg_gpu::evolve: the first engine failed (%s) -- halving it to ~%llu MB and "
                     "retrying.\n", e.what(),
                     (unsigned long long)(estimated_device_bytes(cfg) >> 20));
@@ -1203,7 +1204,7 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
             best.warnings.push_back(OverflowWarning{
                 ErrorKind::kDeviceOutOfMemory, 1u,
                 std::string("attempt ") + std::to_string(attempt_no + 1) + ": " + e.what()});
-            std::fprintf(stderr,
+            hgcommon::diag_printf(
                 "hg_gpu::evolve: the engine at this size failed (%s) — returning the last "
                 "completed attempt's partial result.\n", e.what());
             log_config_growth("the size that failed", initial_cfg, cfg);
@@ -1269,7 +1270,7 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
                 "grown config (~" + std::to_string(estimated_device_bytes(cfg) >> 20) +
                 " MB) would exceed the device memory cap (" +
                 std::to_string(mem_cap >> 20) + " MB); returning partial result"});
-            std::fprintf(stderr,
+            hgcommon::diag_printf(
                 "hg_gpu::evolve: next config (~%llu MB) would exceed the memory cap "
                 "(%llu MB) — returning the partial result.\n",
                 (unsigned long long)(estimated_device_bytes(cfg) >> 20),
@@ -1278,7 +1279,7 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
         }
 
         best = std::move(result);
-        std::fprintf(stderr,
+        hgcommon::diag_printf(
             "hg_gpu::evolve: overflow on %s — growing relevant config and "
             "retrying (attempt %d/%d).\n",
             error_kind_name(first_grew), attempt_no + 2, kMaxRetries + 1);
@@ -1549,7 +1550,7 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
                                          return error_kind_is_partial(w.kind);
                                      });
     if (partial && std::memcmp(&start, &own, sizeof(EngineConfig)) != 0) {
-        std::fprintf(stderr, "hg_gpu::evolve: partial from the live engine's config -- running "
+        hgcommon::diag_printf("hg_gpu::evolve: partial from the live engine's config -- running "
                              "again from this input's own config.\n");
         recycle(std::move(result));
         engine_.reset();

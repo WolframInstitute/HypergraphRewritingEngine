@@ -37,7 +37,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
   - an association with a `"Type"` key naming a generated initial condition
   - an association with an `"Edges"` key and no `"Type"` key, whose `"Edges"` is the hypergraph
 - *n* is a non-negative integer. The initial states are at step 0; step $k$ holds every state produced by an event applied to a state of step $k-1$.
-- The evolution runs in a separate engine process, and the result reaches the kernel when it finishes.
+- The evolution runs in a separate engine process, and the result reaches the kernel when it finishes. If that process ends during an evaluation, the message `HGEvolve::workerlost` is issued, the result is `$Failed`, and the next evaluation starts a new process. Text the engine process writes outside its result, such as a library's warning, is issued as `HGEvolve::enginelog`.
 - The possible properties are:
 
 |   |   |
