@@ -45,12 +45,14 @@ namespace hgffi = HG_NAMESPACE::ffi;
 #include <vector>
 #include <exception>
 
-#include "loopback_listener.hpp"   // socket_t, HG_CLOSESOCK, open_loopback_listener
 #if defined(_WIN32)
 #include <io.h>
 #include <fcntl.h>
-#elif defined(__GLIBC__)
+#else
+#include <unistd.h>
+#if defined(__GLIBC__)
 #include <malloc.h>
+#endif
 #endif
 
 namespace {
@@ -211,138 +213,18 @@ int run_serve(const HostBridge& host_in) {
     return 0;
 }
 
-bool sock_recv_exact(socket_t s, void* buf, size_t n) {
-    char* p = static_cast<char*>(buf);
-    size_t got = 0;
-    while (got < n) {
-        int r = recv(s, p + got, static_cast<int>(n - got), 0);
-        if (r <= 0) return false;  // peer closed or error
-        got += static_cast<size_t>(r);
-    }
-    return true;
-}
-
-bool sock_send_all(socket_t s, const void* buf, size_t n) {
-    const char* p = static_cast<const char*>(buf);
-    size_t sent = 0;
-    while (sent < n) {
-        int r = send(s, p + sent, static_cast<int>(n - sent), 0);
-        if (r <= 0) return false;
-        sent += static_cast<size_t>(r);
-    }
-    return true;
-}
-
-// Socket worker: bind a loopback TCP port, publish it (to `portfile` if given,
-// else "HGPORT <port>\n" on stdout), accept one connection, and serve the same
-// length-prefixed frames over the socket. Used where the front end cannot carry
-// binary over a process pipe (Wolfram's StartProcess stdin drops BinaryWrite and
-// truncates WriteString at NUL, and does not surface a running child's stdout)
-// but can speak a TCP socket (SocketConnect + BinaryWrite/SocketReadMessage are
-// NUL-safe). The port file is the race-free channel for Wolfram: it polls the
-// file for the OS-assigned port, then connects. CUDA context and warm caches
-// persist across jobs, as with --serve.
-int run_serve_socket(const HostBridge& host_in, const char* portfile) {
-#if defined(_WIN32)
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::fprintf(stderr, "HGEvolve: WSAStartup failed\n");
-        return 1;
-    }
-#endif
-    const char* failed = nullptr;
-    socket_t listener = open_loopback_listener([portfile](unsigned port) {
-        if (portfile) {
-            // Write to a temp file, then atomically rename into place so the parent
-            // never sees a half-written port.
-            std::string tmp = std::string(portfile) + ".tmp";
-            FILE* f = std::fopen(tmp.c_str(), "w");
-            if (f) { std::fprintf(f, "%u\n", port); std::fclose(f); std::rename(tmp.c_str(), portfile); }
-        } else {
-            std::fprintf(reply(), "HGPORT %u\n", port);
-            std::fflush(reply());
-        }
-    }, &failed);
-    if (listener == INVALID_SOCKET) { std::fprintf(stderr, "HGEvolve: %s failed\n", failed); return 1; }
-    socket_t conn = accept(listener, nullptr, nullptr);
-    if (conn == INVALID_SOCKET) { std::fprintf(stderr, "HGEvolve: accept() failed\n"); HG_CLOSESOCK(listener); return 1; }
-
-    // Progress messages go to the client as progress frames ahead of the job's reply.
-    HostBridge host = host_in;
-    host.progress = [conn](const std::string& m) {
-        uint8_t hdr[8];
-        frame_header(kProgressFrameBit | static_cast<uint64_t>(m.size()), hdr);
-        if (sock_send_all(conn, hdr, 8)) sock_send_all(conn, m.data(), m.size());
-    };
-    auto send_error_frame = [conn](const std::string& m) {
-        uint8_t hdr[8];
-        frame_header(kErrorFrameBit | static_cast<uint64_t>(m.size()), hdr);
-        return sock_send_all(conn, hdr, 8) && sock_send_all(conn, m.data(), m.size());
-    };
-    uint8_t lenbuf[8];
-    std::vector<uint8_t> job;
-    for (;;) {
-        if (!sock_recv_exact(conn, lenbuf, 8)) break;  // client closed
-        uint64_t len = 0;
-        for (int i = 0; i < 8; ++i) len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
-        // The length is 8 bytes straight off the socket, and this resize sits OUTSIDE the
-        // try below -- so a corrupt or truncated header (all-0xFF reads as ~1.8e19) throws
-        // out of main and terminates the worker the client is still talking to. Reject it as
-        // a job error, which the frame protocol already expresses.
-        if (len > kMaxJobBytes) {
-            const std::string m = "job frame of " + std::to_string(len) + " bytes exceeds the " +
-                                  std::to_string(kMaxJobBytes) + "-byte cap";
-            if (!send_error_frame(m)) break;
-            continue;                               // the stream is unusable past this point,
-        }                                           // but the client decides whether to retry
-        job.resize(static_cast<size_t>(len));
-        if (len && !sock_recv_exact(conn, job.data(), static_cast<size_t>(len))) break;
-        if (!g_no_device.empty()) {
-            if (!send_error_frame(g_no_device)) break;
-            continue;
-        }
-        HG_NAMESPACE::wxf::Pieces out;
-        try {
-            out = run_rewriting_core_pieces(job, host);
-        } catch (const std::exception& e) {
-            release_job_memory();
-            if (!send_error_frame(e.what())) break;
-            continue;
-        }
-        release_job_memory();
-        uint8_t hdr[8];
-        frame_header(static_cast<uint64_t>(out.size()), hdr);
-        if (!sock_send_all(conn, hdr, 8)) break;
-        bool sent = true;
-        for (const auto& part : out.parts)
-            if (!part.empty() && !sock_send_all(conn, part.data(), part.size())) {
-                sent = false;
-                break;
-            }
-        if (!sent) break;
-    }
-    HG_CLOSESOCK(conn);
-    HG_CLOSESOCK(listener);
-#if defined(_WIN32)
-    WSACleanup();
-#endif
-    return 0;
-}
-
 }  // namespace
 
 // The command line this binary actually accepts. Printed for --help and alongside the error for
 // an unrecognised argument, so a caller who guessed wrong is told what the choices are rather
 // than left to infer them from a WXF parse failure.
 static const char* const kUsage =
-    "usage: hg_evolve [--serve | --serve-socket [PORTFILE]] [--version] [--print-tuning] [--help]\n"
+    "usage: hg_evolve [--serve] [--version] [--print-tuning] [--help]\n"
     "\n"
     "  (no arguments)          one-shot: read one WXF job from stdin, write the WXF result to\n"
     "                          stdout. Progress on stderr.\n"
     "  --serve                 worker: process a stream of length-prefixed WXF jobs on stdin,\n"
     "                          each framed [8-byte little-endian length][payload], until EOF.\n"
-    "  --serve-socket [FILE]   worker over a loopback TCP socket; with FILE, write the\n"
-    "                          OS-assigned port number there once it is listening.\n"
     "  --version               print the build stamp (commit and variant) and exit.\n"
     "  --print-tuning          print the host (and device) probe and the values derived from\n"
     "                          it, with the source of each, and exit.\n"
@@ -511,8 +393,7 @@ int main(int argc, char** argv) {
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
-    bool serve = false, serve_socket = false;
-    const char* socket_portfile = nullptr;
+    bool serve = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
             // Prints the same literal a scanner finds in the file, so the runnable answer and the
@@ -531,11 +412,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (std::strcmp(argv[i], "--serve") == 0) serve = true;
-        else if (std::strcmp(argv[i], "--serve-socket") == 0) {
-            serve_socket = true;
-            // Optional next arg: a path to write the OS-assigned port into.
-            if (i + 1 < argc && argv[i + 1][0] != '-') socket_portfile = argv[++i];
-        } else {
+        else {
             // AN ARGUMENT THIS BINARY DOES NOT KNOW IS AN ERROR, NOT A NO-OP. Every mode here
             // reads WXF from stdin, so an unrecognised argument that falls through produces
             // "Parse error: Unexpected end of WXF data" from an empty stdin -- a message about
@@ -577,7 +454,6 @@ int main(int argc, char** argv) {
     };
     // No abort_query: the parent aborts by killing this process.
 
-    if (serve_socket) return run_serve_socket(host, socket_portfile);
     if (serve) return run_serve(host);
     return run_one_shot(host);
 }

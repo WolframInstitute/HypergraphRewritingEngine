@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-- A CPU `HGEvolve` runs one `hg_evolve` process per call and opens no socket. On Windows,
-  Wolfram 15.0's `SocketConnect` to the engine worker took about 2 s, and in 7 of 40 fresh
-  wolframscript kernels the Wolfram process faulted inside it ("The product exited for an
-  unknown reason"). A first CPU call now takes about 0.4 s. `"ShowProgress"` prints a CPU run's
-  progress when the run ends. GPU calls and sessions still use the worker.
+- The paclet talks to its engine worker over the worker's standard input and output
+  (`hg_evolve --serve` started with `StartProcess`) and opens no socket. On Windows, Wolfram 15.0's
+  `SocketConnect` to the old socket worker took about 2 s, and in 7 of 40 fresh wolframscript
+  kernels the Wolfram process faulted inside it ("The product exited for an unknown reason").
+  `hg_evolve --serve-socket` is removed. A worker that ends during an evaluation gives
+  `HGEvolve::workerlost`, and the next evaluation starts a new one.
 
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`

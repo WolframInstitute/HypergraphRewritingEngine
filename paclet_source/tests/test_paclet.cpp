@@ -182,43 +182,58 @@ TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
            "output:\n" << out;
 }
 
-// A CPU HGEvolve runs a one-shot hg_evolve and opens no socket: Wolfram 15.0's SocketConnect
-// faulted inside libzeromqlink.dll in 7 of 40 fresh wolframscript kernels on Windows. After a
-// CPU call the kernel holds no CPU worker process and no worker socket.
-TEST_F(PacletTest, ACpuEvolveOpensNoSocket) {
+// THE WORKER TRANSPORT: hg_evolve --serve on the process's standard streams, no socket. Two calls
+// use one worker; "ShowProgress" prints the worker's progress frames; a worker killed during a
+// job gives HGEvolve::workerlost and $Failed, and the next call starts a new worker and returns.
+// The killer is a separate process that ends the worker by its PID 0.3 s after it starts, during
+// a call of about three seconds (Wolfram's rule, 6 steps, Full states, one thread).
+TEST_F(PacletTest, TheWorkerServesOverItsStandardStreams) {
     const std::string paclet_dir =
         test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
             std::string(HG_SOURCE_DIR) + "/paclet"));
     const std::string code =
         "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
         "<< \"HypergraphRewriting`\"; "
-        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"NOSOCK_LOAD_FAIL\"]; Exit[0]]; "
-        "If[!HypergraphRewriting`Private`hgCpuBinaryAvailableQ[], Print[\"NOSOCK_SKIP: no engine "
+        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"PIPE_LOAD_FAIL\"]; Exit[0]]; "
+        "If[!HypergraphRewriting`Private`hgCpuBinaryAvailableQ[], Print[\"PIPE_SKIP: no engine "
         "binary for \", $SystemID]; Exit[0]]; "
-        "n = HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
-        "                                 {{1, 2}, {2, 3}}, 4, \"NumStates\", "
-        "                                 \"Tuning\" -> <|\"MemoryLimit\" -> 2^30|>]; "
-        "w = KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, \"CPU\"] || "
-        "    KeyExistsQ[HypergraphRewriting`Private`$hgWorkerSock, \"CPU\"]; "
-        "If[IntegerQ[n] && n > 0 && !w, Print[\"NOSOCK_OK states=\", n], "
-        "  Print[\"NOSOCK_FAIL: states \", n, \", worker \", w]]";
+        "gen := Lookup[HypergraphRewriting`Private`$hgWorkerGeneration, \"CPU\", None]; "
+        "small := HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
+        "  {{1, 2}, {2, 3}}, 4, \"NumStates\", \"Tuning\" -> <|\"MemoryLimit\" -> 2^30|>]; "
+        "n1 = small; g1 = gen; n2 = small; g2 = gen; "
+        "HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
+        "  {{1, 2}, {2, 3}}, 2, \"NumStates\", \"ShowProgress\" -> True]; "
+        "pid = First[HypergraphRewriting`Private`$hgWorkerProc[\"CPU\"]][\"PID\"]; "
+        "StartProcess[If[$OperatingSystem === \"Windows\", "
+        "  {\"powershell\", \"-NoProfile\", \"-Command\", "
+        "   \"Start-Sleep -Milliseconds 300; Stop-Process -Force -Id \" <> ToString[pid]}, "
+        "  {\"sh\", \"-c\", \"sleep 0.3; kill -9 \" <> ToString[pid]}]]; "
+        "lost = Check[HypergraphRewriting`HGEvolve[{{x, y}, {x, z}} -> "
+        "  {{x, y}, {x, w}, {y, w}, {z, w}}, {{0, 0}, {0, 0}}, 6, \"NumStates\", "
+        "  \"CanonicalizeStates\" -> Full, \"Threads\" -> 1, "
+        "  \"Tuning\" -> <|\"MemoryLimit\" -> 3 2^30|>], \"WORKERLOST\", HypergraphRewriting`HGEvolve::workerlost]; "
+        "n3 = small; g3 = gen; "
+        "If[IntegerQ[n1] && n1 === n2 === n3 && g1 === g2 && lost === \"WORKERLOST\" && "
+        "   IntegerQ[g3] && g3 > g2, Print[\"PIPE_OK states=\", n1], "
+        "  Print[\"PIPE_FAIL: \", {n1, n2, n3, g1, g2, g3, lost}]]";
 
     constexpr int kMaxAttempts = 3;
     std::string out;
     for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
         out = test_utils::executeWolframScriptCapture(code);
-        const bool verdict = out.find("NOSOCK_OK") != std::string::npos ||
-                             out.find("NOSOCK_FAIL") != std::string::npos ||
-                             out.find("NOSOCK_SKIP") != std::string::npos ||
-                             out.find("NOSOCK_LOAD_FAIL") != std::string::npos;
+        const bool verdict = out.find("PIPE_OK") != std::string::npos ||
+                             out.find("PIPE_FAIL") != std::string::npos ||
+                             out.find("PIPE_SKIP") != std::string::npos ||
+                             out.find("PIPE_LOAD_FAIL") != std::string::npos;
         if (verdict) break;
     }
-    if (out.find("NOSOCK_SKIP") != std::string::npos)
+    if (out.find("PIPE_SKIP") != std::string::npos)
         GTEST_SKIP() << "this build ships no engine binary for this platform:\n" << out;
-    ASSERT_EQ(out.find("NOSOCK_LOAD_FAIL"), std::string::npos)
+    ASSERT_EQ(out.find("PIPE_LOAD_FAIL"), std::string::npos)
         << "the paclet did not load, so nothing below was exercised:\n" << out;
-    EXPECT_NE(out.find("NOSOCK_OK"), std::string::npos)
-        << "a CPU HGEvolve started the socket worker. WolframScript output:\n" << out;
+    EXPECT_NE(out.find("PIPE_OK"), std::string::npos) << "WolframScript output:\n" << out;
+    EXPECT_NE(out.find("HGEvolve: Evolution complete"), std::string::npos)
+        << "\"ShowProgress\" printed no progress frame. WolframScript output:\n" << out;
 }
 
 #else

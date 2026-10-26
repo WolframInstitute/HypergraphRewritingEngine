@@ -32,7 +32,6 @@ target_compile_definitions(HypergraphRewriting PRIVATE
 # crashes are isolated from the notebook. See docs/ARCHITECTURE.md.
 add_executable(hg_evolve
     hg_evolve_main.cpp
-    loopback_listener.hpp
     hypergraph_ffi.cpp
     paclet_support.cpp
 )
@@ -62,23 +61,17 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
         target_link_options(hg_evolve PRIVATE -static-libgcc -static-libstdc++)
     endif()
 elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
-    # clang -> lld-link (e.g. Windows-ARM64). Two things it can't do the ordinary way:
-    #  1. The hypergraph/wxf static libs are GNU-ar archives; lld-link cannot pull objects from them
-    #     on demand (their symbol index isn't in the MSVC format), so every symbol reports as
-    #     undefined. Force-include them with /WHOLEARCHIVE exactly as the HypergraphRewriting DLL
-    #     does above.
-    #  2. A target_link_libraries name for winsock becomes a malformed `-lws2_32.lib`; pass the
-    #     import lib straight to the linker instead.
+    # clang -> lld-link (e.g. Windows-ARM64). The hypergraph/wxf static libs are GNU-ar archives;
+    # lld-link cannot pull objects from them on demand (their symbol index isn't in the MSVC
+    # format), so every symbol reports as undefined. Force-include them with /WHOLEARCHIVE exactly
+    # as the HypergraphRewriting DLL does above.
     # job_system.lib is under the same GNU-ar constraint: without /WHOLEARCHIVE its members are
     # never pulled and every symbol it owns (park_if_equal, JobSlotPool, CapacityExhausted)
     # reports undefined while the archive sits on the very same link line.
     target_link_options(hg_evolve PRIVATE
         "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/hypergraph.lib"
         "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/wxf.lib"
-        "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/job_system.lib"
-        "LINKER:ws2_32.lib")  # winsock for --serve-socket
-else()
-    target_link_libraries(hg_evolve ws2_32)  # winsock for --serve-socket (mingw)
+        "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/job_system.lib")
 endif()
 
 # GPU-enabled binary: same FFI marshaling, plus the GPU backend. Built only when
@@ -88,7 +81,6 @@ endif()
 if(TARGET hg_gpu)
     add_executable(hg_evolve_gpu
         hg_evolve_main.cpp
-        loopback_listener.hpp
         hypergraph_ffi.cpp
         hg_gpu_backend.cpp
         paclet_support.cpp
@@ -119,8 +111,6 @@ if(TARGET hg_gpu)
         set_target_properties(hg_evolve_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
         find_package(Threads REQUIRED)
         target_link_libraries(hg_evolve_gpu Threads::Threads)
-    else()
-        target_link_libraries(hg_evolve_gpu ws2_32)  # winsock for --serve-socket
     endif()
 endif()
 
@@ -142,9 +132,9 @@ target_include_directories(HypergraphRewriting PRIVATE
 )
 
 # Progress reporting and abort run over the process-isolation transport: the engine
-# executes in a standalone hg_evolve process, and the paclet exchanges WXF with it over a
-# NUL-safe socket (--serve-socket), falling back to one-shot RunProcess stdio. So the paclet
-# library links no WSTP SDK.
+# executes in a standalone hg_evolve process, and the paclet exchanges length-prefixed WXF with
+# it over the process's standard input and output (--serve), falling back to one-shot RunProcess
+# stdio. So the paclet library links no WSTP SDK.
 
 # Set target properties based on target platform
 # Windows doesn't use -fPIC; only set for Unix-like systems

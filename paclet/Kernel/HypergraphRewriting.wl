@@ -215,28 +215,24 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
   ByteArray[ToCharacterCode[outStr, "ISO8859-1"]]
 ];
 
-(* Persistent worker: keep an engine binary alive in --serve-socket mode and
-   stream length-prefixed WXF jobs to it over a loopback TCP socket, so expensive
-   per-process setup -- the GPU CUDA context (~0.7 s) above all -- is paid once
-   and amortised across calls. A socket rather than the process pipe because
-   Wolfram's StartProcess drops BinaryWrite to stdin, truncates WriteString at
-   NUL, and does not surface a running child's stdout; SocketConnect +
-   BinaryWrite/SocketReadMessage are NUL-safe. The worker publishes its
-   OS-assigned port to a temp file (race-free); the WL side polls it, connects,
-   then frames jobs ([8-byte little-endian length][payload] both directions; a
-   zero-length reply means that job errored). Any transport failure marks the
-   device broken and every call falls back to the one-shot RunProcess path --
-   correct everywhere, amortised where the socket worker is available. When the
-   kernel exits its socket closes and the worker's serve loop ends, so no process
-   is left behind.
+(* Persistent worker: an engine binary kept alive in --serve mode (hg_evolve_main.cpp run_serve),
+   started with StartProcess, with length-prefixed WXF jobs written to its standard input and
+   replies read from its standard output: [8-byte little-endian length][payload] both ways. The
+   per-process setup -- the GPU CUDA context above all -- is paid once per worker. The streams are
+   ProcessConnection's: BinaryWrite on the input and ReadByteArray on the output carry every byte
+   value. The kernel opens no socket: Wolfram 15.0's SocketConnect faulted inside
+   libzeromqlink.dll in 7 of 40 fresh wolframscript kernels on Windows.
+   A worker that cannot start marks the device broken, and HGEvolve then runs each job in a
+   one-shot RunProcess of the same binary. A worker that ends during a job (killed, or crashed)
+   gives hgWorkerLost[]: HGEvolve reports HGEvolve::workerlost and the next call starts a new
+   worker. When the kernel exits, the worker's standard input closes and its serve loop ends.
    An aborted call (TimeConstrained, Abort[], Alt+.) kills the worker, because the aborted job's
    reply is still on its way and the next call would read it as its own. The next call starts a
    new worker. Each started worker gets a new $hgWorkerGeneration number; a session records the
    number of the worker that opened it and reports HGSessionStep::expired once that worker is
    gone. *)
 $hgWorkerProc = <||>;     (* device -> ProcessObject *)
-$hgWorkerSock = <||>;     (* device -> SocketObject *)
-$hgWorkerBroken = <||>;   (* device -> True once found unavailable *)
+$hgWorkerBroken = <||>;   (* device -> True once a worker could not start *)
 $hgWorkerGeneration = <||>;  (* device -> number of the live worker, unique within the kernel *)
 $hgWorkerStarts = 0;
 
@@ -244,106 +240,88 @@ hgFrame[bytes_ByteArray] := Join[ByteArray[Reverse[IntegerDigits[Length[bytes], 
 hgWorkerExe[device_] := If[device === "GPU", $HypergraphEngineBinaryGPU, $HypergraphEngineBinary];
 
 hgWorkerKill[device_] := (
-  Quiet[If[Head[$hgWorkerSock[device]] === SocketObject, Close[$hgWorkerSock[device]]]];
   Quiet[If[MatchQ[$hgWorkerProc[device], _ProcessObject], KillProcess[$hgWorkerProc[device]]]];
   $hgWorkerProc = KeyDrop[$hgWorkerProc, device];
-  $hgWorkerSock = KeyDrop[$hgWorkerSock, device];
 );
 
-hgWorkerStart[device_] := Module[{exe, portfile, proc = None, port, sock = None, done = False},
+hgWorkerStart[device_] := Module[{exe, proc},
   exe = hgWorkerExe[device];
   If[!(StringQ[exe] && FileExistsQ[exe]), Return[$Failed]];
-  portfile = FileNameJoin[{$TemporaryDirectory, "hgport-" <> ToString[$ProcessID] <>
-    "-" <> device <> "-" <> IntegerString[RandomInteger[10^12]] <> ".txt"}];
-  Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
-  (* An abort during the start kills the half-started process: it waits in accept() for a
-     connection that never comes, and the kernel's exit does not end it. *)
-  WithCleanup[
-    proc = StartProcess[{exe, "--serve-socket", portfile}];
-    port = Null;
-    Do[
-      If[FileExistsQ[portfile],
-        port = Quiet[ToExpression[StringTrim[Import[portfile, "String"]]]];
-        If[IntegerQ[port], Break[]]];
-      Pause[0.02],
-      250];  (* poll up to ~5 s for the OS-assigned port *)
-    If[IntegerQ[port],
-      sock = TimeConstrained[SocketConnect["127.0.0.1:" <> ToString[port]], 10, $Failed]];
-    done = Head[sock] === SocketObject,
-    Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
-    If[!done,
-      Quiet[If[Head[sock] === SocketObject, Close[sock]]];
-      Quiet[If[MatchQ[proc, _ProcessObject], KillProcess[proc]]]]];
-  If[!done, Return[$Failed]];
-  $hgWorkerProc[device] = proc; $hgWorkerSock[device] = sock;
+  proc = Quiet[StartProcess[{exe, "--serve"}]];
+  If[Head[proc] =!= ProcessObject || ProcessStatus[proc] =!= "Running", Return[$Failed]];
+  $hgWorkerProc[device] = proc;
   $hgWorkerGeneration[device] = ++$hgWorkerStarts;
   True
 ];
 
-(* Read a job's reply from the worker: frames of [8-byte little-endian length][payload]. A length
-   with bit 63 set is a PROGRESS frame (hg_evolve_main.cpp, kProgressFrameBit): its payload is one
-   progress message, printed when the call asked for progress ($hgShowProgress) and skipped
-   otherwise, and the reply frame follows. A length with bit 62 set is an ERROR frame
-   (kErrorFrameBit): the job failed, the payload is the message, and nothing follows. The reply's
-   chunks are appended to a DynamicArray and joined once, so reassembly is O(n). Returns the reply
-   payload for BinaryDeserialize, hgEngineError[message] for an error frame, or $Failed on a dead
-   socket. *)
+(* Read a job's reply from the worker's output stream. A length with bit 63 set is a PROGRESS
+   frame (hg_evolve_main.cpp, kProgressFrameBit): its payload is one progress message, printed when
+   the call asked for progress ($hgShowProgress) and skipped otherwise, and the reply frame
+   follows. A length with bit 62 set is an ERROR frame (kErrorFrameBit): the job failed, the
+   payload is the message, and nothing follows. Returns the reply payload for BinaryDeserialize,
+   hgEngineError[message] for an error frame, or $Failed when the stream ends.
+   The stream is read with ReadByteArray[in, EndOfBuffer], which returns at once with the bytes
+   that have arrived, and EndOfFile once the worker has ended. A blocking ReadByteArray[in, n]
+   does not return when another process kills the worker (Windows, Wolfram 15.0). Between empty
+   reads the loop polls 200 times, then pauses 1 ms, and after 2000 empty reads 10 ms. Arrived
+   pieces are appended to a DynamicArray and joined once per frame. *)
 $hgShowProgress = False;
-hgReadFrame[sock_] := Module[{pending = ByteArray[{}], chunk, len, ds, got},
+hgReadFrame[in_] := Catch[Module[{buf = ByteArray[{}], fill, len, k, body},
+  fill[n_] := Module[{ds = CreateDataStructure["DynamicArray"], total = Length[buf], chunk, idle = 0},
+    If[total >= n, Return[Null, Module]];
+    If[total > 0, ds["Append", buf]];
+    While[total < n,
+      chunk = ReadByteArray[in, EndOfBuffer];
+      Which[
+        ByteArrayQ[chunk] && Length[chunk] > 0,
+          ds["Append", chunk]; total += Length[chunk]; idle = 0,
+        chunk === {} || ByteArrayQ[chunk],
+          idle++; If[idle > 200, Pause[If[idle > 2000, 0.01, 0.001]]],
+        True, Throw[$Failed, hgReadFrame]]];
+    buf = If[ds["Length"] == 1, ds["Part", 1], Join @@ Normal[ds]]];
+  (* The k bytes after the 8-byte header, and the rest of the buffer kept for the next frame. *)
+  body[k_] := Module[{b},
+    fill[8 + k];
+    b = If[k == 0, ByteArray[{}], buf[[9 ;; 8 + k]]];
+    buf = If[Length[buf] > 8 + k, buf[[9 + k ;;]], ByteArray[{}]];
+    b];
   While[True,
-    While[Length[pending] < 8,
-      chunk = SocketReadMessage[sock];
-      If[!ByteArrayQ[chunk], Return[$Failed]];
-      pending = Join[pending, chunk]];
-    len = FromDigits[Reverse[Normal[pending[[1 ;; 8]]]], 256];
-    If[len >= 2^63,
-      len -= 2^63;
-      While[Length[pending] < 8 + len,
-        chunk = SocketReadMessage[sock];
-        If[!ByteArrayQ[chunk], Return[$Failed]];
-        pending = Join[pending, chunk]];
-      If[TrueQ[$hgShowProgress] && len > 0, Print[ByteArrayToString[pending[[9 ;; 8 + len]]]]];
-      pending = If[Length[pending] > 8 + len, pending[[9 + len ;;]], ByteArray[{}]];
-      Continue[]];
-    If[len >= 2^62,
-      len -= 2^62;
-      While[Length[pending] < 8 + len,
-        chunk = SocketReadMessage[sock];
-        If[!ByteArrayQ[chunk], Return[$Failed]];
-        pending = Join[pending, chunk]];
-      Return[hgEngineError[If[len > 0, ByteArrayToString[pending[[9 ;; 8 + len]]], ""]]]];
-    ds = CreateDataStructure["DynamicArray"];
-    ds["Append", pending];
-    got = Length[pending];
-    While[got < 8 + len,
-      chunk = SocketReadMessage[sock];
-      If[!ByteArrayQ[chunk], Return[$Failed]];
-      ds["Append", chunk]; got += Length[chunk]];
-    Return[If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]]]
-];
+    fill[8];
+    len = FromDigits[Reverse[Normal[buf[[1 ;; 8]]]], 256];
+    Which[
+      len >= 2^63,
+        k = body[len - 2^63];
+        If[TrueQ[$hgShowProgress] && Length[k] > 0, Print[ByteArrayToString[k]]],
+      len >= 2^62,
+        k = body[len - 2^62];
+        Throw[hgEngineError[If[Length[k] > 0, ByteArrayToString[k], ""]], hgReadFrame],
+      True,
+        Throw[body[len], hgReadFrame]]]],
+  hgReadFrame];
 
-hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload, written, done = False},
+(* Run one job on the device's worker, starting one when none is running. Returns the reply bytes,
+   hgEngineError[message] when the engine refused the job, hgWorkerLost[] when the worker ended
+   during the job, or $Failed when no worker can be started. *)
+hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{proc, payload = $Failed, written, done = False},
   If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
-  If[Head[$hgWorkerSock[device]] =!= SocketObject
-      || Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
+  If[Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
     hgWorkerKill[device];
-    If[hgWorkerStart[device] =!= True, $hgWorkerBroken[device] = True; Return[$Failed]]
-  ];
+    If[hgWorkerStart[device] =!= True, $hgWorkerBroken[device] = True; Return[$Failed]]];
+  proc = $hgWorkerProc[device];
   (* An abort between the write and the end of the read kills the worker: its reply to this job
      would otherwise be read by the next call. The abort itself propagates unchanged. *)
   WithCleanup[
-    written = Quiet[BinaryWrite[$hgWorkerSock[device], hgFrame[wxfBytes]]] =!= $Failed;
-    If[written, payload = hgReadFrame[$hgWorkerSock[device]]];
+    written = Quiet[BinaryWrite[ProcessConnection[proc, "StandardInput"], hgFrame[wxfBytes]]] =!= $Failed;
+    If[written, payload = Quiet[hgReadFrame[ProcessConnection[proc, "StandardOutput"]]]];
+    (* The worker's standard error is read so the pipe never fills; the paclet does not show it. *)
+    Quiet[ReadString[ProcessConnection[proc, "StandardError"], EndOfBuffer]];
     done = True,
     If[!done, hgWorkerKill[device]]];
-  If[!written, hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
-  Which[
-    payload === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; $Failed,
-    (* The engine refused this job and the worker is alive: hgEngineError[message]. A caller
-       with a fallback takes it only on a dead worker, since the fallback would refuse the job
-       too, and a session verb reports the message. *)
-    True, payload]
+  If[!written || payload === $Failed, hgWorkerKill[device]; Return[hgWorkerLost[]]];
+  payload
 ];
+
+HGEvolve::workerlost = "The engine worker process ended during the evaluation, so it returned no result. The next evaluation starts a new worker.";
 
 (* None, or the reason the GPU cannot run jobs in this kernel: set the first time a GPU binary
    reports no usable device, and read by every later "GPU" call, which then goes to the CPU
@@ -390,22 +368,18 @@ hgResolveDevice[requested_] := Switch[requested,
         Which[reason === None, "GPU", hgGpuFallbackQ[reason], "CPU", True, $Failed]]],
   _, Message[HGEvolve::baddev, requested]; "CPU"];
 
-(* Route a serialized job to the engine. A "CPU" job runs in a one-shot RunProcess of hg_evolve,
-   and a "GPU" job in the persistent socket worker when available, otherwise in a one-shot
-   RunProcess of hg_evolve_gpu; without the binary, the in-process LibraryLink runs it. A GPU
-   binary that reports no usable device sends the job to the CPU (hgGpuRefused).
-   A CPU job does not use the worker: Wolfram 15.0's SocketConnect takes about 2 s on Windows and
-   in 7 of 40 fresh wolframscript kernels the process faulted inside it (libzeromqlink.dll,
-   0xc0000005), while a one-shot hg_evolve.exe starts in about 30 ms. Sessions need the worker,
-   which holds the session (hgSendJob). *)
+(* Route a serialized job to the engine: the persistent worker for `dev` (a resolved device),
+   otherwise, when no worker can be started, a one-shot RunProcess of the same binary, otherwise
+   the in-process LibraryLink. A GPU binary that reports no usable device sends the job to the CPU
+   (hgGpuRefused). A worker that ends during the job gives HGEvolve::workerlost and $Failed. *)
 hgCallEngine[wxfBytes_, dev_:"CPU"] := Module[{r},
-  If[dev === "GPU",
-    r = hgWorkerTry[dev, wxfBytes];
-    If[ByteArrayQ[r], Return[r]];
-    If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
-      Return[If[hgGpuRefused[First[r]], hgCallEngine[wxfBytes, "CPU"], $Failed]]];
-    If[MatchQ[r, hgEngineError[_String]],
-      Message[HGEvolve::enginemsg, First[r]]; Return[$Failed]]];
+  r = hgWorkerTry[dev, wxfBytes];
+  If[ByteArrayQ[r], Return[r]];
+  If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
+    Return[If[hgGpuRefused[First[r]], hgCallEngine[wxfBytes, "CPU"], $Failed]]];
+  If[MatchQ[r, hgEngineError[_String]],
+    Message[HGEvolve::enginemsg, First[r]]; Return[$Failed]];
+  If[r === hgWorkerLost[], Message[HGEvolve::workerlost]; Return[$Failed]];
   Which[
     dev === "GPU",
       r = hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes];

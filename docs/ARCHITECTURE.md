@@ -19,7 +19,7 @@ Wolfram Language                C++                                    GPU (opti
 ────────────────                ───                                    ──────────────
 HGEvolve[...]                                                          
   paclet/Kernel/          WXF over                                     
-  HypergraphRewriting.wl  stdin / loopback socket                     
+  HypergraphRewriting.wl  stdin / stdout of a worker                  
         │  ───────────────────────►  hg_evolve  (paclet_source/hg_evolve_main.cpp)
         │                                 │  run_rewriting_core (hypergraph_ffi.cpp)
         │                                 ▼
@@ -36,12 +36,13 @@ HGEvolve[...]
 ```
 
 Process isolation: the paclet shells out to the standalone `hg_evolve` binary over
-WXF. A CPU `HGEvolve` runs one `hg_evolve` process per call (stdin/stdout, `RunProcess`). A GPU
-`HGEvolve` and every session verb go to a persistent worker over a loopback socket, which keeps
-the CUDA context and the session. The CPU calls do not use the socket because Wolfram 15.0's
-`SocketConnect` on Windows takes about 2 s and faulted inside libzeromqlink.dll in 7 of 40 fresh
-wolframscript kernels. A crash or an Alt-. abort is a process kill, so it never takes down the
-notebook. The binary is
+WXF. `HGEvolve` and every session verb go to a persistent worker, `hg_evolve --serve` (or
+`hg_evolve_gpu --serve`) started with `StartProcess`, which keeps the CUDA context and the
+session: length-prefixed jobs on its standard input, reply, progress and error frames on its
+standard output. The kernel opens no socket: Wolfram 15.0's `SocketConnect` faulted inside
+libzeromqlink.dll in 7 of 40 fresh wolframscript kernels on Windows. When no worker can start, a
+call runs a one-shot `hg_evolve` through `RunProcess`. A crash or an Alt-. abort is a process
+kill, so it never takes down the notebook. The binary is
 shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the
 LibraryLink library remains only as a last-resort fallback and for the standalone
 analysis functions.
@@ -213,7 +214,7 @@ Every property and option of `HGEvolve` (docs/en/ReferencePages/Symbols/HGEvolve
 | `EventClasses` | the Wolfram kernel groups `"Events"` (HypergraphRewriting.wl) | kernel | after the reply | as the CPU | none in the engine |
 | `NumStates`, `NumEvents`, `NumCausalEdges`, `NumBranchialEdges`, `Debug` | counters and multiplicity sums | calling thread | after evolution | host, from the downloaded result | under 1e6 |
 | `Device` | build stamp and `probe_device` | calling thread | after evolution | host | under 1e6 |
-| The reply's WXF bytes | `wxf::association_pieces`: the reply as `wxf::Pieces`, each top-level `wxf::Encoded` section and the streamed States and Events bytes a run of its own, written by the transport (`hg_evolve`'s pipe and socket workers) without being joined; the LibraryLink adapter copies the runs into its result array once | calling thread | after evolution | host | the runs between the sections: keys and small values |
+| The reply's WXF bytes | `wxf::association_pieces`: the reply as `wxf::Pieces`, each top-level `wxf::Encoded` section and the streamed States and Events bytes a run of its own, written by the transport (`hg_evolve`'s worker and one-shot modes) without being joined; the LibraryLink adapter copies the runs into its result array once | calling thread | after evolution | host | the runs between the sections: keys and small values |
 | Sessions: `Step`, `Query`, deltas | `CpuEngineHolder::extend`; the delivery cursor in `build_graph_data` | workers for the step; the cursor's record on the calling thread | the step runs as an evolution; the delta after it | GPU session step on the device | as the evolution and the graph rows |
 
 These run on the calling thread after evolution: the choice of a graph's vertices and edges (its vertex and pair sorts run on the reply jobs, `hgmarshal::parallel_sort`) and the delivery cursor's record, the relation lists' pair choice, the multiplicity points and events of StepStatistics under quotient exploration and in sessions (`for_each_class_multiplicity`, `events_from_multiplicities`; each step's classes are added in a job of their own) and on the GPU engine the class records' map and the grouping of classes and states by step (each step's classes are added, and each step's branchial states and the branchial pairs are assembled, `hgmarshal::branchial_steps`, in reply jobs).
@@ -224,8 +225,8 @@ The FFI serves four verbs over an opaque session — `Open`, `Step`, `Query`, `C
 one-shot `Evolve`, on both devices. The decisions the session code encodes, numbered as the code
 cites them:
 
-- **D7 — one session at a time.** A single slot, matching the transport (the socket worker
-  accepts one connection). A second `Open` while one is live is an error, not an eviction:
+- **D7 — one session at a time.** A single slot, matching the transport (one worker
+  process per device). A second `Open` while one is live is an error, not an eviction:
   evicting would discard a caller's exploration silently. Both devices refuse with one spelling.
 - **D9 — sessions exist on both devices.** The holder is an interface and the slot never names a
   device, so the device half extends the same shape rather than replacing it.

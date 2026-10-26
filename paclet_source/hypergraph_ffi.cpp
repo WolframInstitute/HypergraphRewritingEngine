@@ -135,7 +135,7 @@ static void handle_error(WolframLibraryData libData, const char* message) {
  * IR-canonicalized (vertices relabeled to 0..n-1, edges sorted).
  */
 // The worker's one session (D7). Function-local so it lives exactly as long as the process
-// serving jobs -- which is what `--serve` and `--serve-socket` give it. A one-shot invocation
+// serving jobs -- which is what `--serve` gives it. A one-shot invocation
 // opens and closes within its single call or not at all, so the same code serves both.
 static hgffi::SessionSlot& worker_session() {
     static hgffi::SessionSlot slot;

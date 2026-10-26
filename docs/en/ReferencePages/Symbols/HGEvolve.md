@@ -1576,7 +1576,7 @@ HGEvolve[chain, {{1, 2}}, 3, "Device", "Tuning" -> <|"MemoryLimit" -> 2^30|>]["M
 
 ### "ShowProgress"
 
-With `True`, the engine's progress is printed, on the CPU when the evolution ends and on the GPU as it runs; the result is unchanged:
+With `True`, the engine's progress is printed; the result is unchanged:
 
 ```wl
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
