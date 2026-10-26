@@ -335,7 +335,7 @@ Board H6 lists `kClaimRing` and `kClaimRingWorkers` as per-host tuning; both exi
 
 ## 4. Quiet-box queue
 
-Wall-clock checks that need a quiet box. Each names the command, the jobs and the direction the instruction counts predict. The jobs are written by `tools/dev/reply_jobs.py`; the worker count is set with the `get_nprocs` shim that `tools/dev/worker_fuzz.py` compiles into its output directory as `nprocs_shim.so` (`SHIM` below), through `HG_FUZZ_NPROCS`.
+Wall-clock checks that need a quiet box. Each names the command, the jobs and the direction the instruction counts predict. The jobs are written by `tools/dev/reply_jobs.py`, which encodes them with the `hgevolve` package (a build with `HG_BUILD_PYTHON`, python/README.md); the worker count is set with the `get_nprocs` shim that `tools/dev/worker_fuzz.py` compiles into its output directory as `nprocs_shim.so` (`SHIM` below), through `HG_FUZZ_NPROCS`.
 
 **Q1. Replies written by parallel chunks.** In a stats-OFF release directory, at the commit before 36780be6 and at HEAD, five runs per worker count, interleaved:
 
