@@ -602,6 +602,13 @@ if(BUILD_WOLFRAM_LANGUAGE_PACLET)
     add_subdirectory(paclet_source)
 endif()
 
+# The Python client package hgevolve (python/): an extension module that runs the CPU engine
+# in-process. Needs Python 3.9+ with its development headers and nanobind.
+option(HG_BUILD_PYTHON "Build the hgevolve Python extension module" OFF)
+if(HG_BUILD_PYTHON)
+    add_subdirectory(python)
+endif()
+
 # Viz-event emission. The interactive renderer lives in its own repo
 # (../hypergraph_viz, split with history 2026-08-01); this switch builds the
 # event-stream side it consumes: viz_events (above) plus the engine's

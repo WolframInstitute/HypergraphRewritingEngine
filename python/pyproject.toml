@@ -1,0 +1,36 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "hgevolve"
+version = "1.0.0"
+description = "Multiway hypergraph rewriting with the HypergraphRewriting engine, in-process"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "../LICENSE.md" }
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.scikit-build]
+# The engine is the repository this directory is in.
+cmake.source-dir = ".."
+cmake.build-type = "Release"
+wheel.packages = ["hgevolve"]
+build-dir = "../build_python/{wheel_tag}"
+# The module alone: the rest of the tree (tools, tests) is not part of the package.
+build.targets = ["_core"]
+install.components = ["python"]
+
+[tool.scikit-build.cmake.define]
+HG_BUILD_PYTHON = "ON"
+HG_ENGINE_STATS = "OFF"
+BUILD_TESTS = "OFF"
+BUILD_EXAMPLES = "OFF"
+BUILD_BENCHMARKS = "OFF"
+BUILD_WOLFRAM_LANGUAGE_PACLET = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

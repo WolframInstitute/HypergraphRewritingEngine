@@ -42,6 +42,12 @@ shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the
 LibraryLink library remains only as a last-resort fallback and for the standalone
 analysis functions.
 
+The Python package `hgevolve` (python/) runs the same job code in the Python process. Its
+job is the paclet's envelope given as a `wxf::WXFValue`, which `parse_job` reads through
+`wxf::ValueParser`. Its reply is an `ArrayReply` (paclet_source/reply_out.hpp), which takes
+the calls the WXF reply is written with and keeps the records and relations as arrays that
+Python reads as NumPy views. An engine crash there ends the Python process.
+
 ## Modules
 
 For a per-file guide — every file with a description and the classes / structs /
