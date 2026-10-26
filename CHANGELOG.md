@@ -54,6 +54,10 @@
   state's canonical hash and edge ranks only when the initial state has a transition. A
   900-edge initial state with no match took 3.8 s, all in that computation.
 
+- On the GPU, a step of `"MatchesPerStep"` that keeps several transitions of one state copies the
+  state's held matches with the whole block. The copies ran on one thread and took most of each
+  step: a 40-step `"StepStatistics"` run on a 9 x 9 torus spent 250 ms on the device, now 147 ms.
+
 - The engine has a host memory limit, `"Tuning" -> <|"MemoryLimit" -> bytes|>` or the
   environment variable `HG_TUNE_MEMORY_LIMIT`. The default is half of physical memory, and a value
   above physical memory is lowered to it. An evolution that reaches the limit stops and gives a

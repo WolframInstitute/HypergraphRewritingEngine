@@ -565,19 +565,45 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
         // How many kept transitions each block hands its set to, in the group's position word.
         for (uint32_t b = 0; b < nb; ++b) sel.group[b] = 0;
         for (uint32_t k = 0; k < kept; ++k) ++sel.group[sel.rank[k] >> 32];
+        // Each kept transition's record slot and the set its child takes, in sel.pos[k] as
+        // slot << 32 | set (kNoSet when no slot was claimed): the last kept transition of a block
+        // takes its set, each other a copy (held_copy_alloc), which a failed copy leaves to match
+        // its state in full. The copies' contents are written by the whole block below, before
+        // any record is published.
         for (uint32_t k = 0; k < kept; ++k) {
             const uint32_t b = static_cast<uint32_t>(sel.rank[k] >> 32);
-            const uint32_t slot = static_cast<uint32_t>(sel.rank[k]);
             const uint32_t set = sel.idx[b];
-            const DeviceHeldSet& from = c.sets[set];
             const uint32_t i = found.claim();
             if (i == Pool<MatchRecord>::kInvalid) {
                 ds.errors.record(ErrorKind::kMatchPoolFull);
                 step_release(ds, s + 1u, 1u);
                 --sel.group[b];
+                sel.pos[k] = kNoSet;
                 continue;
             }
-            MatchRecord& rec = found.at(i);
+            const uint32_t to = --sel.group[b] == 0 ? set : held_copy_alloc(c, set);
+            sel.pos[k] = (uint64_t{i} << 32) | to;
+        }
+        s_n = kept;
+    }
+    __syncthreads();
+    for (uint32_t k = 0; k < s_n; ++k) {
+        if (sel.pos[k] == kNoSet) continue;
+        const uint32_t set = sel.idx[static_cast<uint32_t>(sel.rank[k] >> 32)];
+        const uint32_t to = static_cast<uint32_t>(sel.pos[k]);
+        if (to != set && to != kHeldNone) held_copy_data(c, set, to, lane, nt);
+    }
+    __threadfence();
+    __syncthreads();
+    if (lane == 0) {
+        const uint32_t nb = s_nb;
+        const uint32_t kept = s_n;
+        for (uint32_t k = 0; k < kept; ++k) {
+            if (sel.pos[k] == kNoSet) continue;
+            const uint32_t b = static_cast<uint32_t>(sel.rank[k] >> 32);
+            const uint32_t slot = static_cast<uint32_t>(sel.rank[k]);
+            const DeviceHeldSet& from = c.sets[sel.idx[b]];
+            MatchRecord& rec = found.at(static_cast<uint32_t>(sel.pos[k] >> 32));
             rec.rule_id = held_rule_at(from, slot);
             rec.state_id = from.state;
             rec.step = s;
@@ -585,10 +611,7 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
             for (uint32_t e = 0; e < kMaxPatternEdges; ++e) rec.matched_edges[e] = INVALID_ID;
             const EdgeId* edges = held_edges_at(from, slot);
             for (uint32_t e = 0; e < rec.num_edges; ++e) rec.matched_edges[e] = edges[e];
-            // The last kept transition of the block takes its set, each other a copy, which
-            // a failed copy leaves to match its state in full.
-            rec.matched_edges[kHeldRecordWord] =
-                --sel.group[b] == 0 ? set : held_copy_set(c, set);
+            rec.matched_edges[kHeldRecordWord] = static_cast<uint32_t>(sel.pos[k]);
             publish_match(rec);
         }
         // A block no transition takes: its set is freed.

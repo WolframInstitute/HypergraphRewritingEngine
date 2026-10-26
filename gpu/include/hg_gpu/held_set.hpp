@@ -765,8 +765,9 @@ __device__ inline uint32_t held_new_set(const HeldCtx& c, StateId state) {
     return h;
 }
 
-// A copy of set h, or kHeldNone.
-__device__ inline uint32_t held_copy_set(const HeldCtx& c, uint32_t h) {
+// A set with the header and the arrays of set h and none of their contents (held_copy_data
+// fills them), or kHeldNone. One thread.
+__device__ inline uint32_t held_copy_alloc(const HeldCtx& c, uint32_t h) {
     const DeviceHeldSet& from = c.sets[h];
     uint32_t* stack = c.ds.held_free_sets;
     if (stack[0] == 0u) return kHeldNone;
@@ -792,15 +793,25 @@ __device__ inline uint32_t held_copy_set(const HeldCtx& c, uint32_t h) {
         ++stack[0];
         return kHeldNone;
     }
-    const uint64_t ow = held_order_words(from.order.bits);
-    for (uint64_t w = 0; w < ow; ++w) s.order_block[w] = from.order_block[w];
     held_order_point(s.order, s.order_block, from.order.bits);
     s.order.size = from.order.size;
-    for (uint64_t w = 0; w < held_slab_words(from.used, from.stride); ++w) s.slab[w] = from.slab[w];
-    for (uint32_t i = 0; i < from.free_n; ++i) s.free_slots[i] = from.free_slots[i];
-    for (uint32_t w = 0; w < from.vcap; ++w) s.head[w] = from.head[w];
-    for (uint64_t w = 0; w < 2ull * from.nused; ++w) s.nodes[w] = from.nodes[w];
     return k;
+}
+
+// The contents of set `from` into set `to` (held_copy_alloc of it), the words strided over the
+// calling block's `nt` threads, this one `lane`. The caller syncs and fences before publishing
+// `to`.
+__device__ inline void held_copy_data(const HeldCtx& c, uint32_t from_h, uint32_t to_h,
+                                      uint32_t lane, uint32_t nt) {
+    const DeviceHeldSet& from = c.sets[from_h];
+    const DeviceHeldSet& s = c.sets[to_h];
+    const uint64_t ow = held_order_words(from.order.bits);
+    for (uint64_t w = lane; w < ow; w += nt) s.order_block[w] = from.order_block[w];
+    const uint64_t sw = held_slab_words(from.used, from.stride);
+    for (uint64_t w = lane; w < sw; w += nt) s.slab[w] = from.slab[w];
+    for (uint32_t i = lane; i < from.free_n; i += nt) s.free_slots[i] = from.free_slots[i];
+    for (uint32_t w = lane; w < from.vcap; w += nt) s.head[w] = from.head[w];
+    for (uint64_t w = lane; w < 2ull * from.nused; w += nt) s.nodes[w] = from.nodes[w];
 }
 
 }  // namespace gpu
