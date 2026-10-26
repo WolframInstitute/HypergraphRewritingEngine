@@ -985,6 +985,12 @@ HG_HD inline IrResult ir_canonical_hash_of(
     auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 1]; };
     auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 2]; };
     auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 3]; };
+    // 0 while cell_buf(d) holds only the node's first choice (the smallest target vertex);
+    // 1 once it holds the whole target cell in ascending order.
+    auto sorted_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 4]; };
+    struct AscCmp {
+        HG_HD int operator()(uint32_t a, uint32_t b) const { return a < b ? -1 : (a > b ? 1 : 0); }
+    };
 
     if (par.leader())
         ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
@@ -1249,23 +1255,26 @@ HG_HD inline IrResult ir_canonical_hash_of(
             }
             if (par.leader()) {
             target_of(d) = t;
-            uint32_t* cell = cell_buf(d);
             const uint32_t cl = pi.clen_at[t];
-            for (uint32_t k = 0; k < cl; ++k) cell[k] = pi.lab[t + k];
-            struct AscCmp {
-                HG_HD int operator()(uint32_t a, uint32_t b) const {
-                    return a < b ? -1 : (a > b ? 1 : 0);
-                }
-            };
-            ir_sort_idx(cell, cl, AscCmp{}, torder + n);
             cell_n_of(d) = cl;
             next_of(d) = 0;
+            // The children are taken in ascending vertex order. The first is the smallest
+            // vertex of the target cell, found in one pass; the cell is copied and sorted only
+            // when the search returns to this node for a second child (the returning branch),
+            // which a backjump past this node never does.
             // Clear the flags this node can consult, which are exactly the target cell's
-            // vertices: every read and every write below indexes cov by a member of `cell`.
+            // vertices: every read and every write below indexes cov by a member of the cell.
             // Clearing all n instead costs the whole vertex set per search node, and the cell
             // is what refinement has already narrowed the choice down to.
             uint32_t* cov = covered(d);
-            for (uint32_t k = 0; k < cl; ++k) cov[cell[k]] = 0;
+            uint32_t first = 0xFFFFFFFFu;
+            for (uint32_t k = 0; k < cl; ++k) {
+                const uint32_t u = pi.lab[t + k];
+                cov[u] = 0;
+                if (u < first) first = u;
+            }
+            cell_buf(d)[0] = first;
+            sorted_of(d) = 0;
             }  // leader
             par.sync();
         } else {
@@ -1275,6 +1284,16 @@ HG_HD inline IrResult ir_canonical_hash_of(
             // branches, on a backjump) split below is re-merged, in time proportional to what
             // the splits cost.
             ir_undo_to(pi, tr, d);
+            // The cell's members are the node's again: copy and sort them on the first return.
+            // The child just explored was the smallest, at position 0.
+            if (!sorted_of(d)) {
+                uint32_t* cell = cell_buf(d);
+                const uint32_t t = target_of(d), cl = cell_n_of(d);
+                for (uint32_t k = 0; k < cl; ++k) cell[k] = pi.lab[t + k];
+                ir_sort_idx(cell, cl, AscCmp{}, torder + n);
+                next_of(d) = 0;
+                sorted_of(d) = 1;
+            }
             // The branch just explored is done; mark every target-cell vertex automorphic to
             // its representative, under the generators that fix the path above this node.
             const uint32_t v = chosen_of(d);
