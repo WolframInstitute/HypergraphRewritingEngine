@@ -106,6 +106,9 @@ struct StepSelectScratch {
     // "StateCost": each candidate's successor cost key. With it, srank and order are allocated
     // whatever the cap counts.
     uint64_t* cost = nullptr;
+    // "BeamCost" -> "Path": 1 for a candidate of lowest (cost, rank) into its successor
+    // (hgcommon::successor_cheapest). Null otherwise.
+    uint8_t* cheap = nullptr;
     // SuccessorCtx::cand_cost, cand_id, cand_ready and cost_log (step_cost_one).
     uint64_t*                    cand_cost = nullptr;
     hgcommon::SuccessorIdentity* cand_id = nullptr;
@@ -236,7 +239,8 @@ __device__ void radix_kth(uint32_t m, uint32_t k, bool wide, Hi&& hi_at, Lo&& lo
 // full pool records the overflow and releases that booking.
 __device__ inline void append_selected(const DeviceState& ds, uint32_t s,
                                        typename Pool<MatchRecord>::DeviceView cand,
-                                       typename Pool<MatchRecord>::DeviceView found, uint32_t ci) {
+                                       typename Pool<MatchRecord>::DeviceView found, uint32_t ci,
+                                       double path = 0.0) {
     const uint32_t k = found.claim();
     if (k == Pool<MatchRecord>::kInvalid) {
         ds.errors.record(ErrorKind::kMatchPoolFull);
@@ -250,7 +254,20 @@ __device__ inline void append_selected(const DeviceState& ds, uint32_t s,
     dst.step = src.step;
     dst.num_edges = src.num_edges;
     for (uint32_t e = 0; e < kMaxPatternEdges; ++e) dst.matched_edges[e] = src.matched_edges[e];
+    // "BeamCost" -> "Path": the child's path cost, which the rewrite records for the child.
+    if (ds.found_path) ds.found_path[k] = path;
     publish_match(dst);
+}
+
+// "BeamCost" -> "Path": state `sid`, made by rewrite-pool record `k`, takes the record's path
+// cost unless a path cost is recorded for it (DeviceState::state_path_cost starts NaN).
+__device__ inline void record_path_cost(const DeviceState& ds, uint32_t k, StateId sid) {
+    if (!ds.state_path_cost || !ds.found_path || sid == INVALID_ID || sid >= ds.max_states)
+        return;
+    const double v = ds.found_path[k];
+    unsigned long long bits = 0;
+    memcpy(&bits, &v, sizeof bits);
+    atomicCAS(reinterpret_cast<unsigned long long*>(ds.state_path_cost + sid), ~0ULL, bits);
 }
 
 // A candidate the position selection keeps, marked in the top bit of its StepSelectScratch::idx.
@@ -732,7 +749,8 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
                          succ->mode != CanonicalizationMode::None;
     const bool costed = step_costed(ds) && sel.cost != nullptr && succ != nullptr;
     // Under "TransitionCost" the transitions into one successor can cost differently.
-    const bool per_transition = hgcommon::tc_active(ds.transition_cost);
+    // Under "BeamCost" -> "Path" a transition's cost adds its parent's path cost (sel.cheap).
+    const bool per_transition = hgcommon::tc_active(ds.transition_cost) || sel.cheap != nullptr;
     // The identities and costs idle blocks computed from the cost log (step_cost_one); a
     // candidate without them is computed here.
     const uint32_t* ready = succ != nullptr ? succ->cand_ready : nullptr;
@@ -775,6 +793,10 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
             __syncthreads();
         }
         if (tid == 0) {
+            // The cheapest transitions into each successor, by each candidate's own rank,
+            // before the ranks become successor ranks.
+            if (costed && sel.cheap)
+                hgcommon::successor_cheapest(sel.id, sel.order, m, sel.cost, sel.rank, sel.cheap);
             uint32_t g = 0;
             for (uint32_t j = 0; j < m; ++j) {
                 sel.rank[j] = sel.srank[j];
@@ -809,7 +831,13 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     // The key is (cost, rank) under "StateCost" and (0, rank) without it, compared in the cost
     // order (hgcommon::cost_before).
     auto cost_at = [&](uint32_t i) -> uint64_t { return costed ? sel.cost[i] : 0u; };
+    // "BeamCost" -> "Path": only the cheapest transitions into a kept successor are taken.
+    const bool cheap_only = by_succ && costed && sel.cheap != nullptr;
     hgcommon::CostCut cut{0u, ~0ULL, true};
+    auto kept = [&](uint32_t i) {
+        return hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i]) &&
+               (!cheap_only || sel.cheap[i] != 0u);
+    };
     uint32_t take = m;
     if (groups > cap_n) {
         // The N-th smallest key: 16 bytes under "StateCost" (the cost's 8, then the rank's) and
@@ -818,12 +846,14 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
         radix_kth(m, cap_n, costed, cost_at, [&](uint32_t i) { return sel.rank[i]; },
                   [&](uint32_t i) { return !by_succ || sel.lead[i] != 0u; }, cut_cost, cut_rank);
         cut = hgcommon::CostCut{cut_cost, cut_rank, false};   // the N-th smallest key
+    }
+    if (groups > cap_n || cheap_only) {
         // The candidates kept, the N lowest and the ties with the N-th, counted for the booking.
         if (tid == 0) s_cnt = 0;
         __syncthreads();
         uint32_t local = 0;
         for (uint32_t i = tid; i < m; i += nt)
-            if (hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i])) ++local;
+            if (kept(i)) ++local;
         atomicAdd(&s_cnt, local);
         __syncthreads();
         take = s_cnt;
@@ -831,8 +861,9 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     if (tid == 0) step_book(ds, s + 1u, take);
     __syncthreads();
     for (uint32_t i = tid; i < m; i += nt)
-        if (hgcommon::cost_cut_keeps(cut, cost_at(i), sel.rank[i]))
-            append_selected(ds, s, cand, found, sel.idx[i]);
+        if (kept(i))
+            append_selected(ds, s, cand, found, sel.idx[i],
+                            costed ? hgcommon::sp_value_of(sel.cost[i]) : 0.0);
     __syncthreads();
     if (tid == 0 && sel.cycles) atomicAdd(sel.cycles, clock64() - t_select);
 }
@@ -1359,6 +1390,7 @@ __global__ void k_persistent_match_rewrite(
                 // uses (the canonical OUTPUT state's step). Writing the parent's depth here
                 // made every event's reported step differ from the depth it was claimed at.
                 const AppliedMatch a = apply_one_match(ds, rules, rec, rec.step + 1u);
+                record_path_cost(ds, claimed, a.state);
                 if (a.state != INVALID_ID) copy_kept_edges(ds, a.kept, hgcommon::IrSerial{});
             }
             __syncthreads();
@@ -2089,6 +2121,7 @@ __global__ void k_persistent_evolve(
                     const AppliedMatch a = apply_one_match(
                         ds, rules, rec, rec.step + 1u, phase_cycles ? phase_cycles + 5 : nullptr);
                     child_sid = a.state;
+                    record_path_cost(ds, claimed, a.state);
                     child_event = a.event;
                     child_events = a.num_events;
                     held_hand_on(ds, rec, a);
@@ -2139,6 +2172,8 @@ __global__ void k_persistent_evolve(
                         const AppliedMatch a = apply_one_match(
                             ds, rules, rec, cstep, phase_cycles ? phase_cycles + 5 : nullptr);
                         sid = a.state;
+                        record_path_cost(ds, tile == 0 ? claimed : claimed_more + tile - 1u,
+                                         a.state);
                         evt = a.event;
                         keyed = a.keyed;
                         kept = a.kept;
@@ -2709,6 +2744,8 @@ struct EngineState::PersistentScratch {
     uint32_t* step_order = nullptr;
     uint8_t*  step_lead = nullptr;
     uint64_t* step_cost = nullptr;   // "StateCost": StepSelectScratch::cost
+    uint8_t*  step_cheap = nullptr;  // "BeamCost" -> "Path": StepSelectScratch::cheap
+    double*   found_path = nullptr;  // "BeamCost" -> "Path": DeviceState::found_path
     // StepSelectScratch::cand_cost, cand_id and cand_ready, step_succ_cap each,
     // and the cost log (its entries, then its cursor and done words).
     uint64_t*                    cand_cost = nullptr;
@@ -2742,11 +2779,12 @@ struct EngineState::PersistentScratch {
                         static_cast<void*>(step_order), static_cast<void*>(step_lead),
                         static_cast<void*>(step_cost), static_cast<void*>(cand_cost),
                         static_cast<void*>(cand_id), static_cast<void*>(cand_ready),
-                        static_cast<void*>(cost_words)})
+                        static_cast<void*>(cost_words), static_cast<void*>(step_cheap),
+                        static_cast<void*>(found_path)})
             if (q) cudaFree(q);
         step_id = nullptr; step_srank = nullptr; step_order = nullptr; step_lead = nullptr;
         step_cost = nullptr; cand_cost = nullptr; cand_id = nullptr; cand_ready = nullptr;
-        cost_words = nullptr;
+        cost_words = nullptr; step_cheap = nullptr; found_path = nullptr;
         cost_entries.reset();
         step_succ_cap = 0;
     }
@@ -3233,6 +3271,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                               "candidate cost flags");
                 ps.cost_entries = std::make_unique<Pool<CostEntry>>(cap);
                 HG_CUDA_CHECK(cudaMalloc(&ps.cost_words, sizeof(uint32_t) * 2u), "cost log words");
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_cheap, sizeof(uint8_t) * cap),
+                              "step cheapest flags");
+                HG_CUDA_CHECK(cudaMalloc(&ps.found_path, sizeof(double) * cap),
+                              "found path costs");
             }
             step_sel.id = ps.step_id;
             step_sel.srank = ps.step_srank;
@@ -3242,6 +3284,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             // blocks from the cost log (step_cost_one).
             {
                 if (costed) step_sel.cost = ps.step_cost;
+                if (costed && dsk.state_path_cost) {
+                    step_sel.cheap = ps.step_cheap;
+                    dsk.found_path = ps.found_path;
+                }
                 step_sel.cand_cost = ps.cand_cost;
                 step_sel.cand_id = ps.cand_id;
                 step_sel.cand_ready = ps.cand_ready;

@@ -134,7 +134,7 @@ void ClearBatch::flush() {
     X(state_edge_orbit_) X(state_num_orbits_) X(state_invariant_at_) X(invariant_pool_)        \
     X(invariant_pool_used_) X(keyed_token_sum_) X(keyed_first_new_edge_)                      \
     X(keyed_follow_head_) X(keyed_follow_next_) X(edge_producer_) X(event_consumed_)          \
-    X(state_cost_dev_)
+    X(state_cost_dev_) X(state_path_cost_)
 
 
 // The block exists before any pool member's constructor runs -- block_ is declared first --
@@ -264,6 +264,17 @@ void EngineState::ensure_edge_ranks() {
               "EngineState init state_edge_rank");
         HG_CUDA_CHECK(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
               "EngineState init event_sig_raw_fallbacks");
+    }
+
+void EngineState::set_beam_path(bool on) {
+        beam_path_ = on;
+        if (!on) return;
+        if (!state_path_cost_)
+            HG_CUDA_CHECK(cudaMalloc(&state_path_cost_, sizeof(double) * cfg_.max_states),
+                  "EngineState state_path_cost alloc");
+        // All bits set is a NaN: no path cost written yet.
+        HG_CUDA_CHECK(cudaMemset(state_path_cost_, 0xFF, sizeof(double) * cfg_.max_states),
+              "EngineState state_path_cost clear");
     }
 
 void EngineState::set_lineage(bool on) {
@@ -447,6 +458,7 @@ DeviceState EngineState::device() const {
         d.event_order                      = event_ordering_;
         d.state_cost                     = state_cost_on_ ? state_cost_dev_ : nullptr;
         d.transition_cost                  = transition_cost_;
+        d.state_path_cost                  = beam_path_ ? state_path_cost_ : nullptr;
         d.edge_label                       = lineage_ ? edge_label_ : nullptr;
         d.state_label                      = lineage_ ? state_label_ : nullptr;
         d.step_pending                     = states_per_step_;

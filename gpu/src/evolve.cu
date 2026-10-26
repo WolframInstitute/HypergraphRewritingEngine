@@ -505,6 +505,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     engine.set_state_cost(in.max_states_per_step != 0 ? in.state_cost : hgcommon::StateCost{});
     engine.set_transition_cost(in.max_states_per_step != 0 ? in.transition_cost
                                                            : hgcommon::TransitionCostSpec{});
+    engine.set_beam_path(in.max_states_per_step != 0 && in.beam_path);
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
                         static_cast<uint32_t>(in.rule_weights.size()),
@@ -735,6 +736,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     const DeviceState ds_rb = engine.device();
     std::vector<uint32_t> h_inv_at;
     std::vector<uint64_t> h_exact;
+    std::vector<double> h_path;
+    if (ds_rb.state_path_cost && total_states)
+        batch.add(h_path, static_cast<const double*>(ds_rb.state_path_cost), total_states);
     out.invariant_pool.clear();
     if (ds_rb.record_invariants && total_states) {
         batch.add(h_inv_at, static_cast<const uint32_t*>(ds_rb.state_invariant_at), total_states);
@@ -774,6 +778,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         cs.explore_depth  = (s < h_depths.size()) ? h_depths[s] : hgcommon::kExploreNoDepth;
         cs.invariants_at  = (s < h_inv_at.size()) ? h_inv_at[s] : UINT32_MAX;
         cs.exact_hash     = (s < h_exact.size()) ? h_exact[s] : 0;
+        // A state no rewrite wrote (an initial state) reads NaN: its path cost is 0.
+        if (s < h_path.size()) cs.path_cost = h_path[s] == h_path[s] ? h_path[s] : 0.0;
         if (s < slices.size() && slices[s].offset != INVALID_ID) cs.edge_count = slices[s].count;
         // A slice past the id array describes no edges.
         if (s < slices.size() &&

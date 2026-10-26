@@ -75,6 +75,8 @@ struct Workload {
     hgcommon::StateCost state_cost;
     // "TransitionCost": the step cap reads each transition's heat residual (field 0: none).
     hgcommon::TransitionCostSpec transition_cost;
+    // "BeamCost" -> "Path" (EvolveInput::beam_path, ParallelEvolutionEngine::set_beam_path).
+    bool beam_path = false;
     // The CPU engine's worker count (0: one per logical CPU).
     size_t cpu_threads = 0;
     // Forwarded to EvolveInput::persistent_blocks (0 keeps the default grid).
@@ -132,6 +134,8 @@ const hgcommon::StateCost kCostGeometry =
 // event-keys, multiplicity-preserving.
 struct NormalizedResult {
     std::set<uint64_t>      canonical_state_hashes;
+    // "BeamCost" -> "Path": each state's (canonical hash, bits of its path cost).
+    std::multiset<std::pair<uint64_t, uint64_t>> path_costs;
     std::multiset<uint64_t> event_keys;
     std::multiset<uint64_t> causal_edge_keys;
     std::multiset<uint64_t> branchial_edge_keys;
@@ -279,6 +283,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_exploration_probability(w.exploration_probability);
     engine.set_state_cost(w.state_cost);
     engine.set_transition_cost(w.transition_cost);
+    engine.set_beam_path(w.beam_path);
     engine.set_generational(w.generational);
     engine.set_event_ordering(w.event_ordering);
     engine.set_undirected(w.undirected);
@@ -337,6 +342,14 @@ NormalizedResult run_cpu(const Workload& w) {
         out.content_multiset.insert(content_key(edges));
         out.iso_multiset.insert(h);
         out.engine_state_hashes.insert(hg.get_or_compute_canonical_hash(sid));
+        if (w.beam_path) {
+            const auto& pc = engine.path_costs();
+            const auto it = pc.find(sid);
+            const double c = it == pc.end() ? 0.0 : it->second;
+            uint64_t bits = 0;
+            std::memcpy(&bits, &c, sizeof bits);
+            out.path_costs.insert({h, bits});
+        }
     }
 
     // EventId → event_key (input_hash, output_hash, rule, step).
@@ -444,6 +457,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.step_cap_counts_matches = w.step_cap_counts_matches;
     in.state_cost = w.state_cost;
     in.transition_cost = w.transition_cost;
+    in.beam_path = w.beam_path;
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     in.matches_per_state_rule = w.matches_per_state_rule;
     in.exploration_probability = w.exploration_probability;
@@ -485,6 +499,11 @@ NormalizedResult run_gpu(const Workload& w) {
         out.content_multiset.insert(content_key(result.edges_of(s)));
         out.iso_multiset.insert(h);
         out.engine_state_hashes.insert(s.canonical_hash);
+        if (w.beam_path) {
+            uint64_t bits = 0;
+            std::memcpy(&bits, &s.path_cost, sizeof bits);
+            out.path_costs.insert({h, bits});
+        }
     }
 
     std::unordered_map<uint32_t, uint64_t> event_key_by_id;
@@ -2274,6 +2293,68 @@ TEST(TransitionCost, StepCapKeepsTheSameStatesOnBothEngines) {
                     }
     // The transition cost changes the kept states in more than half of these runs.
     EXPECT_GT(guided * 2, runs) << guided << " of " << runs;
+}
+
+// "BeamCost" -> "Path" keeps the same states with the same path costs, bit for bit, on both
+// engines: the rule sets of the test above, three state modes, four fields, a beam of 1 and of
+// 2, alone and with "StateCost", two seeds, the CPU at 1, 4 and 16 workers.
+TEST(BeamPath, TheSameStatesAndPathCostsOnBothEngines) {
+    const std::vector<std::pair<std::vector<hg_gpu::RewriteRule>,
+                                std::vector<std::vector<hg_gpu::VertexId>>>>
+        cases = {
+            {{rule({{0, 0}, {0, 1}}, {{0, 1}, {1, 1}})},
+             {{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 1u}, {1u, 1u}, {1u, 1u}}},
+            {{rule({{0, 1}}, {}), rule({{0, 1}}, {{0, 1}, {0, 1}})},
+             {{1u, 2u}, {2u, 3u}, {3u, 4u}}},
+            {{rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}}),
+              rule({{0, 1}}, {{0, 1}, {1, 1}})},
+             {{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 1u}}},
+        };
+    size_t runs = 0, with_paths = 0;
+    for (size_t c = 0; c < cases.size(); ++c)
+        for (auto mode : {hg_gpu::CanonicalizationMode::None,
+                          hg_gpu::CanonicalizationMode::Automatic,
+                          hg_gpu::CanonicalizationMode::Full})
+            for (uint32_t field : {hgcommon::TC_FIELD_DEGREE, hgcommon::TC_FIELD_CURVATURE,
+                                   hgcommon::TC_FIELD_LOOP_COUNT,
+                                   hgcommon::TC_FIELD_EDGE_MULTIPLICITY})
+                for (uint32_t per_step : {1u, 2u})
+                    for (bool state_cost : {false, true})
+                        for (uint64_t seed : {uint64_t(7), uint64_t(12345)}) {
+                            Workload w;
+                            w.name = "case " + std::to_string(c) + " mode " +
+                                     std::to_string(int(mode)) + " field " +
+                                     std::to_string(field) + " per_step " +
+                                     std::to_string(per_step) +
+                                     (state_cost ? " state cost" : "") + " seed " +
+                                     std::to_string(seed);
+                            w.rules = cases[c].first;
+                            w.initial_states = {cases[c].second};
+                            w.num_steps = 3;
+                            w.canon_mode = mode;
+                            w.random_seed = seed;
+                            w.max_states_per_step = per_step;
+                            if (state_cost) w.state_cost = kCostInvariants;
+                            w.transition_cost.field = field;
+                            w.transition_cost.dt = 0.25;
+                            w.beam_path = true;
+                            const NormalizedResult gpu = run_gpu(w);
+                            ++runs;
+                            with_paths += gpu.path_costs.size() > 1;
+                            for (size_t threads : {size_t(1), size_t(4), size_t(16)}) {
+                                w.cpu_threads = threads;
+                                const NormalizedResult cpu = run_cpu(w);
+                                const std::string at =
+                                    w.name + " cpu workers " + std::to_string(threads);
+                                EXPECT_EQ(gpu.canonical_state_hashes,
+                                          cpu.canonical_state_hashes) << at;
+                                EXPECT_EQ(gpu.raw_states, cpu.raw_states) << at;
+                                EXPECT_EQ(gpu.num_events, cpu.num_events) << at;
+                                EXPECT_EQ(gpu.event_keys, cpu.event_keys) << at;
+                                EXPECT_EQ(gpu.path_costs, cpu.path_costs) << at;
+                            }
+                        }
+    EXPECT_EQ(with_paths, runs);
 }
 
 // "MatchesPerStep" under None states hands each kept transition's state's match set to its child

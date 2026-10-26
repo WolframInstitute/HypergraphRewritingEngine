@@ -6849,6 +6849,50 @@ TEST(FfiInput, TransitionCostGuidesTheStepCapOnEitherDevice) {
     }
 }
 
+// "BeamCost" -> "Path" through the job: the loop move on a 4-cycle with two loops, Automatic
+// states, two states per step by the loop count's residual. all_tests answers it on the CPU
+// engine and gpu_ffi_tests on the device, with the same path costs and no "Engine" warning.
+TEST(FfiInput, BeamCostPathOnEitherDevice) {
+    const StateList seed = {{{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 1}, {1, 1}}};
+    const EdgeList lhs = {{1, 1}, {1, 2}};
+    const EdgeList rhs = {{1, 2}, {2, 2}};
+    HostBridge host;
+    const auto out = run_rewriting_core(build_input(seed, lhs, rhs, 4, [&](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates"});
+        put_str_option(w, "CanonicalizeStates", "Automatic");
+        put_str_option(w, "BeamCost", "Path");
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("MaxStatesPerStep"));
+        w.write(int64_t{2});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("RandomSeed"));
+        w.write(int64_t{7});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("TransitionCost"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Field"));
+        w.write(std::string("LoopCount"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("TimeStep"));
+        w.write(0.25);
+    }, 6), host);
+    EXPECT_TRUE(warning_contexts(out).empty());
+    std::vector<double> costs;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "PathCosts") return vp.skip_value();
+        vp.read_association_generic([&](wxf::Parser& key, wxf::Parser& value) {
+            key.skip_value();
+            costs.push_back(value.read<double>());
+        });
+    });
+    std::sort(costs.begin(), costs.end());
+    EXPECT_EQ(costs, (std::vector<double>{0, 0.5, 1.5, 1.75, 2, 2.75, 2.75, 4, 4}));
+}
+
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
 // device. The GPU reply read every state as empty when no state contents were requested (their
 // edge counts were not read back), so every state fell into one class and NumStates was 1.

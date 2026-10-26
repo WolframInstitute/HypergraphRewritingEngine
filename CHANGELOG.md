@@ -87,7 +87,7 @@
   path cost. It runs on the CPU engine.
 - `"BeamCost" -> "Path"` ranks a `"MaxStatesPerStep"` step by the path cost of each child and
   takes one transition into each kept state, so with `Automatic` states a step makes each edge
-  list once. It runs on the CPU engine.
+  list once. Both devices keep the same states with the same path costs.
 - The hgevolve Python client takes `transition_cost` as a dict or a callable
   `f(parent_edges, child_edges)`, `search` and `search_budget`, and `hg.heat_residual` computes
   the engine's residual for two edge lists.

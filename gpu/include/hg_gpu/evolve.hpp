@@ -132,6 +132,10 @@ struct EvolveInput {
     // "TransitionCost": the step cap reads each transition's heat residual as well
     // (hgcommon/transition_cost_core.hpp); field TC_FIELD_NONE is none.
     hgcommon::TransitionCostSpec transition_cost;
+    // "BeamCost" -> "Path": the step cap ranks by the child's path cost and takes the cheapest
+    // transitions into each kept successor; each state's path cost is read back
+    // (CanonicalState::path_cost).
+    bool beam_path = false;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
     // "Generational": each state's matches are taken in the standard order, each unless it shares
@@ -237,6 +241,8 @@ struct CanonicalState {
     uint32_t num_edges = 0;
     // The state's edge count, read back on every run.
     uint32_t edge_count = 0;
+    // "BeamCost" -> "Path": the path cost of the state, 0 for an initial state.
+    double path_cost = 0.0;
     // With RecordSet::state_invariants: the state's exact isomorphism hash under None and
     // Automatic (0 otherwise), and the offset of its class record in
     // EvolveResult::invariant_pool, UINT32_MAX when this state did not create the record.

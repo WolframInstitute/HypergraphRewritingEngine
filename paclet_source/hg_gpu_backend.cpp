@@ -198,6 +198,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.event_ordering = job.event_ordering;
     in.state_cost = job.state_cost;
     in.transition_cost = job.transition_cost;
+    in.beam_path = job.beam_path;
     in.max_successor_states_per_parent = cap32(job.max_successor_states_per_parent);
     in.matches_per_state_rule = cap32(job.matches_per_state_rule);
     in.max_device_memory_bytes = job.max_device_memory_bytes;
@@ -1091,6 +1092,25 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                           wxf::WXFValue(hgmarshal::memory_limit_value(
                               hgcommon::process_memory_limit_in_effect()))});
         full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
+    }
+
+    // "PathCosts" under "BeamCost" -> "Path": each state's path cost, the states as "States" lists
+    // them (hypergraph_ffi.cpp, PathCosts).
+    if (job.beam_path) {
+        std::vector<hg_gpu::StateId> ids;
+        if (canon_mode == hg_gpu::CanonicalizationMode::Full) {
+            ids = class_reps;
+        } else {
+            for (const auto& s : result.states)
+                if (s.id != hg_gpu::INVALID_ID) ids.push_back(s.id);
+        }
+        std::sort(ids.begin(), ids.end());
+        wxf::WXFValueAssociation pc;
+        pc.reserve(ids.size());
+        for (const hg_gpu::StateId s : ids)
+            pc.push_back({wxf::WXFValue(static_cast<int64_t>(s)),
+                          wxf::WXFValue(result.states[s].path_cost)});
+        full_result.push_back({wxf::WXFValue("PathCosts"), wxf::WXFValue(pc)});
     }
 
     if (job.include_num_states) {

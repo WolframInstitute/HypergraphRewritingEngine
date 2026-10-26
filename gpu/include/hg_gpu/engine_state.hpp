@@ -127,6 +127,11 @@ struct DeviceState {
     const hgcommon::StateCost* state_cost = nullptr;
     // "TransitionCost": field TC_FIELD_NONE when the run has none (transition_cost_device).
     hgcommon::TransitionCostSpec transition_cost{};
+    // "BeamCost" -> "Path": each state's path cost ([max_states], NaN until the rewrite that
+    // makes the state writes it), and the path cost of each record the step's selection appends
+    // to the rewrite pool ([pool capacity]). Null without it.
+    double* state_path_cost = nullptr;
+    double* found_path = nullptr;
     // "MatchesPerStep" under None states: each edge's and each state's lineage label
     // (hgcommon::lineage_edge, lineage_state), written when the edge or the state is made; null
     // in every other run. [max_edges], [max_states].
@@ -512,6 +517,8 @@ public:
     void set_state_cost(const hgcommon::StateCost& cost);
     // "TransitionCost" (DeviceState::transition_cost).
     void set_transition_cost(const hgcommon::TransitionCostSpec& spec) { transition_cost_ = spec; }
+    // "BeamCost" -> "Path" (DeviceState::state_path_cost): allocated on first use, NaN each run.
+    void set_beam_path(bool on);
 
     uint32_t config_slice_scan_max_edges() const;
     void set_maintain_indices(bool on);
@@ -737,6 +744,8 @@ private:
     hgcommon::StateCost*               state_cost_dev_          = nullptr;
     bool                               state_cost_on_           = false;
     hgcommon::TransitionCostSpec       transition_cost_{};
+    bool                               beam_path_ = false;
+    double*                            state_path_cost_ = nullptr;
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

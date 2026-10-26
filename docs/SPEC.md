@@ -318,8 +318,8 @@ exact configuration. Sampling and capping options refine this as follows:
   A successor's path cost is the lowest over the transitions into it, and only the transitions
   of lowest (path cost, rank) into a kept successor are taken (`hgcommon::successor_cheapest`),
   so a successor is made once; under `Automatic` states that drops duplicate edge lists. The
-  reply's `"PathCosts"` gives each state's path cost. It runs on the CPU engine, and the GPU
-  binary runs it there with a warning.
+  reply's `"PathCosts"` gives each state's path cost. Both devices keep the same states with
+  the same path costs.
 - **`Generational`** is the Wolfram model's single-way update. The evolution
   follows one history from each initial state, and each step is one generation. A state's
   matches are ordered by the standard order (`hgcommon::event_order_before` with

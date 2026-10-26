@@ -851,6 +851,16 @@ __device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
     }
 }
 
+// "BeamCost" -> "Path": the cost key `key` of a transition from `parent` becomes the key of the
+// child's path cost, the parent's path cost (0 for an initial state, whose entry is NaN) plus
+// the transition's cost, as the host's cap_at_drain adds it.
+__device__ inline void add_parent_path_cost(const DeviceState& ds, StateId parent,
+                                            uint64_t& key) {
+    if (!ds.state_path_cost || parent >= ds.max_states) return;
+    const double base = ds.state_path_cost[parent];
+    key = hgcommon::state_cost_key((base == base ? base : 0.0) + hgcommon::sp_value_of(key));
+}
+
 __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& rule,
                                       StateId parent, const EdgeId* matched,
                                       const SuccessorCtx& ctx, uint64_t& out,
@@ -875,6 +885,7 @@ __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& r
     }
     if (ds.state_cost == nullptr) {
         out = hgcommon::state_cost_key(tc);
+        add_parent_path_cost(ds, parent, out);
         return true;
     }
     uint64_t h = 0;
@@ -895,6 +906,7 @@ __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& r
         return false;
     }
     out = transition ? hgcommon::state_cost_key(tc + hgcommon::sp_value_of(s)) : s;
+    add_parent_path_cost(ds, parent, out);
     return true;
 }
 

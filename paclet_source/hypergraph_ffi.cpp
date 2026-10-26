@@ -903,6 +903,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.statistics_measures = req.statistics_measures;
         job.state_cost = req.state_cost;
         job.transition_cost = req.transition_cost;
+        job.beam_path = req.beam_path;
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         job.generational = req.generational;
@@ -1200,10 +1201,9 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
         // A job replied in arrays (in-process) runs on the CPU engine: the device replies in WXF.
         const bool cpu_reply = !Out::kWire;
-        // "Search" -> "BestFirst" and "BeamCost" -> "Path" run on the CPU engine
-        // (docs/TRANSITION_COST.md, Devices).
+        // "Search" -> "BestFirst" runs on the CPU engine (docs/TRANSITION_COST.md, Devices).
         const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session ||
-                            cpu_reply || req.best_first || req.beam_path;
+                            cpu_reply || req.best_first;
         if (req.positional_event_identity && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
@@ -1212,9 +1212,9 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
                 "Full and Automatic"});
-        else if ((req.best_first || req.beam_path) && !cpu_session && !cpu_reply)
+        else if (req.best_first && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
-                "\"Search\" -> \"BestFirst\" and \"BeamCost\" -> \"Path\" run on the CPU engine"});
+                "\"Search\" -> \"BestFirst\" runs on the CPU engine"});
 #endif
         if (req.session_op == "InitialCondition") {
             // A generated initial condition, on either device: no rules and no evolution.
@@ -1376,11 +1376,11 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             req.transition_cost_function = false;
         }
         if (!held_session && req.beam_path &&
-            (req.max_states_per_step == 0 || req.best_first ||
+            (req.max_states_per_step == 0 || req.best_first || req.session_op == "Open" ||
              !(transition_costed() || hgcommon::state_cost_active(req.state_cost)))) {
             req.ffi_warnings.push_back({"BeamCostNeedsCostAndCap", 1,
                 "\"BeamCost\" -> \"Path\" applies with \"MaxStatesPerStep\" and a \"StateCost\" "
-                "or \"TransitionCost\": the step cap ranks by transition."});
+                "or \"TransitionCost\", and not in a session: the step cap ranks by transition."});
             req.beam_path = false;
         }
 

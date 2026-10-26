@@ -131,6 +131,7 @@ struct GpuJob {
     hgcommon::StateCost state_cost{};
     // "TransitionCost" (hgcommon/transition_cost_core.hpp). Set after the job is built.
     hgcommon::TransitionCostSpec transition_cost{};
+    bool beam_path = false;   // "BeamCost" -> "Path"
     // "Delivery" -> "Delta": a held session's graphs carry what the session has not been sent.
     // Set after the job is built.
     bool delivery_delta = false;

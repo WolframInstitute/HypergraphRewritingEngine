@@ -322,11 +322,14 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   cheapest transition (`hgcommon::successor_lowest`). Under "BeamCost" -> "Path" a drain adds its
   state's path cost (`beam_path_cost_`, written by the rewrite that made it) to the costs of its
   transitions, and the cap takes the cheapest transitions into each kept successor
-  (`hgcommon::successor_cheapest`). Best-first search and "BeamCost" -> "Path" run on the CPU
+  (`hgcommon::successor_cheapest`); the device records a state's path cost in its rewrite
+  (`record_path_cost`) from the selected record's (`append_selected`, `found_path`) and adds the
+  parent's in `successor_cost_device`. Best-first search runs on the CPU
   engine.
 
 Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;
-the drain fires once per state), `RuleWeights.*`, `TransitionCost.*` and `BestFirst.*`.
+the drain fires once per state), `RuleWeights.*`, `TransitionCost.*`, `BeamPath.*` and
+`BestFirst.*`.
 
 ## Validation
 
