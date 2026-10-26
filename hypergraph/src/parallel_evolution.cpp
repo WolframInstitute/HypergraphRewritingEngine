@@ -1073,7 +1073,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         bool all_unique = true;
         for (const RankedMatch& c : cands) all_unique = all_unique && c.succ.unique != 0;
         if (all_unique)
-            keep_lowest_successors(cands, max_states_per_step_, costed, transition_costed(),
+            keep_lowest_successors(cands, max_states_per_step_, costed, costs_per_transition(),
                                    beam_path_);
         if (auto* list = step_candidates(step)) {
             for (const RankedMatch& c : cands) list->push(c, match_arena(step));
@@ -1186,7 +1186,7 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
-    keep_lowest_successors(cands, max_states_per_step_, cost_active(), transition_costed(),
+    keep_lowest_successors(cands, max_states_per_step_, cost_active(), costs_per_transition(),
                            beam_path_);
     for (const RankedMatch& c : cands)
         submit_rewrite_task(*c.match, step, step + 1, nullptr,
@@ -1544,10 +1544,7 @@ void ParallelEvolutionEngine::run_best_first() {
 
 double ParallelEvolutionEngine::beam_path_of(StateId state) const {
     const auto have = beam_path_cost_.lookup(id_key(state));
-    if (!have) return 0.0;   // an initial state
-    double v = 0.0;
-    std::memcpy(&v, &*have, sizeof v);
-    return v;
+    return have ? hgcommon::sp_value_of(*have) : 0.0;   // 0 for an initial state
 }
 
 const std::unordered_map<StateId, double>& ParallelEvolutionEngine::path_costs() const {
@@ -2321,11 +2318,10 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     if (rr.new_state == INVALID_ID) return;
     if (lineage_on_) label_rewrite(match, rr.raw_state, rr.produced_edges, rr.num_produced);
-    if (beam_path_) {
-        uint64_t bits = 0;
-        std::memcpy(&bits, &path, sizeof bits);
-        beam_path_cost_.insert_if_absent(id_key(rr.raw_state), bits);
-    }
+    // "BeamCost" -> "Path": the child's path cost, stored as its cost key (never 0 or all ones,
+    // the map's reserved values) and read back by beam_path_of.
+    if (beam_path_)
+        beam_path_cost_.insert_if_absent(id_key(rr.raw_state), hgcommon::state_cost_key(path));
     // Best-first search has one rewrite in flight, and its child's drain reads these.
     if (best_first_) {
         bf_path_cost_[rr.raw_state] = bf_next_.path_cost;

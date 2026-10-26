@@ -913,6 +913,9 @@ private:
     bool transition_costed() const {
         return hgcommon::tc_active(transition_cost_) || static_cast<bool>(transition_cost_hook_);
     }
+    // Whether the transitions into one successor can cost differently: under a "TransitionCost",
+    // or under "BeamCost" -> "Path", where a transition's cost adds its parent's path cost.
+    bool costs_per_transition() const { return transition_costed() || beam_path_; }
     // Whether a transition has a cost: "StateCost" or "TransitionCost".
     bool cost_active() const {
         return hgcommon::state_cost_active(state_cost_) || transition_costed();
@@ -946,7 +949,7 @@ private:
     std::unordered_map<StateId, double> bf_path_cost_;
     std::unordered_map<StateId, uint64_t> bf_path_key_;
     BfNode bf_next_{};
-    // "BeamCost" -> "Path": each state's path cost, by id_key, as the bits of a double. Written
+    // "BeamCost" -> "Path": each state's path cost, by id_key, as its cost key. Written
     // by the rewrite that creates the state (execute_rewrite_task) and read by its drain.
     bool beam_path_{false};
     ConcurrentMap<uint64_t, uint64_t> beam_path_cost_;

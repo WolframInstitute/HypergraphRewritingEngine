@@ -504,3 +504,19 @@ TEST(BeamPath, KeepsOneTransitionPerSuccessor) {
     EXPECT_EQ(run(false), 2u);
     EXPECT_EQ(run(true), 1u);
 }
+
+// A path cost of 0 is stored: the beam map keeps cost keys, which are never the map's reserved
+// values (a double's bits were, for 0.0).
+TEST(BeamPath, StoresAZeroPathCost) {
+    Hypergraph hg;
+    ParallelEvolutionEngine e(&hg, 4);
+    for (const auto& r : path_rules()) e.add_rule(r);
+    e.set_max_states_per_step(2);
+    e.set_transition_cost(hgcommon::TransitionCostSpec{},
+                          [](const hgcommon::TcEdges&, const hgcommon::TcEdges&) { return 0.0; });
+    e.set_beam_path(true);
+    e.evolve(std::vector<std::vector<std::vector<VertexId>>>{{{1}}}, 2);
+    EXPECT_EQ(e.last_error(), job_system::ErrorType::None);
+    ASSERT_EQ(e.path_costs().size(), 5u);
+    for (const auto& [sid, cost] : e.path_costs()) EXPECT_EQ(cost, 0.0);
+}
