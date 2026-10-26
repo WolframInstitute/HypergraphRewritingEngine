@@ -421,6 +421,18 @@ int main(int argc, char** argv) {
     // capture; the paclet reports them with the first call's HGEvolve::enginelog (hgWorkerTry).
     if (serve) hgframe::start_output_capture();
 
+#ifdef HG_GPU_BACKEND
+    // Checked before any job, so a machine without a usable device gets one message naming the
+    // reason instead of a CUDA error from the first kernel call. The probe creates the CUDA
+    // context, and the commit it leaves (2.3-2.6 GB on Windows) is the operating-system limit's
+    // overhead, so a small "MemoryLimit" bounds the engine and does not stop the runtime.
+    {
+        const auto& probe = HG_NAMESPACE::gpu::probe_device();
+        if (!probe.usable) g_no_device = std::string(kNoUsableDevicePrefix) + probe.reason;
+        hgcommon::set_process_memory_overhead(hgcommon::process_committed_bytes());
+    }
+#endif
+
     // THE HOST MEMORY LIMIT (hgcommon/memory_limit.hpp), installed before any job, so an
     // allocation beyond it fails in this process and the run returns a partial result. Each job
     // sets it to its own "MemoryLimit" while it runs (hypergraph::JobMemoryLimit).
@@ -431,15 +443,6 @@ int main(int argc, char** argv) {
                      "arenas apply the limit alone\n",
                      hgcommon::memory_limit_backend_name(hgcommon::memory_limit_backend()));
     }
-
-#ifdef HG_GPU_BACKEND
-    // Checked before any job, so a machine without a usable device gets one message naming the
-    // reason instead of a CUDA error from the first kernel call.
-    {
-        const auto& probe = HG_NAMESPACE::gpu::probe_device();
-        if (!probe.usable) g_no_device = std::string(kNoUsableDevicePrefix) + probe.reason;
-    }
-#endif
 
     HostBridge host;
     host.progress = [](const std::string& m) {

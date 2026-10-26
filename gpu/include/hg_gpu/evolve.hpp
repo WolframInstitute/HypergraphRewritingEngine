@@ -5,6 +5,7 @@
 #include "hg_gpu/types.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include "hgcommon/core.hpp"
@@ -32,6 +33,12 @@ struct RewriteRule {
 };
 
 struct EvolveInput {
+    // Called before a device Engine is built, with its estimated device bytes, and after it is
+    // built (hgcommon::set_process_memory_overhead: the operating-system limit allows the
+    // engine's commit). Empty by default.
+    std::function<void(uint64_t)> before_engine;
+    std::function<void()>         after_engine;
+
     // Which artifacts this run must RECORD. An artifact turned off is never built: the
     // rendezvous that would produce it does not run. Defaults to everything, so a caller that
     // states nothing gets what it always got.

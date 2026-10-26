@@ -27,6 +27,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -297,6 +298,22 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         job.explore_from_canonical_states_only = held.explore_from_canonical_states_only;
     }
     hg_gpu::EvolveInput in = build_input(job);
+    // The operating-system limit while a device engine is built: the commit so far plus physical
+    // memory above the job's limit, since Windows charges the engine's device memory to the
+    // process's commit and the engine's estimate is below its allocation; then the runtime's
+    // commit (hg_evolve_main) plus the commit the engine added.
+    {
+        static const uint64_t runtime = hgcommon::process_memory_overhead();
+        auto before = std::make_shared<uint64_t>(0);
+        in.before_engine = [before](uint64_t) {
+            *before = hgcommon::process_committed_bytes();
+            hgcommon::set_process_memory_overhead(*before + hgcommon::host_topology().total_bytes);
+        };
+        in.after_engine = [before] {
+            const uint64_t now = hgcommon::process_committed_bytes();
+            hgcommon::set_process_memory_overhead(runtime + (now > *before ? now - *before : 0));
+        };
+    }
 
     hg_gpu::PersistentEvolver& evolver = process_evolver();
 
@@ -1067,7 +1084,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                           wxf::WXFValue(hgmarshal::memory_limit_value(job.memory_limit))});
         device.push_back({wxf::WXFValue("OSMemoryLimit"),
                           wxf::WXFValue(hgmarshal::memory_limit_value(
-                              hgcommon::process_memory_limit()))});
+                              hgcommon::process_memory_limit_in_effect()))});
         full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
     }
 

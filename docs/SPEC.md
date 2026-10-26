@@ -357,6 +357,11 @@ exact configuration. Sampling and capping options refine this as follows:
   check is the only one. An allocation over either limit fails, and the run is a truncated run
   with the warning "memory exhausted", which names the limit. `"Device"` reports the limit as
   `"MemoryLimit"` and the operating-system limit, 0 where none is installed, as `"OSMemoryLimit"`.
+  In the GPU worker the operating-system limit is the job's limit plus the memory the CUDA
+  runtime has committed after the device probe, and while a device engine is held, plus the
+  commit the engine's construction added (Windows charges device memory to the process). So
+  `"MemoryLimit"` bounds the engine's host memory on both devices, and `"OSMemoryLimit"` is the
+  larger of the two.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*

@@ -38,6 +38,14 @@
   arrives whole: a progress message is one line however long. A byte of library output that is
   not part of a UTF-8 character appears as `\xHH`.
 
+- In `hg_evolve_gpu` the operating-system memory limit is the job's `"MemoryLimit"` plus what
+  the CUDA runtime commits after the device probe and what a device engine's construction
+  commits. On Windows the worker commits 2.29-2.57 GB for a small job and device memory counts in
+  the process's commit, so under a `"MemoryLimit"` of 2 GB a small GPU job gave a partial result.
+  It now completes at 1 GB. Below what the engine's host side needs, the reply is a partial result
+  with the "memory exhausted" warning naming the limit. `"OSMemoryLimit"` in `"Device"` reports
+  the sum.
+
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`
   (each vertex's point, keyed by the vertex as the states name it). With other properties it is

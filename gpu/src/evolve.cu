@@ -1323,7 +1323,9 @@ EvolveResult evolve(const EvolveInput& in) {
                                        "the engine does not fit in device memory (" +
                                        std::to_string(free_b >> 20) + " MiB free)");
                                cudaGetLastError();
+                               if (in.before_engine) in.before_engine(estimated_device_bytes(cfg));
                                Engine engine(cfg);
+                               if (in.after_engine) in.after_engine();
                                return engine.run(in);
                            });
 }
@@ -1404,7 +1406,9 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
             return out;
         }
         try {
+            if (in.before_engine) in.before_engine(estimated_device_bytes(cfg));
             engine_ = std::make_unique<Engine>(cfg);
+            if (in.after_engine) in.after_engine();
         } catch (const std::exception& e) {
             out.error = std::string("could not build a device engine for this session: ") + e.what();
             return out;
@@ -1528,7 +1532,9 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
         if (!has_engine_ || std::memcmp(&cfg, &cfg_, sizeof(EngineConfig)) != 0) {
             engine_.reset();
             has_engine_ = false;
+            if (in.before_engine) in.before_engine(estimated_device_bytes(cfg));
             engine_ = std::make_unique<Engine>(cfg);
+            if (in.after_engine) in.after_engine();
             cfg_        = cfg;
             has_engine_ = true;
         }

@@ -7,8 +7,12 @@
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #elif defined(__linux__)
 #include <sys/resource.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #endif
 
 namespace HG_NAMESPACE {
@@ -42,6 +46,10 @@ const char* memory_limit_backend_name(MemoryLimitBackend b) {
 namespace {
 // The installed limit; 0 before install_process_memory_limit succeeds.
 std::atomic<uint64_t> g_installed{0};
+// The bytes the operating-system limit adds to g_installed (set_process_memory_overhead).
+std::atomic<uint64_t> g_overhead{0};
+
+uint64_t saturating_add(uint64_t a, uint64_t b) { return a > ~uint64_t{0} - b ? ~uint64_t{0} : a + b; }
 #if !defined(HG_VERIFICATION) && defined(_WIN32)
 HANDLE g_job = nullptr;   // held open for the life of the process
 
@@ -74,7 +82,8 @@ bool install_process_memory_limit(uint64_t bytes) {
     if (g_job) return set_process_memory_limit(bytes);
     HANDLE job = CreateJobObjectW(nullptr, nullptr);
     if (!job) return false;
-    if (!apply_job_limit(job, bytes) || !AssignProcessToJobObject(job, GetCurrentProcess())) {
+    if (!apply_job_limit(job, saturating_add(bytes, g_overhead.load(std::memory_order_relaxed))) ||
+        !AssignProcessToJobObject(job, GetCurrentProcess())) {
         CloseHandle(job);
         return false;
     }
@@ -85,13 +94,14 @@ bool install_process_memory_limit(uint64_t bytes) {
     rlimit r{};
     if (getrlimit(RLIMIT_DATA, &r) != 0) return false;
     const uint64_t physical = host_topology().total_bytes;
-    const uint64_t ceiling = physical > bytes ? physical : bytes;
+    const uint64_t with_overhead = saturating_add(bytes, g_overhead.load(std::memory_order_relaxed));
+    const uint64_t ceiling = physical > with_overhead ? physical : with_overhead;
     if (ceiling != kNoMemoryLimit && (r.rlim_max == RLIM_INFINITY || ceiling < r.rlim_max)) {
         r.rlim_max = static_cast<rlim_t>(ceiling);
         if (r.rlim_cur == RLIM_INFINITY || r.rlim_cur > r.rlim_max) r.rlim_cur = r.rlim_max;
         if (setrlimit(RLIMIT_DATA, &r) != 0) return false;
     }
-    if (!apply_rlimit_data(bytes)) return false;
+    if (!apply_rlimit_data(with_overhead)) return false;
     g_installed.store(bytes, std::memory_order_relaxed);
     return true;
 #else
@@ -106,9 +116,11 @@ bool set_process_memory_limit(uint64_t bytes) {
     (void)bytes;
     return false;
 #elif defined(_WIN32)
-    if (!apply_job_limit(g_job, bytes)) return false;
+    if (!apply_job_limit(g_job, saturating_add(bytes, g_overhead.load(std::memory_order_relaxed))))
+        return false;
 #elif defined(__linux__)
-    if (!apply_rlimit_data(bytes)) return false;
+    if (!apply_rlimit_data(saturating_add(bytes, g_overhead.load(std::memory_order_relaxed))))
+        return false;
 #else
     (void)bytes;
     return false;
@@ -118,6 +130,45 @@ bool set_process_memory_limit(uint64_t bytes) {
 }
 
 uint64_t process_memory_limit() { return g_installed.load(std::memory_order_relaxed); }
+
+bool set_process_memory_overhead(uint64_t bytes) {
+    g_overhead.store(bytes, std::memory_order_relaxed);
+    const uint64_t installed = g_installed.load(std::memory_order_relaxed);
+    return installed == 0 || set_process_memory_limit(installed);
+}
+
+uint64_t process_memory_overhead() { return g_overhead.load(std::memory_order_relaxed); }
+
+uint64_t process_memory_limit_in_effect() {
+    const uint64_t installed = g_installed.load(std::memory_order_relaxed);
+    return installed ? saturating_add(installed, g_overhead.load(std::memory_order_relaxed)) : 0;
+}
+
+uint64_t process_committed_bytes() {
+#if defined(HG_VERIFICATION)
+    return 0;
+#elif defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof pmc))
+        return 0;
+    return static_cast<uint64_t>(pmc.PrivateUsage);
+#elif defined(__linux__)
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    char line[256];
+    uint64_t kb = 0;
+    while (std::fgets(line, sizeof line, f))
+        if (std::strncmp(line, "VmData:", 7) == 0) {
+            kb = std::strtoull(line + 7, nullptr, 10);
+            break;
+        }
+    std::fclose(f);
+    return kb * 1024;
+#else
+    return 0;
+#endif
+}
 
 }  // namespace common
 }  // namespace HG_NAMESPACE

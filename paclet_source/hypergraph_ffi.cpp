@@ -2342,7 +2342,7 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                               wxf::WXFValue(hgmarshal::memory_limit_value(req.memory_limit))});
             device.push_back({wxf::WXFValue("OSMemoryLimit"),
                               wxf::WXFValue(hgmarshal::memory_limit_value(
-                                  hgcommon::process_memory_limit()))});
+                                  hgcommon::process_memory_limit_in_effect()))});
             reply.value("Device", wxf::WXFValue(device));
         }
 
