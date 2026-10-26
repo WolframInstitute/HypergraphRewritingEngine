@@ -16,6 +16,10 @@
 // reported at once, at most kMaxRings. A thread that gets no ring (kMaxRings in use, or no memory
 // for a new one) drops its messages, and the writer reports that count too.
 //
+// The writer parks when every ring is empty and no reply is waiting. A producer wakes it through
+// one hgcommon::ParkGate (park_gate.hpp): the producer publishes its message, passes the gate's
+// barrier and signals only when the writer has announced itself idle.
+//
 // THIRD-PARTY OUTPUT. The CUDA runtime prints device printf to fd 1, and drivers and libraries
 // write to fd 1 and fd 2. start_output_capture points both at a pipe the worker owns; its thread
 // reads the pipe continuously into its ring, so that output cannot fill a pipe
@@ -23,14 +27,13 @@
 // the bytes it left out.
 
 #include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <mutex>
 #include <string>
 #include <thread>
 
+#include "hgcommon/park_gate.hpp"
 #include "wxf.hpp"
 
 namespace hgframe {
@@ -137,7 +140,7 @@ WorkerRings& worker_rings();
 // The calling thread's ring, claimed on its first message; nullptr when it got none.
 LogRing* this_thread_ring();
 
-// Puts a message in the calling thread's ring; never blocks.
+// Puts a message in the calling thread's ring and wakes the writer if it is parked; never blocks.
 // Messages longer than a slot take several slots.
 void post_message(MessageKind kind, const char* text, std::size_t length);
 
@@ -163,11 +166,10 @@ private:
     void write_frame(uint64_t header, const char* data, std::size_t length);
     void write_report(const char* format, unsigned long long count);
     void finish_handoff();
+    void hand_off();
 
     std::FILE* out_;
     std::thread thread_;
-    std::mutex wake_mutex_;
-    std::condition_variable wake_;
     std::atomic<bool> stop_{false};
     // The handoff: the calling thread sets one of these and pending_, the writer clears pending_.
     const HG_NAMESPACE::wxf::Pieces* reply_ = nullptr;

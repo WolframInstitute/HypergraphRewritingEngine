@@ -39,7 +39,8 @@ Process isolation: the paclet shells out to the standalone `hg_evolve` binary ov
 WXF. `HGEvolve` and every session verb go to a persistent worker, `hg_evolve --serve` (or
 `hg_evolve_gpu --serve`) started with `StartProcess`, which keeps the CUDA context and the
 session: length-prefixed jobs on its standard input, and reply, progress, error and log frames
-on its standard output (paclet_source/frame_writer.hpp). One writer thread writes every frame.
+on its standard output (paclet_source/frame_writer.hpp). One writer thread writes every frame, and
+it sleeps while it has nothing to write.
 Engine threads report through `hgcommon::diag_printf` into a ring of their own, which never blocks
 them; the worker points fd 1 and fd 2 at a pipe it reads, so library output (device printf, the
 CUDA runtime) arrives as log frames and the kernel never reads the worker's standard error. The kernel opens no socket: Wolfram 15.0's `SocketConnect` can end the kernel

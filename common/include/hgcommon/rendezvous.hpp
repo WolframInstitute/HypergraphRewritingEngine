@@ -74,7 +74,8 @@ struct ChildInheritance {};       // parallel_evolution: child registration / th
 struct DepthSettleCascade {};     // depth_join: settle d / finish at d+1
 struct DepthReportBaton {};       // depth_join: drop the baton; partner is the post-CAS
                                   //   DepthSettleCascade barrier, which the settler already holds
-struct WorkerParkWake {};         // job_system: wake_one_worker / a worker announcing itself idle
+struct WorkerParkWake {};         // job_system: wake_one_worker / a worker announcing itself idle;
+                                  //   frame_writer.cpp: post_message / the writer parking
 struct DequeTakeSteal {};         // work_stealing_deque: the owner taking / a thief stealing
 }  // namespace rv
 

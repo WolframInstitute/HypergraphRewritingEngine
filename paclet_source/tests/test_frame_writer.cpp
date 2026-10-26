@@ -1,5 +1,6 @@
 // The worker's frame writer (paclet_source/frame_writer.hpp): one writer thread, per-thread
-// rings, frames that never interleave, drops that are counted, and the capture of fd 1 and fd 2.
+// rings, frames that never interleave, drops that are counted, a writer that sleeps while idle,
+// and the capture of fd 1 and fd 2.
 // Runs on POSIX and on Windows (the C runtime's _pipe, _read, _dup2, and SetStdHandle).
 #include <gtest/gtest.h>
 
@@ -24,6 +25,10 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#endif
+#if defined(__linux__)
+#include <dirent.h>
+#include <fstream>
 #endif
 
 #include "frame_writer.hpp"
@@ -303,6 +308,50 @@ TEST(FrameWriter, TheCaptureCarriesBothStreams) {
     }
     for (const auto& m : expected) EXPECT_NE(captured.find(m), std::string::npos) << m;
 }
+
+#if defined(__linux__)
+namespace {
+// The voluntary context switches of the thread named `name`, or -1 when there is none.
+long voluntary_switches(const std::string& name) {
+    DIR* d = opendir("/proc/self/task");
+    if (!d) return -1;
+    long found = -1;
+    while (dirent* e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        const std::string base = std::string("/proc/self/task/") + e->d_name;
+        std::ifstream comm(base + "/comm");
+        std::string c;
+        std::getline(comm, c);
+        if (c != name) continue;
+        std::ifstream status(base + "/status");
+        std::string line;
+        while (std::getline(status, line))
+            if (line.rfind("voluntary_ctxt_switches:", 0) == 0)
+                found = std::stol(line.substr(line.find(':') + 1));
+    }
+    closedir(d);
+    return found;
+}
+}  // namespace
+
+// An idle writer sleeps: over one second with nothing posted it is switched in at most 5 times.
+// A message posted afterwards still arrives.
+TEST(FrameWriter, AnIdleWriterSleeps) {
+    WriterOnPipe w;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const long before = voluntary_switches("hg_frame_writer");
+    ASSERT_GE(before, 0) << "no thread named hg_frame_writer";
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    const long after = voluntary_switches("hg_frame_writer");
+    std::printf("[frame_writer] idle writer: %ld context switches in 1 s\n", after - before);
+    EXPECT_LE(after - before, 5);
+    std::thread([] { hgframe::post_message(hgframe::MessageKind::Log, "late", 4); }).join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    bool late = false;
+    for (const Frame& f : w.finish()) late = late || f.payload == "late";
+    EXPECT_TRUE(late);
+}
+#endif
 
 // The registry claims at most N rings. Claims beyond N, and claims whose allocation fails, return
 // nullptr; a ring handed on by an exited thread is claimed again.

@@ -1,6 +1,5 @@
 #include "frame_writer.hpp"
 
-#include <chrono>
 #include <cstring>
 #include <new>
 
@@ -11,6 +10,9 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#endif
+#if defined(__linux__)
+#include <pthread.h>
 #endif
 
 namespace hgframe {
@@ -32,6 +34,17 @@ bool LogRing::push(MessageKind kind, const char* text, std::size_t length) {
 namespace {
 
 LogRing* make_ring() { return new (std::nothrow) LogRing(); }
+
+// The writer's park word: one domain, one waiter (the writer), and producers that signal it.
+hgcommon::ParkGate::Domain g_writer_domain;
+hgcommon::ParkGate& writer_gate() {
+    static hgcommon::ParkGate* gate = [] {
+        auto* g = new hgcommon::ParkGate();
+        g->seat(&g_writer_domain, 1, 1, false);
+        return g;
+    }();
+    return *gate;
+}
 
 struct RingClaim {
     LogRing* ring = nullptr;
@@ -66,17 +79,15 @@ void post_message(MessageKind kind, const char* text, std::size_t length) {
             length -= part;
         } while (length > 0);
     }
+    writer_gate().wake_one(0);
 }
 
 // The thread starts after every member is constructed.
 FrameWriter::FrameWriter(std::FILE* out) : out_(out) { thread_ = std::thread([this] { run(); }); }
 
 FrameWriter::~FrameWriter() {
-    {
-        std::lock_guard<std::mutex> lock(wake_mutex_);
-        stop_.store(true, std::memory_order_release);
-    }
-    wake_.notify_one();
+    stop_.store(true, std::memory_order_seq_cst);
+    writer_gate().wake_one(0);
     thread_.join();
 }
 
@@ -160,49 +171,49 @@ void FrameWriter::finish_handoff() {
     reply_ = nullptr;
     error_ = nullptr;
     pending_.store(0, std::memory_order_release);
-    pending_.notify_all();
+    hgcommon::unpark_all(pending_);
 }
 
 void FrameWriter::run() {
+#if defined(__linux__)
+    pthread_setname_np(pthread_self(), "hg_frame_writer");
+#endif
+    hgcommon::ParkGate& gate = writer_gate();
     for (;;) {
         const bool any = drain_rings();
-        if (pending_.load(std::memory_order_acquire)) {
+        if (pending_.load(std::memory_order_seq_cst)) {
             finish_handoff();
             continue;
         }
-        if (stop_.load(std::memory_order_acquire)) {
+        if (stop_.load(std::memory_order_seq_cst)) {
             drain_rings();
             return;
         }
-        if (!any) {
-            // Messages are picked up within 1 ms; a reply wakes the writer at once.
-            std::unique_lock<std::mutex> lock(wake_mutex_);
-            wake_.wait_for(lock, std::chrono::milliseconds(1), [this] {
-                return pending_.load(std::memory_order_acquire) != 0 ||
-                       stop_.load(std::memory_order_acquire);
-            });
-        }
+        if (any) continue;
+        // The last look drains the rings itself; the writer parks only when it found nothing.
+        gate.park_unless(0, false,
+                         [this] {
+                             return drain_rings() || pending_.load(std::memory_order_seq_cst) ||
+                                    stop_.load(std::memory_order_seq_cst);
+                         },
+                         [] { return true; });
     }
+}
+
+void FrameWriter::hand_off() {
+    pending_.store(1, std::memory_order_seq_cst);
+    writer_gate().wake_one(0);
+    while (pending_.load(std::memory_order_acquire)) hgcommon::park_if_equal(pending_, 1);
 }
 
 void FrameWriter::write_reply(const HG_NAMESPACE::wxf::Pieces& reply) {
     reply_ = &reply;
-    {
-        std::lock_guard<std::mutex> lock(wake_mutex_);
-        pending_.store(1, std::memory_order_release);
-    }
-    wake_.notify_one();
-    pending_.wait(1, std::memory_order_acquire);
+    hand_off();
 }
 
 void FrameWriter::write_error(const std::string& message) {
     error_ = &message;
-    {
-        std::lock_guard<std::mutex> lock(wake_mutex_);
-        pending_.store(1, std::memory_order_release);
-    }
-    wake_.notify_one();
-    pending_.wait(1, std::memory_order_acquire);
+    hand_off();
 }
 
 bool start_output_capture() {
