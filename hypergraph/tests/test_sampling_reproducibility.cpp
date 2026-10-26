@@ -1601,6 +1601,26 @@ TEST(SamplingReproducibility, NoneStatesRunOneIrPassPerStateWhoseKeyIsRead) {
     }
 }
 
+// "MatchesPerStep" with "Generational" or an event ordering under None states: the single-history
+// drains (generation_at_drain, ordered_at_drain) take the root's transitions, and each rewrite
+// labels its child from the root's lineage label, so the root is labelled before those drains.
+// Rule {{x,y},{y,z}} -> {{x,z},{z,w}} on a path of three edges, 3 steps, at 1 and 4 workers.
+TEST(SamplingReproducibility, ASingleHistoryWithMatchesPerStepLabelsItsRoot) {
+    for (int mode : {1, 2})
+        for (size_t threads : {size_t(1), size_t(4)}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({2, 3}).build());
+            e.set_matches_per_step(1);
+            e.set_random_seed(1);
+            if (mode == 1) e.set_generational(true);
+            if (mode == 2) e.set_event_ordering(hgcommon::kStandardEventOrder);
+            e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 3);
+            EXPECT_GT(hg.num_events(), 0u) << mode << " at " << threads;
+        }
+}
+
 // "MatchesPerStep" under None states reads the root's lineage labels only when the root has a
 // transition. Rule {{x,y},{y,z}} -> {{x,z}} has no match in {{0,1},{2,3}}: no event and no IR
 // pass. In {{0,1},{1,2}} it has one: one event and one pass.

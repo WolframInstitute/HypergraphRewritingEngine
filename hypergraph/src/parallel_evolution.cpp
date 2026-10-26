@@ -953,6 +953,8 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, uint32_t step,
 // (select_step). A transition not kept is not taken: no rewrite, no event, no state. Each is a
 // pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
+    // Every drain below rewrites from the root, and label_rewrite reads the root's label.
+    label_root(state);
     if (event_ordering_ != 0) {
         ordered_at_drain(state, step);
         return;
@@ -961,7 +963,6 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         generation_at_drain(state, step);
         return;
     }
-    label_root(state);
     const size_t k = max_successor_states_per_parent_;
     const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
     if (max_states_per_step_ != 0 && step_cap_counts_matches_ && !costed) {
