@@ -122,7 +122,7 @@ r.num_states, r.causal_edges.array
 
 [python/README.md](python/README.md) describes the installation, and [python/docs/API.md](python/docs/API.md) the functions and options.
 
-See `paclet_source/README.md` for the full option list (hash strategy, canonicalisation modes, pruning limits, dimension / curvature / geodesic analyses, topology and initial-condition generators).
+The reference page [docs/en/ReferencePages/Symbols/HGEvolve.md](docs/en/ReferencePages/Symbols/HGEvolve.md) lists every option and property.
 
 ### C++ API
 

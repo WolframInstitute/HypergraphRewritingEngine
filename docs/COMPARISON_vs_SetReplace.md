@@ -17,7 +17,7 @@ implementations of hypergraph rewriting:
 | Identifying isomorphic states | not during evolution | `"CanonicalStateFunction"` | `"CanonicalizeStates"`, applied while the evolution runs |
 | Causal and branchial relations | causal graph of the token-event graph | causal and branchial graphs | both, as counts, pair lists and graphs; the causal relation transitively reduced |
 | Implementation | a C++ library (libSetReplace) under a Wolfram Language layer; one thread per rule while finding matches | Wolfram Language | a C++ engine in its own process, parallel in every phase; a CUDA engine with the same results |
-| Other | single-history evolution with event ordering; many analysis and plotting functions | properties as Wolfram Language graphs | quotient exploration, reproducible sampling, sessions that continue an evolution |
+| Other | single-history evolution with event ordering; many analysis and plotting functions | properties as Wolfram Language graphs | single-history evolution with SetReplace's event orderings ("EventOrderingFunction") or by generation ("Generational"), quotient exploration, reproducible sampling, sessions that continue an evolution |
 
 `MultiwaySystem` and `HGEvolve` compute the same object, so their times compare like for like. SetReplace's multiway is a different object with its own event count; its times are listed beside that count, not as a ratio.
 

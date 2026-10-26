@@ -302,12 +302,14 @@ HGEvolve[rules, initialEdges, 4, "EvolutionCausalBranchialGraph"]
 - Use structure properties (e.g. `"StatesGraphStructure"`) to get `Graph` objects without styled vertex rendering.
 - For large evolutions, request the count properties first (`"NumStates"`, `"NumEvents"`, `"NumCausalEdges"`, `"NumBranchialEdges"`) before pulling full state / event lists.
 - `"MaxStatesPerStep"` and `"MaxSuccessorStatesPerParent"` cap the multiway explosion; combine with `"ExplorationProbability"` for probabilistic thinning.
+- For one history rather than the multiway system, use `"Generational" -> True`, `"EventOrderingFunction"`, or `"MatchesPerStep" -> 1` with `"UniformRandom" -> True`, under `"CanonicalizeStates" -> None`.
 
 ### Memory Considerations
 
 - States are stored in arenas -- bump-allocated, reclaimed in bulk, no per-object ownership
 - Canonicalization caches are managed internally
-- For very large evolutions (>10,000 states), monitor memory usage
+- `"Tuning" -> <|"MemoryLimit" -> bytes|>` (default half of physical memory) bounds the engine's
+  memory; an evolution that reaches it returns a partial result with `HGEvolve::overflow`
 
 ## Troubleshooting
 
