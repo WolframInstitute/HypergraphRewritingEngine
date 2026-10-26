@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -200,44 +201,44 @@ TEST(FrameWriter, AFullRingDropsAndReportsTheCount) {
     EXPECT_EQ(dropped, 200u - hgframe::LogRing::kSlots);
 }
 
-// The producer's cost per message at 1, 4 and 16 threads with the writer running: each thread
-// writes only its own ring, so the time per message does not grow with the thread count.
-// Printed; asserted only that every message is accounted for in the ring counters.
-TEST(FrameWriter, ProducerCostPerMessage) {
-    int fds[2];
-    ASSERT_TRUE(make_pipe(fds));
-    std::thread drain([&] {
-        char buf[65536];
-        while (read_fd(fds[0], buf, sizeof buf) > 0) {
+// 1, 4 and 16 threads post 200000 messages each while the writer runs. Every message reaches the
+// reader or a drop report, and the threads that post at once hold distinct rings. The time per
+// message is printed.
+TEST(FrameWriter, ProducersEachWriteTheirOwnRing) {
+    for (int threads : {1, 4, 16}) {
+        constexpr int kMessages = 200000;
+        WriterOnPipe w;
+        std::vector<std::thread> producers;
+        std::vector<double> ns(threads);
+        std::vector<hgframe::LogRing*> rings(threads);
+        std::atomic<int> started{0};
+        for (int t = 0; t < threads; ++t)
+            producers.emplace_back([&, t] {
+                const char text[] = "progress: 123456 states, 654321 events";
+                rings[t] = hgframe::this_thread_ring();
+                started.fetch_add(1);
+                while (started.load() < threads) std::this_thread::yield();
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int m = 0; m < kMessages; ++m)
+                    hgframe::post_message(hgframe::MessageKind::Log, text, sizeof text - 1);
+                ns[t] = std::chrono::duration<double, std::nano>(
+                            std::chrono::steady_clock::now() - t0).count() / kMessages;
+            });
+        for (auto& p : producers) p.join();
+        uint64_t received = 0, dropped = 0;
+        for (const Frame& f : w.finish()) {
+            if (f.payload == "progress: 123456 states, 654321 events") ++received;
+            dropped += dropped_in(f.payload);
         }
-    });
-    std::FILE* out = open_write_stream(fds[1]);
-    {
-        hgframe::FrameWriter writer(out);
-        for (int threads : {1, 4, 16}) {
-            constexpr int kMessages = 200000;
-            std::vector<std::thread> producers;
-            std::vector<double> ns(threads);
-            for (int t = 0; t < threads; ++t)
-                producers.emplace_back([&ns, t] {
-                    const char text[] = "progress: 123456 states, 654321 events";
-                    const auto t0 = std::chrono::steady_clock::now();
-                    for (int m = 0; m < kMessages; ++m)
-                        hgframe::post_message(hgframe::MessageKind::Log, text, sizeof text - 1);
-                    ns[t] = std::chrono::duration<double, std::nano>(
-                                std::chrono::steady_clock::now() - t0).count() / kMessages;
-                });
-            for (auto& p : producers) p.join();
-            double mean = 0;
-            for (double v : ns) mean += v / threads;
-            std::printf("[frame_writer] %d producer thread(s): %.1f ns per message\n", threads, mean);
-        }
-        HG_NAMESPACE::wxf::Pieces reply;
-        writer.write_reply(reply);
+        EXPECT_EQ(received + dropped, uint64_t(threads) * kMessages) << threads << " threads";
+        EXPECT_EQ(std::set<hgframe::LogRing*>(rings.begin(), rings.end()).size(),
+                  static_cast<size_t>(threads));
+        EXPECT_EQ(std::count(rings.begin(), rings.end(), nullptr), 0);
+        double mean = 0;
+        for (double v : ns) mean += v / threads;
+        std::printf("[frame_writer] %d producer thread(s): %.1f ns per message, %llu dropped\n",
+                    threads, mean, static_cast<unsigned long long>(dropped));
     }
-    std::fclose(out);
-    drain.join();
-    close_fd(fds[0]);
 }
 
 // start_output_capture points fd 1 and fd 2, and on Windows the standard output and error handles,
