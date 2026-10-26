@@ -150,13 +150,19 @@ public:
     void finish() {}
 
 private:
+    // The list buffer of id_lists, one per thread. A thread_local declared inside id_lists's
+    // lambda stops MSVC 2022 with an internal compiler error (C1001).
+    static std::vector<int64_t>& id_list_buffer() {
+        thread_local std::vector<int64_t> list;
+        return list;
+    }
     // A table of `n` rows: an Int column `id_name` and an IntLists column `list_name`, row i from
     // item(i, put) (see the header). One list buffer per part of the table.
     template <class Item>
     void id_lists(const char* key, const char* id_name, const char* list_name, size_t n,
                   const marshal::ParallelFor& par, Item item) {
         records(key, n, par, [&](size_t i, TableSink& sink) {
-            thread_local std::vector<int64_t> list;
+            std::vector<int64_t>& list = id_list_buffer();
             item(i, [&](int64_t id, size_t count, auto&& each) {
                 list.clear();
                 list.reserve(count);
