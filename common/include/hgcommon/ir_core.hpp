@@ -1332,11 +1332,27 @@ HG_HD inline IrResult ir_canonical_hash_of(
         par.sync();
         pi.ncells = par.bcast(pi.ncells);
         // The singleton keeps the target's start and the remainder begins one past it, so
-        // those two names seed the refinement; its splits carry the child's tag.
+        // those two names seed the refinement; its splits carry the child's tag. The remainder
+        // is seeded only when a hyperedge holds v and a remainder vertex. Otherwise every
+        // hyperedge of v meets the target cell in v alone, so a vertex's signature against the
+        // remainder is its signature against the target cell without its entries against v,
+        // and the cells, equal on both of those, are not split by it.
+        uint32_t seed1 = 0xFFFFFFFFu;
+        if (cell_n_of(d) > 1) {
+            uint32_t shared = 0;
+            if (par.leader()) {
+                const uint32_t rem = target_of(d) + 1;
+                for (uint32_t o = occ_off[v]; o < occ_off[v + 1] && !shared; ++o) {
+                    const uint32_t e = occ_edge[o];
+                    for (uint32_t q = 0; q < ea[e]; ++q)
+                        if (pi.cell_of[ev[eoff[e] + q]] == rem) { shared = 1; break; }
+                }
+            }
+            if (par.bcast(shared)) seed1 = target_of(d) + 1;
+        }
         ir_refine<Par, Sym>(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, d + 1,
                             worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-                            sig_off, sig_cnt, gstart, sig_buf,
-                            target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu, par);
+                            sig_off, sig_cnt, gstart, sig_buf, target_of(d), seed1, par);
         ++d;
         if (out_work && par.leader()) {
             ++out_work->nodes;
