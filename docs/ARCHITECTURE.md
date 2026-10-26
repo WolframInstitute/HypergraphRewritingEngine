@@ -43,9 +43,13 @@ on its standard output (paclet_source/frame_writer.hpp). One writer thread write
 it sleeps while it has nothing to write.
 Engine threads report through `hgcommon::diag_printf` into a ring of their own, which never blocks
 them; the worker points fd 1 and fd 2 at a pipe it reads, so library output (device printf, the
-CUDA runtime) arrives as log frames and the kernel never reads the worker's standard error. The kernel opens no socket: Wolfram 15.0's `SocketConnect` can end the kernel
-on Windows. When no worker can start or a new worker does not answer a handshake job within 10 s, a
-call runs a one-shot `hg_evolve` through `RunProcess`. A crash or an Alt-. abort is a process
+CUDA runtime) arrives as log frames and the kernel never reads the worker's standard error. No
+call opens a socket: on Windows, Wolfram 15.0 faults inside `SocketConnect` (libzeromqlink.dll) in
+about 1 of 6 fresh kernels. When no worker can start or a new worker does not answer a handshake
+job within 10 s, the call runs a one-shot `hg_evolve` through `RunProcess` and the next call tries
+to start a worker again; after three such calls in a row the device's calls go to `RunProcess`.
+Start-up warnings arrive as log frames during the handshake and are issued with the first call's
+`HGEvolve::enginelog`. A crash or an Alt-. abort is a process
 kill, so it never takes down the notebook. The binary is
 shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the
 LibraryLink library remains only as a last-resort fallback and for the standalone

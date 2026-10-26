@@ -3,7 +3,8 @@
    and on the GPU, and compares Sockets[] before and after. Prints NOSOCK_OK when no call opened a
    socket and every call returned its usual result, otherwise NOSOCK_FAIL with the calls that
    opened a socket and the sockets they left, or the calls that failed.
-   The paclet's engine worker opens no socket: Wolfram 15.0's SocketConnect can end the kernel on
+   The paclet's engine worker opens no socket: on Windows, Wolfram 15.0 faults inside SocketConnect
+   (libzeromqlink.dll) in about 1 of 6 fresh kernels on
    Windows. PacletTest.NoCallOpensASocket runs this on the repository's paclet. A GPU call on a
    machine without a usable GPU runs on the CPU with HGEvolve::gpudev, which is quieted here. *)
 hgNoSocketCheck[pacletDir_String] := Module[

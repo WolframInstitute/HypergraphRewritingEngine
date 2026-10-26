@@ -432,7 +432,8 @@ int main(int argc, char** argv) {
     }
 
     take_reply_stream();
-    // The worker's startup messages (memory limit, device probe) are captured as well.
+    // The worker's start-up messages (the memory limit below, the device probe) go through the
+    // capture; the paclet reports them with the first call's HGEvolve::enginelog (hgWorkerTry).
     if (serve) hgframe::start_output_capture();
 
     // THE HOST MEMORY LIMIT (hgcommon/memory_limit.hpp), installed before any job, so an

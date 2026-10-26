@@ -182,7 +182,8 @@ TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
            "output:\n" << out;
 }
 
-// NO CALL OPENS A SOCKET: Wolfram 15.0's SocketConnect can end the kernel on Windows.
+// NO CALL OPENS A SOCKET: on Windows, Wolfram 15.0 faults inside SocketConnect (libzeromqlink.dll)
+// in about 1 of 6 fresh kernels.
 // reference/no_socket_check.wl runs HGEvolve and every session verb on the CPU and on the GPU and
 // compares Sockets[] before and after each call.
 TEST_F(PacletTest, NoCallOpensASocket) {
@@ -212,8 +213,8 @@ TEST_F(PacletTest, NoCallOpensASocket) {
 
 // A WORKER THAT DOES NOT ANSWER THE HANDSHAKE IS NOT USED. With no time allowed for the handshake
 // (as on a Wolfram version whose process streams do not carry the bytes), hgWorkerStart kills the
-// worker, the CPU transport is marked broken, and HGEvolve runs the job in a one-shot RunProcess
-// and returns its result.
+// worker, the CPU device counts one missed handshake, and HGEvolve runs the job in a one-shot
+// RunProcess and returns its result.
 TEST_F(PacletTest, AWorkerWithoutAHandshakeSendsCallsToRunProcess) {
     const std::string paclet_dir =
         test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
@@ -225,7 +226,7 @@ TEST_F(PacletTest, AWorkerWithoutAHandshakeSendsCallsToRunProcess) {
         "HypergraphRewriting`Private`$hgHandshakeSeconds = 0; "
         "n = HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
         "  {{1, 2}, {2, 3}}, 4, \"NumStates\", \"Tuning\" -> <|\"MemoryLimit\" -> 2^30|>]; "
-        "b = TrueQ[HypergraphRewriting`Private`$hgWorkerBroken[\"CPU\"]]; "
+        "b = HypergraphRewriting`Private`$hgWorkerStartFailures[\"CPU\"] === 1; "
         "w = KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, \"CPU\"]; "
         "If[n === 27 && b && !w, Print[\"SHAKE_OK\"], Print[\"SHAKE_FAIL: \", {n, b, w}]]";
     constexpr int kMaxAttempts = 3;
@@ -244,9 +245,9 @@ TEST_F(PacletTest, AWorkerWithoutAHandshakeSendsCallsToRunProcess) {
 // THE WORKER TRANSPORT: hg_evolve --serve on the process's standard streams, no socket. Two calls
 // use one worker; "ShowProgress" prints the worker's progress frames; a worker killed during a
 // job gives HGEvolve::workerlost and $Failed, and the next call starts a new worker and returns.
-// The killer is a separate process that ends the worker by its PID once the worker has used 0.5 s
-// of CPU time, which only the job does, during a call of about three seconds (Wolfram's rule,
-// 6 steps, Full states, one thread).
+// The kill is made from hgProgress on the first progress frame of the killed call's job, so the
+// job is running, and it is made through the kernel's ProcessObject for that worker, not a PID.
+// The job is Wolfram's rule for 6 steps with Full states on one thread, about three seconds.
 TEST_F(PacletTest, TheWorkerServesOverItsStandardStreams) {
     const std::string paclet_dir =
         test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
@@ -263,21 +264,19 @@ TEST_F(PacletTest, TheWorkerServesOverItsStandardStreams) {
         "n1 = small; g1 = gen; n2 = small; g2 = gen; "
         "HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
         "  {{1, 2}, {2, 3}}, 2, \"NumStates\", \"ShowProgress\" -> True]; "
-        "pid = First[HypergraphRewriting`Private`$hgWorkerProc[\"CPU\"]][\"PID\"]; "
-        "StartProcess[If[$OperatingSystem === \"Windows\", "
-        "  {\"powershell\", \"-NoProfile\", \"-Command\", "
-        "   \"while ((Get-Process -Id \" <> ToString[pid] <> \").CPU -lt 0.5) "
-        "    { Start-Sleep -Milliseconds 20 }; Stop-Process -Force -Id \" <> ToString[pid]}, "
-        "  {\"sh\", \"-c\", \"while [ $(awk '{print $14}' /proc/\" <> ToString[pid] <> "
-        "    \"/stat) -lt 50 ]; do sleep 0.02; done; kill -9 \" <> ToString[pid]}]]; "
-        "lost = Check[HypergraphRewriting`HGEvolve[{{x, y}, {x, z}} -> "
-        "  {{x, y}, {x, w}, {y, w}, {z, w}}, {{0, 0}, {0, 0}}, 6, \"NumStates\", "
-        "  \"CanonicalizeStates\" -> Full, \"Threads\" -> 1, "
-        "  \"Tuning\" -> <|\"MemoryLimit\" -> 3 2^30|>], \"WORKERLOST\", HypergraphRewriting`HGEvolve::workerlost]; "
+        "killed = False; "
+        "lost = Block[{HypergraphRewriting`Private`hgProgress}, "
+        "  HypergraphRewriting`Private`hgProgress[_] := If[!killed, killed = True; "
+        "    KillProcess[HypergraphRewriting`Private`$hgWorkerProc[\"CPU\"]]]; "
+        "  Check[HypergraphRewriting`HGEvolve[{{x, y}, {x, z}} -> "
+        "    {{x, y}, {x, w}, {y, w}, {z, w}}, {{0, 0}, {0, 0}}, 6, \"NumStates\", "
+        "    \"CanonicalizeStates\" -> Full, \"Threads\" -> 1, \"ShowProgress\" -> True, "
+        "    \"Tuning\" -> <|\"MemoryLimit\" -> 3 2^30|>], \"WORKERLOST\", "
+        "    HypergraphRewriting`HGEvolve::workerlost]]; "
         "n3 = small; g3 = gen; "
-        "If[IntegerQ[n1] && n1 === n2 === n3 && g1 === g2 && lost === \"WORKERLOST\" && "
+        "If[IntegerQ[n1] && n1 === n2 === n3 && g1 === g2 && killed && lost === \"WORKERLOST\" && "
         "   IntegerQ[g3] && g3 > g2, Print[\"PIPE_OK states=\", n1], "
-        "  Print[\"PIPE_FAIL: \", {n1, n2, n3, g1, g2, g3, lost}]]";
+        "  Print[\"PIPE_FAIL: \", {n1, n2, n3, g1, g2, g3, killed, lost}]]";
 
     constexpr int kMaxAttempts = 3;
     std::string out;
@@ -296,6 +295,34 @@ TEST_F(PacletTest, TheWorkerServesOverItsStandardStreams) {
     EXPECT_NE(out.find("PIPE_OK"), std::string::npos) << "WolframScript output:\n" << out;
     EXPECT_NE(out.find("HGEvolve: Evolution complete"), std::string::npos)
         << "\"ShowProgress\" printed no progress frame. WolframScript output:\n" << out;
+}
+
+// THE WORKER TRANSPORT AGAINST FAKE WORKERS (reference/worker_transport_check.wl): start-up log
+// frames reach HGEvolve::enginelog, bytes read past a reply are kept for the next call (200
+// calls), an abort during the handshake leaves no worker running, a worker that never answers is
+// killed, the next call starts a worker again, and the retries stop after $hgWorkerStartTries.
+TEST_F(PacletTest, TheWorkerTransportAgainstFakeWorkers) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+    const std::string check_file =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/reference/worker_transport_check.wl"));
+    const std::string code =
+        "hgTestPacletDir = \"" + paclet_dir + "\"; Get[\"" + check_file + "\"]";
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        if (out.find("TRANSPORT_OK") != std::string::npos ||
+            out.find("TRANSPORT_FAIL") != std::string::npos ||
+            out.find("TRANSPORT_SKIP") != std::string::npos ||
+            out.find("TRANSPORT_LOAD_FAIL") != std::string::npos)
+            break;
+    }
+    if (out.find("TRANSPORT_SKIP") != std::string::npos) GTEST_SKIP() << out;
+    ASSERT_EQ(out.find("TRANSPORT_LOAD_FAIL"), std::string::npos) << out;
+    EXPECT_NE(out.find("TRANSPORT_OK"), std::string::npos) << "WolframScript output:\n" << out;
 }
 
 #else

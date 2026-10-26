@@ -217,81 +217,100 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
 
 (* Persistent worker: an engine binary kept alive in --serve mode (hg_evolve_main.cpp run_serve),
    started with StartProcess, with length-prefixed WXF jobs written to its standard input and
-   replies read from its standard output: [8-byte little-endian length][payload] both ways. The
+   frames read from its standard output: [8-byte little-endian length][payload] both ways. The
    per-process setup -- the GPU CUDA context above all -- is paid once per worker. The streams are
    ProcessConnection's: BinaryWrite on the input and ReadByteArray on the output carry every byte
-   value. The kernel opens no socket: Wolfram 15.0's SocketConnect can end the kernel on Windows.
-   A worker that cannot start, or does not answer the handshake (hgWorkerStart), marks the device
-   broken, and HGEvolve then runs each job in a
-   one-shot RunProcess of the same binary. A worker that ends during a job (killed, or crashed)
-   gives hgWorkerLost[]: HGEvolve reports HGEvolve::workerlost and the next call starts a new
-   worker. When the kernel exits, the worker's standard input closes and its serve loop ends.
+   value. No call opens a socket: on Windows, Wolfram 15.0 faults inside SocketConnect
+   (libzeromqlink.dll) in about 1 of 6 fresh kernels.
+   A new worker must answer a handshake job (hgWorkerStart). A call whose worker cannot start, or
+   does not answer, runs in a one-shot RunProcess of the same binary, and the next call tries to
+   start a worker again; after $hgWorkerStartTries such calls in a row the device's calls go to
+   RunProcess without trying. A worker that ends during a job (killed, or crashed) gives
+   hgWorkerLost[]: HGEvolve reports HGEvolve::workerlost and the next call starts a new worker.
+   When the kernel exits, the worker's standard input closes and its serve loop ends.
    An aborted call (TimeConstrained, Abort[], Alt+.) kills the worker, because the aborted job's
    reply is still on its way and the next call would read it as its own. The next call starts a
    new worker. Each started worker gets a new $hgWorkerGeneration number; a session records the
    number of the worker that opened it and reports HGSessionStep::expired once that worker is
    gone. *)
-$hgWorkerProc = <||>;     (* device -> ProcessObject *)
-$hgWorkerBroken = <||>;   (* device -> True once a worker could not start *)
-$hgWorkerGeneration = <||>;  (* device -> number of the live worker, unique within the kernel *)
+$hgWorkerProc = <||>;           (* device -> ProcessObject *)
+$hgWorkerStartFailures = <||>;  (* device -> calls in a row whose worker did not start *)
+$hgWorkerStartTries = 3;
+$hgWorkerGeneration = <||>;     (* device -> number of the live worker, unique within the kernel *)
 $hgWorkerStarts = 0;
+$hgReadBuffer = <||>;           (* ProcessObject -> bytes read past the last frame *)
 
 hgFrame[bytes_ByteArray] := Join[ByteArray[Reverse[IntegerDigits[Length[bytes], 256, 8]]], bytes];
 hgWorkerExe[device_] := If[device === "GPU", $HypergraphEngineBinaryGPU, $HypergraphEngineBinary];
+hgWorkerCommand[device_] := {hgWorkerExe[device], "--serve"};
 
-hgWorkerKill[device_] := (
-  Quiet[If[MatchQ[$hgWorkerProc[device], _ProcessObject], KillProcess[$hgWorkerProc[device]]]];
+hgWorkerKill[device_] := With[{proc = $hgWorkerProc[device]},
+  If[MatchQ[proc, _ProcessObject],
+    $hgReadBuffer = KeyDrop[$hgReadBuffer, {proc}];
+    Quiet[KillProcess[proc]]];
   $hgWorkerProc = KeyDrop[$hgWorkerProc, device];
-);
+];
 
 (* A handshake job: the empty rule on one self-loop, 0 steps. *)
 $hgHandshakeJob := $hgHandshakeJob = BinarySerialize[<|"InitialStates" -> {{{0, 0}}},
   "Rules" -> <|"Rule1" -> ({{0, 1}} -> {{0, 1}})|>, "Steps" -> 0,
   "Options" -> <|"RequestedData" -> {"NumStates"}|>|>];
-(* Seconds a new worker has to answer the handshake. *)
+(* Seconds a new worker has to answer the handshake. Measured on Windows with Wolfram 15.0 and an
+   RTX 4090 (15 starts each, 2026-10-26): starting a worker and its handshake takes 0.28-0.48 s for
+   hg_evolve_gpu and 0.06-0.43 s for hg_evolve, the first start in a kernel being the slowest. *)
 $hgHandshakeSeconds = 10;
 
 (* Starts the device's worker and sends it the handshake job. A worker that answers (a reply or an
-   error frame, such as a GPU binary without a usable device) within $hgHandshakeSeconds carries
-   frames both ways; one that does not is killed and $Failed returned, and the caller marks the
-   transport broken so the job goes to a one-shot RunProcess. *)
-hgWorkerStart[device_] := Module[{exe, proc, answer},
-  exe = hgWorkerExe[device];
-  If[!(StringQ[exe] && FileExistsQ[exe]), Return[$Failed]];
-  proc = Quiet[StartProcess[{exe, "--serve"}]];
-  If[Head[proc] =!= ProcessObject || ProcessStatus[proc] =!= "Running", Return[$Failed]];
-  (* TimeConstrained bounds the wait: ReadByteArray[in, EndOfBuffer] on a process stream can
-     wait for the stream's first bytes. A handshake that runs out of time kills this worker, so
-     the bytes the abort may leave unread are not read by anything. *)
-  answer = Quiet[TimeConstrained[
-    BinaryWrite[ProcessConnection[proc, "StandardInput"], hgFrame[$hgHandshakeJob]];
-    Block[{$hgShowProgress = False, $hgWorkerLog = {}}, hgReadFrame[proc]],
-    Max[$hgHandshakeSeconds, 0.001], $Failed]];
-  If[!(ByteArrayQ[answer] || MatchQ[answer, hgEngineError[_String]]),
-    Quiet[KillProcess[proc]]; Return[$Failed]];
-  $hgWorkerProc[device] = proc;
-  $hgWorkerGeneration[device] = ++$hgWorkerStarts;
-  True
+   error frame, such as a GPU binary without a usable device) within $hgHandshakeSeconds is
+   recorded in $hgWorkerProc and True returned. A worker that does not answer, or whose start is
+   interrupted by an abort, is killed, and $Failed returned. The worker's log frames during the
+   handshake (start-up warnings) go to $hgWorkerLog, or are printed under $hgShowProgress; its
+   progress frames are skipped. *)
+$hgHandshakeQ = False;
+hgWorkerStart[device_] := Module[{cmd, proc = None, answer, started = False},
+  cmd = hgWorkerCommand[device];
+  If[!(StringQ[First[cmd]] && FileExistsQ[First[cmd]]), Return[$Failed]];
+  WithCleanup[
+    proc = Quiet[StartProcess[cmd]];
+    If[Head[proc] === ProcessObject && ProcessStatus[proc] === "Running",
+      (* TimeConstrained bounds the wait: ReadByteArray[in, EndOfBuffer] on a process stream can
+         wait for the stream's first bytes. *)
+      answer = Quiet[TimeConstrained[
+        BinaryWrite[ProcessConnection[proc, "StandardInput"], hgFrame[$hgHandshakeJob]];
+        Block[{$hgHandshakeQ = True}, hgReadFrame[proc]],
+        Max[$hgHandshakeSeconds, 0.001], $Failed]];
+      If[ByteArrayQ[answer] || MatchQ[answer, hgEngineError[_String]],
+        $hgWorkerProc[device] = proc;
+        $hgWorkerGeneration[device] = ++$hgWorkerStarts;
+        started = True]],
+    If[!started && Head[proc] === ProcessObject,
+      $hgReadBuffer = KeyDrop[$hgReadBuffer, {proc}];
+      Quiet[KillProcess[proc]]]];
+  If[started, True, $Failed]
 ];
 
-(* Read a job's reply from the worker `proc`'s standard output. Frames (paclet_source/
-   frame_writer.hpp): a length with bit 63 set is a PROGRESS frame, printed when the call asked for
-   progress ($hgShowProgress) and skipped otherwise; bit 62, an ERROR frame (the job failed, the
+(* Read the next reply from the worker `proc`'s standard output. Frames (paclet_source/
+   frame_writer.hpp): a length with bit 63 set is a PROGRESS frame, given to hgProgress (printed
+   when the call asked for progress, $hgShowProgress); bit 62, an ERROR frame (the job failed, the
    payload is the message, nothing follows); bit 61, a LOG frame (a diagnostic, or text a library
    wrote to the worker's fd 1 or fd 2), printed under $hgShowProgress and otherwise collected in
    $hgWorkerLog; none, the REPLY. Returns the reply payload for BinaryDeserialize,
    hgEngineError[message] for an error frame, or $Failed when the worker has ended.
+   Bytes read past the reply (the worker's next frames) are kept in $hgReadBuffer for the next
+   read from the same worker.
    The stream is read with ReadByteArray[in, EndOfBuffer], which returns at once with the bytes
    that have arrived, and EndOfFile once the worker has ended; a blocking ReadByteArray[in, n] does
    not return when another process kills the worker (Windows, Wolfram 15.0). Between empty reads
    the loop polls 200 times, then pauses 1 ms, and after 2000 empty reads 10 ms; every 100th empty
-   read checks that the worker is still running. Arrived pieces
-   are appended to a DynamicArray and joined once per frame. *)
+   read checks that the worker is still running. Arrived pieces are appended to a DynamicArray and
+   joined once per frame. *)
 $hgShowProgress = False;
 $hgWorkerLog = {};
 $hgWorkerLogMax = 50;
-hgReadFrame[proc_] := Catch[Module[
-  {in = ProcessConnection[proc, "StandardOutput"], buf = ByteArray[{}], fill, len, k, body},
+hgProgress[text_String] := If[TrueQ[$hgShowProgress], Print[text]];
+hgReadFrame[proc_] := Module[
+  {in = ProcessConnection[proc, "StandardOutput"], buf = Lookup[$hgReadBuffer, Key[proc], ByteArray[{}]],
+   fill, len, k, body, result},
   fill[n_] := Module[{ds = CreateDataStructure["DynamicArray"], total = Length[buf], chunk, idle = 0},
     If[total >= n, Return[Null, Module]];
     If[total > 0, ds["Append", buf]];
@@ -306,56 +325,71 @@ hgReadFrame[proc_] := Catch[Module[
           If[idle > 200, Pause[If[idle > 2000, 0.01, 0.001]]],
         True, Throw[$Failed, hgReadFrame]]];
     buf = If[ds["Length"] == 1, ds["Part", 1], Join @@ Normal[ds]]];
-  (* The k bytes after the 8-byte header, and the rest of the buffer kept for the next frame. *)
+  (* The k bytes after the 8-byte header; the rest of the buffer is kept for the next frame. *)
   body[k_] := Module[{b},
     fill[8 + k];
     b = If[k == 0, ByteArray[{}], buf[[9 ;; 8 + k]]];
     buf = If[Length[buf] > 8 + k, buf[[9 + k ;;]], ByteArray[{}]];
     b];
-  While[True,
-    fill[8];
-    len = FromDigits[Reverse[Normal[buf[[1 ;; 8]]]], 256];
-    Which[
-      len >= 2^63,
-        k = body[len - 2^63];
-        If[TrueQ[$hgShowProgress] && Length[k] > 0, Print[ByteArrayToString[k]]],
-      len >= 2^62,
-        k = body[len - 2^62];
-        Throw[hgEngineError[If[Length[k] > 0, ByteArrayToString[k], ""]], hgReadFrame],
-      len >= 2^61,
-        k = body[len - 2^61];
-        If[Length[k] > 0,
-          If[TrueQ[$hgShowProgress], Print[ByteArrayToString[k]],
-            AppendTo[$hgWorkerLog, ByteArrayToString[k]]]],
-      True,
-        Throw[body[len], hgReadFrame]]]],
-  hgReadFrame];
+  result = Catch[
+    While[True,
+      fill[8];
+      len = FromDigits[Reverse[Normal[buf[[1 ;; 8]]]], 256];
+      Which[
+        len >= 2^63,
+          k = body[len - 2^63];
+          If[!TrueQ[$hgHandshakeQ] && Length[k] > 0, hgProgress[ByteArrayToString[k]]],
+        len >= 2^62,
+          k = body[len - 2^62];
+          Throw[hgEngineError[If[Length[k] > 0, ByteArrayToString[k], ""]], hgReadFrame],
+        len >= 2^61,
+          k = body[len - 2^61];
+          If[Length[k] > 0,
+            If[TrueQ[$hgShowProgress], Print[ByteArrayToString[k]],
+              AppendTo[$hgWorkerLog, ByteArrayToString[k]]]],
+        True,
+          Throw[body[len], hgReadFrame]]],
+    hgReadFrame];
+  If[result === $Failed || Length[buf] == 0,
+    $hgReadBuffer = KeyDrop[$hgReadBuffer, {proc}],
+    $hgReadBuffer[proc] = buf];
+  result];
+
+(* The worker's diagnostics and library output for one call, up to $hgWorkerLogMax pieces, as
+   HGEvolve::enginelog. *)
+hgReportWorkerLog[log_List] := If[log =!= {},
+  Message[HGEvolve::enginelog, StringTrim[StringRiffle[Take[log, UpTo[$hgWorkerLogMax]], ""]] <>
+    If[Length[log] > $hgWorkerLogMax,
+      " (" <> ToString[Length[log] - $hgWorkerLogMax] <> " more pieces left out)", ""]]];
 
 (* Run one job on the device's worker, starting one when none is running. Returns the reply bytes,
    hgEngineError[message] when the engine refused the job, hgWorkerLost[] when the worker ended
-   during the job, or $Failed when no worker can be started. *)
-hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{proc, payload = $Failed, written, done = False, log},
-  If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
-  If[Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
-    hgWorkerKill[device];
-    If[hgWorkerStart[device] =!= True, $hgWorkerBroken[device] = True; Return[$Failed]]];
-  proc = $hgWorkerProc[device];
-  (* An abort between the write and the end of the read kills the worker: its reply to this job
-     would otherwise be read by the next call. The abort itself propagates unchanged. *)
+   during the job, or $Failed when no worker could be started. *)
+hgWorkerTry[device_, wxfBytes_ByteArray] := Module[
+  {proc, payload = $Failed, written = False, done = False, started = True, log},
+  If[Lookup[$hgWorkerStartFailures, device, 0] >= $hgWorkerStartTries, Return[$Failed]];
   Block[{$hgWorkerLog = {}},
-    WithCleanup[
-      written = Quiet[BinaryWrite[ProcessConnection[proc, "StandardInput"], hgFrame[wxfBytes]]] =!= $Failed;
-      If[written, payload = Quiet[hgReadFrame[proc]]];
-      done = True,
-      If[!done, hgWorkerKill[device]]];
+    If[Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
+      hgWorkerKill[device];
+      started = hgWorkerStart[device] === True;
+      If[started,
+        $hgWorkerStartFailures = KeyDrop[$hgWorkerStartFailures, device],
+        $hgWorkerStartFailures[device] = Lookup[$hgWorkerStartFailures, device, 0] + 1]];
+    (* An abort between the write and the end of the read kills the worker: its reply to this job
+       would otherwise be read by the next call. The abort itself propagates unchanged. *)
+    If[started,
+      proc = $hgWorkerProc[device];
+      WithCleanup[
+        written = Quiet[BinaryWrite[ProcessConnection[proc, "StandardInput"], hgFrame[wxfBytes]]] =!= $Failed;
+        If[written, payload = Quiet[hgReadFrame[proc]]];
+        done = True,
+        If[!done, hgWorkerKill[device]]]];
     log = $hgWorkerLog];
-  (* The worker's diagnostics and library output for this call, up to $hgWorkerLogMax pieces. *)
-  If[log =!= {},
-    Message[HGEvolve::enginelog, StringTrim[StringRiffle[Take[log, UpTo[$hgWorkerLogMax]], ""]] <>
-      If[Length[log] > $hgWorkerLogMax,
-        " (" <> ToString[Length[log] - $hgWorkerLogMax] <> " more pieces left out)", ""]]];
-  If[!written || payload === $Failed, hgWorkerKill[device]; Return[hgWorkerLost[]]];
-  payload
+  hgReportWorkerLog[log];
+  Which[
+    !started, $Failed,
+    !written || payload === $Failed, hgWorkerKill[device]; hgWorkerLost[],
+    True, payload]
 ];
 
 HGEvolve::workerlost = "The engine worker process ended during the evaluation, so it returned no result. The next evaluation starts a new worker.";
@@ -1344,17 +1378,13 @@ hgSendJob[inputData_Association, device_, sessionQ_, worker_ : None] := Module[{
         If[!hgGpuRefused[First[r]], Return[$Failed]];
         dev = "CPU";
         r = hgWorkerTry[dev, wxfBytes]];
-      (* $hgWorkerBroken is LATCHED, and it is latched for the FALLBACK path's benefit: there a
-         dead worker only means "stop paying to retry", because a one-shot RunProcess answers
-         the same job correctly. A session has no fallback, so the same latch turns one
-         transport hiccup during an unrelated evolve into "this kernel can never open a session
-         again". So an Open clears it and tries once more; if the worker still cannot
-         start, THAT is the failure worth reporting. *)
       (* A refused job is the engine's answer, not a transport failure: report its message and
          keep the worker. *)
       If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];
-      If[!ByteArrayQ[r] && TrueQ[$hgWorkerBroken[dev]],
-        $hgWorkerBroken = KeyDrop[$hgWorkerBroken, dev];
+      (* A session has no one-shot fallback. An Open whose worker could not start, or that found
+         the device past $hgWorkerStartTries, clears the device's count and tries once more. *)
+      If[r === $Failed,
+        $hgWorkerStartFailures = KeyDrop[$hgWorkerStartFailures, dev];
         hgWorkerKill[dev];
         r = hgWorkerTry[dev, wxfBytes]];
       If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];

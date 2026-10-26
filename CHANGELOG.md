@@ -9,6 +9,13 @@
   `hg_evolve --serve-socket` is removed. A worker that ends during an evaluation gives
   `HGEvolve::workerlost`, and the next evaluation starts a new one.
 
+- A worker that does not answer the start-up handshake is retried by the next evaluation, up to
+  three evaluations in a row; until then each evaluation runs in a one-shot `hg_evolve`. Warnings
+  the worker writes as it starts are issued with the first evaluation's `HGEvolve::enginelog`. An
+  abort during a worker's start no longer leaves the worker running, and output the worker writes
+  after a result is read by the next evaluation instead of being lost (which could stop the next
+  evaluation from returning).
+
 - Text the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output) is cut
   into pieces only between characters, so a multi-byte UTF-8 character is never split.
 
