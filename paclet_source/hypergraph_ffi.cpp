@@ -527,6 +527,12 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                             else if (s == "Automatic" || s == "None") req.best_first = false;
                             else throw std::runtime_error(
                                 "Search '" + s + "' is not Automatic or BestFirst");
+                        } else if (option_key == "BeamCost") {
+                            const std::string s = option_parser.template read<std::string>();
+                            if (s == "Path") req.beam_path = true;
+                            else if (s == "Transition") req.beam_path = false;
+                            else throw std::runtime_error(
+                                "BeamCost '" + s + "' is not Transition or Path");
                         } else if (option_key == "SearchBudget") {
                             req.search_budget = read_cap();
                         } else if (option_key == "GraphProperties") {
@@ -964,6 +970,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
                                                         ? hgffi::transition_cost_hook()
                                                         : hgcommon::TransitionCostHook{});
     engine.set_best_first(req.best_first, req.search_budget);
+    engine.set_beam_path(req.beam_path);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
     engine.set_generational(req.generational);
@@ -1193,9 +1200,10 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
         // A job replied in arrays (in-process) runs on the CPU engine: the device replies in WXF.
         const bool cpu_reply = !Out::kWire;
-        // "Search" -> "BestFirst" runs on the CPU engine (docs/TRANSITION_COST.md, Devices).
+        // "Search" -> "BestFirst" and "BeamCost" -> "Path" run on the CPU engine
+        // (docs/TRANSITION_COST.md, Devices).
         const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session ||
-                            cpu_reply || req.best_first;
+                            cpu_reply || req.best_first || req.beam_path;
         if (req.positional_event_identity && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
@@ -1204,9 +1212,9 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
                 "Full and Automatic"});
-        else if (req.best_first && !cpu_session && !cpu_reply)
+        else if ((req.best_first || req.beam_path) && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
-                "\"Search\" -> \"BestFirst\" runs on the CPU engine"});
+                "\"Search\" -> \"BestFirst\" and \"BeamCost\" -> \"Path\" run on the CPU engine"});
 #endif
         if (req.session_op == "InitialCondition") {
             // A generated initial condition, on either device: no rules and no evolution.
@@ -1366,6 +1374,14 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                 "guided by the cost."});
             req.transition_cost = hgcommon::TransitionCostSpec{};
             req.transition_cost_function = false;
+        }
+        if (!held_session && req.beam_path &&
+            (req.max_states_per_step == 0 || req.best_first ||
+             !(transition_costed() || hgcommon::state_cost_active(req.state_cost)))) {
+            req.ffi_warnings.push_back({"BeamCostNeedsCostAndCap", 1,
+                "\"BeamCost\" -> \"Path\" applies with \"MaxStatesPerStep\" and a \"StateCost\" "
+                "or \"TransitionCost\": the step cap ranks by transition."});
+            req.beam_path = false;
         }
 
 #ifdef HG_GPU_BACKEND
@@ -2459,7 +2475,7 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
 
         // "PathCosts": under best-first search each state's path cost by state id, the states
         // as "States" lists them.
-        if (engine.best_first()) {
+        if (engine.best_first() || engine.beam_path()) {
             std::vector<std::pair<uint32_t, double>> costs;
             for (const auto& entry : engine.path_costs())
                 if (!full_canonicalization || hg.get_canonical_state(entry.first) == entry.first)

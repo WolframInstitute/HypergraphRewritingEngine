@@ -544,6 +544,32 @@ HG_HD inline void successor_lowest(const SuccessorIdentity* id, const uint32_t* 
     }
 }
 
+// "BeamCost" -> "Path": keep[i] is 1 when candidate i has the lowest (cost, rank) among the
+// candidates of its successor, ties kept, and 0 otherwise. `order` and `id` are as
+// successor_ranks leaves them; `rank` is each candidate's own rank.
+HG_HD inline void successor_cheapest(const SuccessorIdentity* id, const uint32_t* order,
+                                     uint32_t n, const uint64_t* cost, const uint64_t* rank,
+                                     uint8_t* keep) {
+    uint32_t s = 0;
+    while (s < n) {
+        uint32_t e = s + 1;
+        while (e < n && same_successor(id[order[s]], id[order[e]])) ++e;
+        uint64_t c = cost[order[s]], r = rank[order[s]];
+        for (uint32_t j = s + 1; j < e; ++j) {
+            const uint32_t i = order[j];
+            if (cost[i] < c || (cost[i] == c && rank[i] < r)) {
+                c = cost[i];
+                r = rank[i];
+            }
+        }
+        for (uint32_t j = s; j < e; ++j) {
+            const uint32_t i = order[j];
+            keep[i] = cost[i] == c && rank[i] == r ? 1u : 0u;
+        }
+        s = e;
+    }
+}
+
 // v[i] for every candidate i becomes v at the lead candidate of i's successor. `order`, `lead`
 // and `id` are as successor_ranks leaves them (order sorted by successor).
 HG_HD inline void successor_spread(const SuccessorIdentity* id, const uint32_t* order,

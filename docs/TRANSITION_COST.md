@@ -9,6 +9,7 @@
 | `"TransitionCost"` | `None` | `<\|"Field" -> f, "TimeStep" -> dt\|>`: the heat residual of field f with time step dt |
 | `"Search"` | `Automatic` | `"BestFirst"`: expand the transition of lowest path cost next |
 | `"SearchBudget"` | `1000` | the number of states a best-first search creates after the initial states |
+| `"BeamCost"` | `"Transition"` | `"Path"`: the step cap ranks by path cost and makes each successor once |
 
 The cost of a transition is its "TransitionCost" plus the "StateCost" of its child, each when given. The hgevolve Python client also takes a callable as `transition_cost`: `f(parent_edges, child_edges) -> float`, called for every costed transition with the two states' edges as lists of vertex ids.
 
@@ -39,6 +40,20 @@ The squares are exact (double-double) and each of the three sums adds its terms 
 
 Under "MaxStatesPerStep" a step keeps the transitions into its N lowest-cost successor states. A successor's cost is the lowest cost of a transition into it (`hgcommon::successor_lowest`, on both engines), and its successor rank breaks ties, as for "StateCost". Each step chooses by the cost of the step's transitions alone. The device computes each candidate's cost in the cost log that idle blocks run before the step's selection (`step_cost_one`, `successor_cost_device`), as it does for "StateCost".
 
+## The step cap ranked by path cost
+
+`"BeamCost" -> "Path"` keeps the K = "MaxStatesPerStep" successor states of lowest path cost at each step, where a state's path cost is its parent's path cost plus the cost of the transition that made it, 0 for an initial state. `"BeamCost" -> "Transition"`, the default, ranks by the transition's cost alone. Under "Path", of the transitions into a kept successor only the ones of lowest (path cost, rank) are taken (`hgcommon::successor_cheapest`), so a step makes each successor once. With "CanonicalizeStates" -> Automatic two transitions that make the same edge list make one successor, so duplicate states are dropped by their edge lists without canonicalisation; the vertex ids stay the coordinates of the field. The rewrite that makes a state records its path cost (`beam_path_cost_`), and the state's drain adds it to the costs of its transitions. The reply's "PathCosts" gives every state's path cost.
+
+This is the selection experiment 015 runs in Python: a beam of K paths ranked by summed cost, one engine call for the whole history instead of one call per beam state per step. A beam of K over T steps creates at most K T states, so a history of 6,000 events at K = 8 creates 48,000 states. Best-first search with the same costs creates every state cheaper than the cheapest state at the final depth first; in experiment 015 it created 6,571 states without passing depth 3.
+
+## Planned for experiment 015
+
+These are not implemented. Each is a function of the path and the step that the drain can compute, so each fits the step cap of both engines.
+
+- A residual against the state W events back on the same path: each state keeps the edge list of its ancestor W steps back (a ring of W per kept path), and the cost reads that ancestor's field and the heat flow exp(dt L) of it on a grid of dt, the minimum over the grid.
+- A target field per step on the initial vertex ids: a list of vectors g_k, and the cost |u_child - g_(k+1)| over the vertices that carry an initial id.
+- The Lean hypergraph Laplacian as an option of the residual: every hyperedge adds f(w) - f(v) for each other vertex w of the edge as a set, with multiplicity, where the residual here reads the simple graph of "StatisticsGraph".
+- The chosen path in the reply: the states of the lowest-cost final state's history at a stride, and the cost terms of each of its transitions.
 ## Best-first search
 
 Each state has a path cost: 0 for an initial state, and the parent's path cost plus the transition's cost for a child. The frontier holds transitions, ordered by the child's path cost, then the transition's rank, then a key of the parent's history (each initial state's position in the list, mixed with the rank of each transition along the path). The search takes the first transition, rewrites it, matches the child and adds the child's transitions to the frontier. Under "CanonicalizeStates" Full or Automatic a transition into a state the search already created, an initial state included, is dropped. The search stops when it has created "SearchBudget" states or the frontier is empty. A child at step "Steps" is not matched.
@@ -55,7 +70,7 @@ Best-first search does not combine with the step caps, "TransitionRate", "RuleWe
 
 "TransitionCost" runs on both devices. The device computes each candidate's cost with the same `tc_child_cost`, in the work log of costs that idle blocks run before a step's selection, and keeps a successor at its cheapest transition with the same `hgcommon::successor_lowest`. The two devices keep the same states and events (`TransitionCost.StepCapKeepsTheSameStatesOnBothEngines`), and `tc_child_cost` gives the same double on both (`TransitionCost.ChildCostIsTheSameDoubleOnHostAndDevice`).
 
-Best-first search runs on the CPU engine, and the GPU binary runs it there with an "Engine" warning. The search takes one transition at a time, and the device engine creates states only in steps of its persistent kernel: it has no operation that applies one chosen match and returns the child's candidates with their costs. A device search keeps the host's heap and order and needs two device operations, the candidates of one state with their ranks, identities and costs, and the rewrite of one chosen match.
+Best-first search and `"BeamCost" -> "Path"` run on the CPU engine, and the GPU binary runs them there with an "Engine" warning. The search takes one transition at a time, and the device engine creates states only in steps of its persistent kernel: it has no operation that applies one chosen match and returns the child's candidates with their costs. A device search keeps the host's heap and order and needs two device operations, the candidates of one state with their ranks, identities and costs, and the rewrite of one chosen match.
 
 A Python callable cost is host code. The Python client runs every job on the CPU engine.
 

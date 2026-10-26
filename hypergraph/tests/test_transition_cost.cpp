@@ -418,3 +418,89 @@ TEST(TransitionCost, SelfLoopsAndMultiEdgesInEveryField) {
     EXPECT_EQ(residual({{1, 2}}, {{1, 2}, {1, 2}}, hgcommon::TC_FIELD_EDGE_MULTIPLICITY, 0.0),
               2.0);
 }
+
+namespace {
+
+// From {{x}}: two first steps, {x,x} at 1 and {x,x,x} at 2; from {x,x} continuations at 3 and
+// 3.5, from {x,x,x} one at 2.8. The cost is a hook on the child's largest arity.
+std::vector<RewriteRule> path_rules() {
+    return {make_rule(0).lhs({0}).rhs({0, 0}).build(),
+            make_rule(1).lhs({0}).rhs({0, 0, 0}).build(),
+            make_rule(2).lhs({0, 0}).rhs({0, 0, 0, 0, 0}).build(),
+            make_rule(3).lhs({0, 0}).rhs({0, 0, 0, 0, 0, 0, 0, 0}).build(),
+            make_rule(4).lhs({0, 0, 0}).rhs({0, 0, 0, 0, 0, 0}).build()};
+}
+
+double path_cost_hook(const hgcommon::TcEdges&, const hgcommon::TcEdges& child) {
+    uint32_t a = 0;
+    for (uint32_t i = 0; i < child.count(); ++i) a = std::max(a, child.arity(i));
+    switch (a) {
+        case 2: return 1.0;
+        case 3: return 2.0;
+        case 5: return 3.0;
+        case 8: return 3.5;
+        case 6: return 2.8;
+        default: return 0.0;
+    }
+}
+
+// The largest arity of each state at step 2 with its path cost, for a beam of 2.
+std::multiset<std::pair<uint32_t, double>> beam_step_two(bool path, size_t threads) {
+    Hypergraph hg;
+    ParallelEvolutionEngine e(&hg, threads);
+    for (const auto& r : path_rules()) e.add_rule(r);
+    e.set_max_states_per_step(2);
+    e.set_transition_cost(hgcommon::TransitionCostSpec{}, path_cost_hook);
+    e.set_beam_path(path);
+    e.evolve(std::vector<std::vector<std::vector<VertexId>>>{{{1}}}, 2);
+    std::multiset<std::pair<uint32_t, double>> out;
+    const auto& costs = e.path_costs();
+    for (StateId s = 0; s < hg.num_states(); ++s) {
+        if (hg.get_state(s).step != 2) continue;
+        uint32_t a = 0;
+        for (const auto& edge : edges_of(hg, s)) a = std::max<uint32_t>(a, edge.size());
+        const auto it = costs.find(s);
+        out.insert({a, it == costs.end() ? -1.0 : it->second});
+    }
+    return out;
+}
+
+}  // namespace
+
+// "BeamCost" -> "Path" ranks the step's transitions by the child's path cost: the beam of 2 keeps
+// {x,x,x,x,x} (1 + 3) and {x,x,x,x,x,x,x,x} (1 + 3.5) where ranking by the transition alone keeps
+// {x,x,x,x,x,x} (2.8) and {x,x,x,x,x} (3).
+TEST(BeamPath, RanksTheStepByPathCost) {
+    for (size_t threads : {size_t(1), size_t(4), size_t(16)}) {
+        EXPECT_EQ(beam_step_two(true, threads),
+                  (std::multiset<std::pair<uint32_t, double>>{{5u, 4.0}, {8u, 4.5}}))
+            << threads;
+        std::multiset<uint32_t> arities;
+        for (const auto& [a, c] : beam_step_two(false, threads)) arities.insert(a);
+        EXPECT_EQ(arities, (std::multiset<uint32_t>{5u, 6u})) << threads;
+    }
+}
+
+// "BeamCost" -> "Path" keeps one transition into each kept successor. Under Automatic states the
+// two copies of {1,2} make one successor when either is deleted: the transition ranking keeps
+// both transitions (two states), the path ranking the one of lowest rank (one state).
+TEST(BeamPath, KeepsOneTransitionPerSuccessor) {
+    auto run = [](bool path) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Automatic);
+        ParallelEvolutionEngine e(&hg, 4);
+        e.add_rule(make_rule(0).lhs({0, 1}).build());
+        e.set_max_states_per_step(1);
+        e.set_transition_cost(hgcommon::TransitionCostSpec{},
+                              [](const hgcommon::TcEdges&, const hgcommon::TcEdges&) {
+                                  return 1.0;
+                              });
+        e.set_beam_path(path);
+        e.evolve(std::vector<std::vector<std::vector<VertexId>>>{{{1, 2}, {1, 2}}}, 1);
+        size_t at_one = 0;
+        for (StateId s = 0; s < hg.num_states(); ++s) at_one += hg.get_state(s).step == 1;
+        return at_one;
+    };
+    EXPECT_EQ(run(false), 2u);
+    EXPECT_EQ(run(true), 1u);
+}

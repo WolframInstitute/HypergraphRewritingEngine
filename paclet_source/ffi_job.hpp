@@ -153,6 +153,9 @@ struct ParsedJob {
     // "Search" -> "BestFirst" and "SearchBudget": the states best-first search creates.
     bool best_first = false;
     size_t search_budget = 1000;
+    // "BeamCost" -> "Path": the step cap ranks by path cost and keeps one transition per
+    // successor (ParallelEvolutionEngine::set_beam_path).
+    bool beam_path = false;
 
     // Data selection flags - which components to include in output
     // By default all are included for backward compatibility

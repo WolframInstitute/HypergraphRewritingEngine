@@ -147,6 +147,7 @@ OPTIONS = {
     "transition_cost": ("TransitionCost", _transition_cost),
     "search": ("Search", _enum("Automatic", "BestFirst")),
     "search_budget": ("SearchBudget", _count),
+    "beam_cost": ("BeamCost", _enum("Transition", "Path")),
     "random_seed": ("RandomSeed", _seed),
     "branchial_step": ("BranchialStep", _branchial_step),
     "include_canonical_hashes": ("IncludeCanonicalHashes", _bool),

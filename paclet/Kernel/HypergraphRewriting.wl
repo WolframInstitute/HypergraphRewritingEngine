@@ -51,6 +51,7 @@ Options[HGEvolve] = {
   "TransitionCost" -> None,  (* None, or <|"Field" -> "Degree" | "Curvature" | "LoopCount" | "EdgeMultiplicity", "TimeStep" -> dt|>: a transition costs the heat residual of the field from parent to child (docs/TRANSITION_COST.md), plus the child's "StateCost". Read by "MaxStatesPerStep" and by "Search" -> "BestFirst". Runs on the CPU engine. *)
   "Search" -> Automatic,  (* Automatic, or "BestFirst": take the transition of lowest path cost next, one at a time, until "SearchBudget" states are created; the "PathCosts" property gives each state's path cost. Runs on the CPU engine. *)
   "SearchBudget" -> 1000,  (* The states a best-first search creates after the initial states. *)
+  "BeamCost" -> "Transition",  (* "Transition", or "Path": with "MaxStatesPerStep" and a cost, the step keeps its successors of lowest path cost (the parent's path cost plus the transition's cost), one transition into each; the "PathCosts" property gives each state's path cost. Runs on the CPU engine. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
      fiber of the rule -> multiway functor). Applies to the styled graph
      properties, whose edge payloads carry RuleIndex; Structure variants ship
@@ -1230,7 +1231,8 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "TransitionCost" -> Replace[ov["TransitionCost"],
       a_Association :> MapAt[N, a, Key["TimeStep"]] /; KeyExistsQ[a, "TimeStep"]],
     "Search" -> ov["Search"],
-    "SearchBudget" -> ov["SearchBudget"]
+    "SearchBudget" -> ov["SearchBudget"],
+    "BeamCost" -> ov["BeamCost"]
   |>
 ]
 

@@ -722,7 +722,8 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
 }
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step,
-                                                  uint32_t booked_at, HeldMatches* held) {
+                                                  uint32_t booked_at, HeldMatches* held,
+                                                  double path) {
     // A deferred rewrite's child matches its state itself, so it takes no held set.
     if (should_stop_.load(std::memory_order_relaxed)) {
         delete held;
@@ -743,9 +744,9 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
     // one that matches on it -- so the depth join is where it is counted.
     note_depth_task_pushed(booked_at);
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, match, step, booked_at, held]() {
+        [this, match, step, booked_at, held, path]() {
             DepthTaskGuard depth_guard(*this, booked_at);
-            execute_rewrite_task(match, step, held);
+            execute_rewrite_task(match, step, held, path);
         },
         EvolutionJobType::REWRITE
     );
@@ -1051,6 +1052,12 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_) || costed)
         for (RankedMatch& c : cands)
             c.succ = successor_identity(state, *c.match, costed ? &c.cost : nullptr);
+    // "BeamCost" -> "Path": a transition costs its child's path cost.
+    if (costed && beam_path_) {
+        const double base = beam_path_of(state);
+        for (RankedMatch& c : cands)
+            c.cost = hgcommon::state_cost_key(base + hgcommon::sp_value_of(c.cost));
+    }
     if (k != 0) keep_lowest_successors(cands, k);
     // MatchesPerStep counts transitions: each candidate is its own successor in the step's cut,
     // whatever identity the per-parent cut above read.
@@ -1065,7 +1072,9 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         // own ranks do not bound it, and then every candidate is offered.
         bool all_unique = true;
         for (const RankedMatch& c : cands) all_unique = all_unique && c.succ.unique != 0;
-        if (all_unique) keep_lowest_successors(cands, max_states_per_step_, costed, transition_costed());
+        if (all_unique)
+            keep_lowest_successors(cands, max_states_per_step_, costed, transition_costed(),
+                                   beam_path_);
         if (auto* list = step_candidates(step)) {
             for (const RankedMatch& c : cands) list->push(c, match_arena(step));
             HG_STAT(step_candidates_offered_.fetch_add(cands.size(), std::memory_order_relaxed));
@@ -1121,19 +1130,23 @@ uint64_t ParallelEvolutionEngine::successor_cost(uint64_t hash,
 }
 
 void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k,
-                                                     bool costed, bool per_transition) {
+                                                     bool costed, bool per_transition,
+                                                     bool cheapest_only) {
     const uint32_t n = static_cast<uint32_t>(cands.size());
     if (n == 0 || k == 0) return;
     std::vector<uint64_t> rank(n), succ_rank(n);
     std::vector<hgcommon::SuccessorIdentity> id(n);
     std::vector<uint32_t> order(n);
-    std::vector<uint8_t> lead(n);
+    std::vector<uint8_t> lead(n), cheap(n, 1u);
     for (uint32_t i = 0; i < n; ++i) { rank[i] = cands[i].rank; id[i] = cands[i].succ; }
     hgcommon::successor_ranks(rank.data(), id.data(), n, order.data(), succ_rank.data(),
                               lead.data());
     if (costed) {
         std::vector<uint64_t> cost(n);
         for (uint32_t i = 0; i < n; ++i) cost[i] = cands[i].cost;
+        if (cheapest_only)
+            hgcommon::successor_cheapest(id.data(), order.data(), n, cost.data(), rank.data(),
+                                         cheap.data());
         // A successor's cost is the lowest cost of a transition into it.
         if (per_transition) hgcommon::successor_lowest(id.data(), order.data(), n, cost.data());
         hgcommon::cost_successor_ranks(cost.data(), succ_rank.data(), n, order.data(),
@@ -1144,13 +1157,15 @@ void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& c
     std::vector<uint64_t> per_succ;
     for (uint32_t i = 0; i < n; ++i)
         if (lead[i]) per_succ.push_back(succ_rank[i]);
-    if (per_succ.size() <= k) return;
-    std::nth_element(per_succ.begin(), per_succ.begin() + static_cast<std::ptrdiff_t>(k - 1),
-                     per_succ.end());
-    const uint64_t cut = per_succ[k - 1];
+    uint64_t cut = ~uint64_t{0};
+    if (per_succ.size() > k) {
+        std::nth_element(per_succ.begin(), per_succ.begin() + static_cast<std::ptrdiff_t>(k - 1),
+                         per_succ.end());
+        cut = per_succ[k - 1];
+    }
     size_t w = 0;
     for (uint32_t i = 0; i < n; ++i)
-        if (succ_rank[i] <= cut) cands[w++] = cands[i];
+        if (succ_rank[i] <= cut && cheap[i]) cands[w++] = cands[i];
     cands.resize(w);
 }
 
@@ -1171,9 +1186,11 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
-    keep_lowest_successors(cands, max_states_per_step_, cost_active(),
-                           transition_costed());
-    for (const RankedMatch& c : cands) submit_rewrite_task(*c.match, step, step + 1);
+    keep_lowest_successors(cands, max_states_per_step_, cost_active(), transition_costed(),
+                           beam_path_);
+    for (const RankedMatch& c : cands)
+        submit_rewrite_task(*c.match, step, step + 1, nullptr,
+                            beam_path_ ? hgcommon::sp_value_of(c.cost) : 0.0);
     if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
 }
 
@@ -1523,6 +1540,24 @@ void ParallelEvolutionEngine::run_best_first() {
         ++created;
     }
     raise_worker_error();
+}
+
+double ParallelEvolutionEngine::beam_path_of(StateId state) const {
+    const auto have = beam_path_cost_.lookup(id_key(state));
+    if (!have) return 0.0;   // an initial state
+    double v = 0.0;
+    std::memcpy(&v, &*have, sizeof v);
+    return v;
+}
+
+const std::unordered_map<StateId, double>& ParallelEvolutionEngine::path_costs() const {
+    if (!beam_path_) return bf_path_cost_;
+    // Read between evolutions, with no worker running: every state's path cost, an initial
+    // state's 0.
+    beam_path_list_.clear();
+    for (StateId s = 0; s < hg_->num_states(); ++s)
+        if (!hg_->is_genesis_state(s)) beam_path_list_[s] = beam_path_of(s);
+    return beam_path_list_;
 }
 
 void ParallelEvolutionEngine::set_transition_cost(const hgcommon::TransitionCostSpec& spec,
@@ -2241,7 +2276,7 @@ bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uint32_t step,
-                                                   HeldMatches* held) {
+                                                   HeldMatches* held, double path) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
     // The source state's match set goes to the child, or is deleted on any return before it.
     std::unique_ptr<HeldMatches> own_held(held);
@@ -2286,6 +2321,11 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     if (rr.new_state == INVALID_ID) return;
     if (lineage_on_) label_rewrite(match, rr.raw_state, rr.produced_edges, rr.num_produced);
+    if (beam_path_) {
+        uint64_t bits = 0;
+        std::memcpy(&bits, &path, sizeof bits);
+        beam_path_cost_.insert_if_absent(id_key(rr.raw_state), bits);
+    }
     // Best-first search has one rewrite in flight, and its child's drain reads these.
     if (best_first_) {
         bf_path_cost_[rr.raw_state] = bf_next_.path_cost;

@@ -195,7 +195,7 @@ class Result:
         device              dict
         warnings            list of dicts (Kind, Count, Context, Partial)
         session, frontier   the session handle and its frontier's state ids (Session verbs)
-        path_costs          {state id: path cost} under search="BestFirst"
+        path_costs          {state id: path cost} under search="BestFirst" or beam_cost="Path"
         reduced             True when the evolution ran out of memory and the reply carries the
                             counts only
 

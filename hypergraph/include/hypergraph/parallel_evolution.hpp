@@ -946,6 +946,12 @@ private:
     std::unordered_map<StateId, double> bf_path_cost_;
     std::unordered_map<StateId, uint64_t> bf_path_key_;
     BfNode bf_next_{};
+    // "BeamCost" -> "Path": each state's path cost, by id_key, as the bits of a double. Written
+    // by the rewrite that creates the state (execute_rewrite_task) and read by its drain.
+    bool beam_path_{false};
+    ConcurrentMap<uint64_t, uint64_t> beam_path_cost_;
+    mutable std::unordered_map<StateId, double> beam_path_list_;
+    double beam_path_of(StateId state) const;
     void seed_best_first(StateId root, size_t index);
     void best_first_at_drain(StateId state, uint32_t step);
     void cost_best_first(std::vector<BfCandidate>& fresh);
@@ -1280,8 +1286,13 @@ public:
     // no transition is left. The step caps, the draws and sessions do not apply with it.
     void set_best_first(bool on, size_t budget);
     bool best_first() const { return best_first_; }
-    // Under best-first search, each state's path cost by raw state id.
-    const std::unordered_map<StateId, double>& path_costs() const { return bf_path_cost_; }
+    // "BeamCost" -> "Path" (docs/TRANSITION_COST.md): the step cap ranks a transition by its
+    // child's path cost, the parent's path cost plus the transition's cost, and keeps one
+    // transition into each kept successor, the ones of lowest (cost, rank).
+    void set_beam_path(bool on) { beam_path_ = on; }
+    bool beam_path() const { return beam_path_; }
+    // Under best-first search or "BeamCost" -> "Path", each state's path cost by raw state id.
+    const std::unordered_map<StateId, double>& path_costs() const;
     // Seed for the keyed draws (exploration_probability, transition_rate, the spine and the
     // matches_per_state_rule ranking) and for the rule-order shuffle. 0 is an ordinary seed for
     // the keyed draws, so their sample repeats run to run; only the rule-order shuffle draws
@@ -1664,9 +1675,9 @@ private:
     // `booked_at` is the depth the task is counted at: its own step, or the step above for a
     // rewrite the per-step selection submits after its own step has settled. `held`, when not
     // null, is the source state's match set, which the rewrite hands to the child it makes
-    // (MatchContext::held) or deletes.
+    // (MatchContext::held) or deletes. `path` is the child's path cost under "BeamCost" -> "Path".
     void submit_rewrite_task(const MatchRecord& match, uint32_t step, uint32_t booked_at,
-                             HeldMatches* held = nullptr);
+                             HeldMatches* held = nullptr, double path = 0.0);
     void submit_rewrite_task(const MatchRecord& match, uint32_t step) {
         submit_rewrite_task(match, step, step);
     }
@@ -1701,7 +1712,7 @@ private:
     bool complete_match(const ExpandTaskData& data, MatchRecord& out);
     bool undirected_rule_of(const ExpandTaskData& data, const EdgeId* edges, uint16_t& rule) const;
     void execute_rewrite_task(const MatchRecord& match, uint32_t step,
-                              HeldMatches* held = nullptr);
+                              HeldMatches* held = nullptr, double path = 0.0);
 
     // Per-state match join. The two ordering rules below are what make the drain exact, and
     // both are invariants rather than observations:
@@ -1794,8 +1805,11 @@ private:
     // rank, hgcommon::rank_cut). With `costed`, successors rank by (cost, successor rank)
     // (hgcommon::cost_successor_ranks). With `per_transition` (a "TransitionCost") the costs of
     // the transitions into one successor can differ, and the successor's cost is the lowest.
+    // With `cheapest_only` ("BeamCost" -> "Path") only the transitions of lowest (cost, rank)
+    // into each kept successor are kept (hgcommon::successor_cheapest).
     static void keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k,
-                                       bool costed = false, bool per_transition = false);
+                                       bool costed = false, bool per_transition = false,
+                                       bool cheapest_only = false);
     // At a state's drain: the chosen matches -- drain_candidates, and under
     // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under
     // MaxStatesPerStep added to their step's candidates (step_candidates_).

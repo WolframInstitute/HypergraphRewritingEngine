@@ -135,3 +135,28 @@ def test_callback_costs_that_are_not_real_numbers():
     with pytest.raises(TypeError):
         hg.evolve(RULES, CYCLE, 2, search="BestFirst", transition_cost=lambda p, c: "x",
                   data=["num_states"])
+
+
+PATH_RULES = [([["x"]], [["x", "x"]]), ([["x"]], [["x", "x", "x"]]),
+              ([["x", "x"]], [["x"] * 5]), ([["x", "x"]], [["x"] * 8]),
+              ([["x", "x", "x"]], [["x"] * 6])]
+PATH_COST = {2: 1.0, 3: 2.0, 5: 3.0, 8: 3.5, 6: 2.8}
+
+
+def test_beam_ranked_by_path_cost():
+    def cost(parent, child):
+        return PATH_COST[max(len(e) for e in child)]
+
+    def step_two(**options):
+        r = hg.evolve(PATH_RULES, [[1]], 2, max_states_per_step=2, transition_cost=cost,
+                      random_seed=7, data=["states"], **options)
+        rows = [i for i, s in enumerate(r.states.step.tolist()) if s == 2]
+        return r, sorted(max(len(v) for _, v in r.states.edges[i]) for i in rows)
+
+    r, arities = step_two(beam_cost="Path")
+    assert arities == [5, 8]
+    step = dict(zip(r.states.id.tolist(), r.states.step.tolist()))
+    assert sorted(c for s, c in r.path_costs.items() if step[s] == 2) == [4.0, 4.5]
+    assert step_two()[1] == [5, 6]
+    with pytest.warns(hg.EngineWarning, match="BeamCostNeedsCostAndCap"):
+        hg.evolve(PATH_RULES, [[1]], 2, beam_cost="Path", data=["num_states"])

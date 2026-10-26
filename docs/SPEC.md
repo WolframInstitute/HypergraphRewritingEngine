@@ -313,6 +313,13 @@ exact configuration. Sampling and capping options refine this as follows:
   state's path cost. The step caps, the draws, quotient exploration, `Generational` and
   `EventOrderingFunction` do not apply with it, and sessions refuse it. It runs on the CPU
   engine, and the GPU binary runs it there with a warning.
+- **`BeamCost` -> `"Path"`**: under `MaxStatesPerStep` with a cost, a transition ranks by its
+  child's path cost, the parent's path cost (0 for an initial state) plus the transition's cost.
+  A successor's path cost is the lowest over the transitions into it, and only the transitions
+  of lowest (path cost, rank) into a kept successor are taken (`hgcommon::successor_cheapest`),
+  so a successor is made once; under `Automatic` states that drops duplicate edge lists. The
+  reply's `"PathCosts"` gives each state's path cost. It runs on the CPU engine, and the GPU
+  binary runs it there with a warning.
 - **`Generational`** is the Wolfram model's single-way update. The evolution
   follows one history from each initial state, and each step is one generation. A state's
   matches are ordered by the standard order (`hgcommon::event_order_before` with

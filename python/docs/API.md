@@ -54,7 +54,7 @@ The stamp of the engine build: commit, variant (`python`) and configuration.
 | `device` | dict | `"Device"` |
 | `warnings` | list of dicts (`Kind`, `Count`, `Context`, `Partial`) | `"Warnings"` |
 | `session`, `frontier` | session handle, frontier state ids | `"Session"`, `"Frontier"` |
-| `path_costs` | dict of state id to path cost, under `search="BestFirst"` | `"PathCosts"` |
+| `path_costs` | dict of state id to path cost, under `search="BestFirst"` or `beam_cost="Path"` | `"PathCosts"` |
 | `reduced` | `True` when the evolution ran out of memory and the reply holds the counts only | `"Reduced"` |
 | `values` | dict of every key that is not a table or relation | |
 
@@ -95,6 +95,7 @@ Every array is a read-only NumPy view of the reply the engine built; nothing is 
 | `transition_cost` | `"TransitionCost"` | `None`, `{"Field": name, "TimeStep": dt}`, or a callable `f(parent_edges, child_edges) -> float` |
 | `search` | `"Search"` | `"Automatic"`, `"BestFirst"` |
 | `search_budget` | `"SearchBudget"` | int; the states best-first search creates (default 1000) |
+| `beam_cost` | `"BeamCost"` | `"Transition"` (default), `"Path"`: with `max_states_per_step` and a cost, rank by the child's path cost and keep one transition per successor |
 | `random_seed` | `"RandomSeed"` | int; `None` (the default) draws one from Python's `random` |
 | `branchial_step` | `"BranchialStep"` | int (1-based step, negative from the end) or `"all"`; default -1 |
 | `include_canonical_hashes` | `"IncludeCanonicalHashes"` | bool |
