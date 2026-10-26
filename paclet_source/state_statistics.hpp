@@ -186,6 +186,7 @@ inline constexpr MeasureName kMeasureNames[] = {
     {"BranchAlignment", hgcommon::SG_BRANCH_ALIGNMENT},
     {"Equilibrium", kMeasureEquilibrium},
     {"GeodesicAnalysis", hgcommon::SG_GEODESIC_ANALYSIS},
+    {"WaveFront", hgcommon::SG_WAVE_FRONT},
     {"Branchial", kMeasureBranchial},
 };
 uint32_t measure_bits(const std::string& name);

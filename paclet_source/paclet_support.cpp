@@ -1790,6 +1790,9 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"OrbitalVelocity", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
     {"RotationCurveExponent", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
     {"RotationCurveResidual", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"WaveFrontSize", 0.01, false, hgcommon::SG_WAVE_FRONT},
+    {"WaveFrontCoverage", 0.01, false, hgcommon::SG_WAVE_FRONT},
+    {"WaveReflectionStep", 0.01, false, hgcommon::SG_WAVE_FRONT},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges
@@ -1971,8 +1974,8 @@ struct StepPoolFinish::State {
     uint64_t events = 0;
     std::map<int64_t, uint64_t> rule_counts;
     // The radii present in each per-radius series: ball dimension, log geodesic count, orbital
-    // velocity (hgcommon::SP_BALL).
-    uint32_t radii[hgcommon::SP_SERIES] = {0, 0, 0};
+    // velocity, wave-front size (hgcommon::SP_BALL).
+    uint32_t radii[hgcommon::SP_SERIES] = {0, 0, 0, 0};
     uint32_t measures = hgcommon::SG_MEASURES_BASE;
     std::vector<wxf::WXFValue> out;   // one per task
     wxf::WXFValueAssociation header;  // Step .. ClassEntropyNormalized
@@ -2104,7 +2107,7 @@ StepPoolFinish::StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint6
     // interleave from SP_BALL with stride SP_SERIES.
     constexpr uint32_t S = hgcommon::SP_SERIES;
     for (const PoolPart& p : s_->parts) {
-        bool seen[S] = {false, false, false};
+        bool seen[S] = {false, false, false, false};
         uint32_t found = 0;
         for (auto it = p.entries.rbegin(); it != p.entries.rend() && it->slot >= hgcommon::SP_BALL;
              ++it) {
@@ -2121,7 +2124,9 @@ StepPoolFinish::StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint6
 StepPoolFinish::~StepPoolFinish() = default;
 
 size_t StepPoolFinish::tasks() const {
-    return kTaskBall + s_->radii[0] + s_->radii[1] + s_->radii[2];
+    size_t n = kTaskBall;
+    for (uint32_t k = 0; k < hgcommon::SP_SERIES; ++k) n += s_->radii[k];
+    return n;
 }
 
 void StepPoolFinish::run(size_t t) {
@@ -2185,6 +2190,8 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
         rec.push_back({wxf::WXFValue("LogGeodesicCount"), series(1)});
     if (requested(hgcommon::SG_GEODESIC_ANALYSIS, s.measures))
         rec.push_back({wxf::WXFValue("RotationCurve"), series(2)});
+    if (requested(hgcommon::SG_WAVE_FRONT, s.measures))
+        rec.push_back({wxf::WXFValue("WaveFront"), series(3)});
     return rec;
 }
 

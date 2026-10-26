@@ -468,6 +468,7 @@ enum : uint32_t {
                                          // geodesic_curvature: G has an edge
     SG_LENSING = 1u << 25,               // lensing_*: a pair of G' passes near the centre, M > 0
     SG_ROTATION = 1u << 26,              // orbital_velocity, rotation_*: R_C >= 2
+    SG_WAVE_FRONT = 1u << 27,            // wave_*: |G'| >= 2
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
@@ -478,7 +479,8 @@ constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE | SG_LENSING | SG_R
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
                                      SG_DIMENSION_GRADIENT | SG_TOPOLOGY | SG_METRIC_TENSOR |
-                                     SG_HOLONOMY | SG_BRANCH_ALIGNMENT | SG_GEODESIC_ANALYSIS;
+                                     SG_HOLONOMY | SG_BRANCH_ALIGNMENT | SG_GEODESIC_ANALYSIS |
+                                     SG_WAVE_FRONT;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -652,6 +654,14 @@ struct SgGeometry {
     // The principal moments of the curvature-weighted inertia of G''s spectral embedding over
     // the total mass, descending (state_alignment_core.hpp).
     double alignment_moment[3] = {0.0, 0.0, 0.0};
+    // The wave of FindAdvancingInfraFront from each vertex of G' for T = 2 D' steps: the mean
+    // front size, the mean fraction of G' the fronts visit, and the mean first step whose front
+    // holds a vertex nearer the origin than the step.
+    double wave_front_size = 0.0;
+    double wave_front_coverage = 0.0;
+    double wave_reflection_step = 0.0;
+    uint32_t wave_steps = 0;             // T: entries written to the wave-front output
+    uint32_t reserved3 = 0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -709,6 +719,9 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & (SG_LENSING | SG_ROTATION)) bytes += 2 * 8 + n1 * (2 * 4) + 3 * 8;
     if (want & SG_LENSING) bytes += size_t{lanes} * n1 * (4 * 4) + n1 * (4 + 3 * 8) + 8 * 8;
     if (want & SG_ROTATION) bytes += n1 * (2 * 4 + 8) + 3 * 8;
+    // SG_WAVE_FRONT adds per lane and per vertex four marks and three front lists (4 bytes each)
+    // and per lane 2 n + 4 sums (8 bytes each).
+    if (want & SG_WAVE_FRONT) bytes += size_t{lanes} * (n1 * 7 * 4 + (2 * n1 + 2) * 8) + 3 * 8;
     // The counting scratch of state_topology_core.hpp's st_families_of: four arrays of n + 1
     // words.
     if (want & (SG_TOPOLOGY | SG_METRIC_TENSOR | SG_HOLONOMY)) bytes += 4 * (n1 * 4 + 8);
@@ -918,6 +931,8 @@ namespace common {
 // eccentricity; out.geodesic_radii is D.
 // `rotation_curve`, with SG_ROTATION, receives in entries 0..R_C-1, up to `rotation_capacity`
 // entries, the orbital velocity v(r) at r = 1..R_C; out.rotation_radii is R_C.
+// `wave_front`, with SG_WAVE_FRONT, receives in entries 0..T-1, up to `wave_capacity` entries,
+// the mean front size at i = 1..T; out.wave_steps is T.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
@@ -929,7 +944,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                                  double* log_geodesic = nullptr,
                                  uint32_t log_geodesic_capacity = 0,
                                  double* rotation_curve = nullptr,
-                                 uint32_t rotation_capacity = 0) {
+                                 uint32_t rotation_capacity = 0,
+                                 double* wave_front = nullptr,
+                                 uint32_t wave_capacity = 0) {
     const bool want_growth = (want & SG_VOLUME_GROWTH) != 0;
     const bool want_geodesic = (want & SG_GEODESIC) != 0;
     const bool want_nonlazy = (want & SG_NONLAZY_OLLIVIER) != 0;
@@ -1034,6 +1051,13 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     uint32_t* orbit_len = want_rotation ? arena.take<uint32_t>(n1) : nullptr;
     double* orbit_v = want_rotation ? arena.take<double>(n1) : nullptr;
     uint32_t* orbit_mark = want_rotation ? arena.take<uint32_t>(n1) : nullptr;
+    // Wave front: per lane four marks and three front lists per vertex, and the sums: the front
+    // sizes at i = 0..2n, the vertices visited and the reflection steps.
+    const bool want_wave = (want & SG_WAVE_FRONT) != 0;
+    const size_t wave_sums = 2 * n1 + 2;
+    uint32_t* wave_mark_all = want_wave ? arena.take<uint32_t>(L * 4 * n1) : nullptr;
+    uint32_t* wave_list_all = want_wave ? arena.take<uint32_t>(L * 3 * n1) : nullptr;
+    uint64_t* wave_sum_all = want_wave ? arena.take<uint64_t>(L * wave_sums) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -1447,6 +1471,107 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     }
     uint32_t Rs = UINT32_MAX;
     for (uint32_t i = 0; i < ns; ++i) if (ecc[vat(i)] < Rs) Rs = ecc[vat(i)];
+    // WAVE FRONT (docs/SPEC.md, "StepStatistics wave front"): the fronts of
+    // FindAdvancingInfraFront from each origin of G', strided over the lanes, for i = 1..T,
+    // T = 2 D'. A front's step from (S_(i-2), S_(i-1)) to S_i reads d(S_(i-2), .) from marks
+    // stamped with i: prev[u] for u in S_(i-2), near[u] for a neighbour of S_(i-2) outside it.
+    // Every vertex of S_(i-1) is in S_(i-2) or a neighbour of it, so that distance is 0 or 1 on
+    // S_(i-1) and 0, 1 or 2 on its neighbours. put[u] = i keeps S_i free of repeats; seen[u] is
+    // the origin's number plus 1 once u is in a front. The sums are integers, so the result is
+    // the same for every lane count.
+    if (want_wave && ns >= 2 && Rs > 0) {
+        uint32_t dmax = 0;
+        for (uint32_t i = 0; i < ns; ++i) if (ecc[vat(i)] > dmax) dmax = ecc[vat(i)];
+        const uint32_t T = 2 * dmax;
+        uint32_t* wprev = wave_mark_all + size_t{me} * 4 * n1;
+        uint32_t* wnear = wprev + n1;
+        uint32_t* wput = wnear + n1;
+        uint32_t* wseen = wput + n1;
+        uint32_t* list[3] = {wave_list_all + size_t{me} * 3 * n1,
+                             wave_list_all + size_t{me} * 3 * n1 + n1,
+                             wave_list_all + size_t{me} * 3 * n1 + 2 * n1};
+        uint64_t* wsum = wave_sum_all + size_t{me} * wave_sums;
+        for (size_t k = 0; k < wave_sums; ++k) wsum[k] = 0;
+        for (size_t k = 0; k < n1; ++k) wseen[k] = 0;
+        for (uint32_t oi = me; oi < ns; oi += L) {
+            const uint32_t v = vat(oi);
+            for (size_t k = 0; k < n1; ++k) { wprev[k] = 0; wnear[k] = 0; wput[k] = 0; }
+            uint32_t* pv = list[0];   // S_(i-2)
+            uint32_t* cu = list[1];   // S_(i-1)
+            uint32_t* nx = list[2];   // S_i
+            uint32_t np = 1, nc = 1;
+            pv[0] = v;
+            cu[0] = v;
+            const uint32_t stamp = oi + 1;
+            wseen[v] = stamp;
+            uint64_t covered = 1;
+            uint32_t reflection = 0;
+            for (uint32_t i = 1; i <= T; ++i) {
+                for (uint32_t k = 0; k < np; ++k) wprev[pv[k]] = i;
+                for (uint32_t k = 0; k < np; ++k)
+                    for (uint32_t e = g.off[pv[k]]; e < g.off[pv[k] + 1]; ++e) {
+                        const uint32_t w = g.nbr[e];
+                        if (wprev[w] != i) wnear[w] = i;
+                    }
+                auto front_dist = [&](uint32_t w) -> uint32_t {
+                    return wprev[w] == i ? 0u : (wnear[w] == i ? 1u : 2u);
+                };
+                uint32_t nn = 0;
+                auto add = [&](uint32_t w) {
+                    if (wput[w] == i) return;
+                    wput[w] = i;
+                    nx[nn++] = w;
+                };
+                bool reflected = false;
+                for (uint32_t k = 0; k < nc; ++k) {
+                    const uint32_t u = cu[k];
+                    const uint32_t du = front_dist(u);
+                    bool out_step = false;
+                    for (uint32_t e = g.off[u]; e < g.off[u + 1]; ++e)
+                        if (front_dist(g.nbr[e]) == du + 1) { out_step = true; add(g.nbr[e]); }
+                    if (out_step) continue;
+                    reflected = true;
+                    bool in_step = false;
+                    for (uint32_t e = g.off[u]; e < g.off[u + 1]; ++e)
+                        if (front_dist(g.nbr[e]) + 1 == du) { in_step = true; add(g.nbr[e]); }
+                    if (!in_step) add(u);
+                }
+                if (reflected && reflection == 0) reflection = i;
+                wsum[i] += nn;
+                for (uint32_t k = 0; k < nn; ++k)
+                    if (wseen[nx[k]] != stamp) { wseen[nx[k]] = stamp; ++covered; }
+                uint32_t* t = pv;
+                pv = cu;
+                cu = nx;
+                nx = t;
+                np = nc;
+                nc = nn;
+            }
+            wsum[2 * n1] += covered;
+            wsum[2 * n1 + 1] += reflection;
+        }
+        par.sync();
+        if (par.leader()) {
+            const double origins = static_cast<double>(ns);
+            uint64_t total = 0, covered = 0, reflection = 0;
+            for (uint32_t i = 1; i <= T; ++i) {
+                uint64_t at = 0;
+                for (uint32_t l = 0; l < L; ++l) at += wave_sum_all[size_t{l} * wave_sums + i];
+                total += at;
+                if (i <= wave_capacity) wave_front[i - 1] = static_cast<double>(at) / origins;
+            }
+            for (uint32_t l = 0; l < L; ++l) {
+                covered += wave_sum_all[size_t{l} * wave_sums + 2 * n1];
+                reflection += wave_sum_all[size_t{l} * wave_sums + 2 * n1 + 1];
+            }
+            out.wave_front_size = static_cast<double>(total) / dm_mul(origins, static_cast<double>(T));
+            out.wave_front_coverage = static_cast<double>(covered) / dm_mul(origins, origins);
+            out.wave_reflection_step = static_cast<double>(reflection) / origins;
+            out.wave_steps = T;
+            out.defined |= SG_WAVE_FRONT;
+        }
+        par.sync();
+    }
     const bool whole = connected && radius > 0 && (want & (SG_HAUSDORFF | SG_RICCI | SG_FISHER));
     const bool part = want_sub && ns >= 2 && Rs > 0;
     if (!whole && !part) return true;
@@ -1814,7 +1939,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                              double* vertex_values = nullptr, double* log_geodesic = nullptr,
                              uint32_t log_geodesic_capacity = 0,
                              uint32_t graph = SG_GRAPH_CONSECUTIVE,
-                             double* rotation_curve = nullptr, uint32_t rotation_capacity = 0) {
+                             double* rotation_curve = nullptr, uint32_t rotation_capacity = 0,
+                             double* wave_front = nullptr, uint32_t wave_capacity = 0) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -1844,7 +1970,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     const size_t built = arena.used;
     if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
                         largest_n, dists, vertex_curvature, vertex_values, log_geodesic,
-                        log_geodesic_capacity, rotation_curve, rotation_capacity)) {
+                        log_geodesic_capacity, rotation_curve, rotation_capacity, wave_front,
+                        wave_capacity)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
         needed += arena.extra;
         return false;

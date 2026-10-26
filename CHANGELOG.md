@@ -54,6 +54,11 @@
   state's canonical hash and edge ranks only when the initial state has a transition. A
   900-edge initial state with no match took 3.8 s, all in that computation.
 
+- `"StepStatisticsMeasures"` `"WaveFront"` adds `"WaveFrontSize"`, `"WaveFrontCoverage"` and
+  `"WaveReflectionStep"` to `"Invariants"` and the per-step key `"WaveFront"`. They follow the wave
+  of InfraGeometry's `FindAdvancingInfraFront` from every vertex of a state's largest component
+  for twice its diameter in steps, on both engines.
+
 - On the GPU, a step of `"MatchesPerStep"` that keeps several transitions of one state copies the
   state's held matches with the whole block. The copies ran on one thread and took most of each
   step: a 40-step `"StepStatistics"` run on a 9 x 9 torus spent 250 ms on the device, now 147 ms.

@@ -555,6 +555,7 @@ list adds the families it names:
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
 | `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature`, `LensingDeflection`, `LensingImpactParameter`, `LensingDeflectionRatio`, `OrbitalVelocity`, `RotationCurveExponent`, `RotationCurveResidual`, `RotationCurve` | geodesic analysis |
+| `"WaveFront"` | `WaveFrontSize`, `WaveFrontCoverage`, `WaveReflectionStep`, `WaveFront` | wave front |
 | `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
 | `"MetricTensor"` | `MetricTensorGap` | metric tensor |
 | `"Holonomy"` | `HolonomyTriangle`, `HolonomySquare` | holonomy |
@@ -786,6 +787,16 @@ interior radii, with a curve called flat above 0.1
 threshold 0.1 have no derivation in the source, and the largest value over the radii describes
 the flattest stretch of the curve, not the curve. `RotationCurveExponent` is 0 for a flat
 curve.
+**`StepStatistics` wave front.** The family `"WaveFront"` adds three `Invariants` entries and the per-step key `WaveFront`. They follow the wave of Infrageometry's `FindAdvancingInfraFront[graph, origin, steps]` (WolframInstitute/InfraGeometry@1138045:InfraGeometry/Kernel/EuclideanInfrageometry/InfraSet.wl:26-42) from every vertex of G'. From an origin v, the fronts start at S_-1 = S_0 = {v}. S_i+1 is the union over the vertices u of S_i of: the neighbours w of u with d(S_i-1, w) = d(S_i-1, u) + 1, or when u has none, the neighbours w with d(S_i-1, w) = d(S_i-1, u) - 1, or when u has none of those either, u itself. The pair (S_i-1, S_i) is the state of a discrete second-order wave equation. The fronts run for i = 1..T with T = 2 D', D' the diameter of G', for every origin v of G'.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `WaveFrontSize` | the mean of \|S_i\| over the origins and i = 1..T | \|G'\| < 2 |
+| `WaveFrontCoverage` | the mean over the origins of the fraction of the vertices of G' in S_0 ∪ ... ∪ S_T | \|G'\| < 2 |
+| `WaveReflectionStep` | the mean over the origins of the least i >= 1 for which S_i holds a vertex u with d(v, u) < i | \|G'\| < 2 |
+
+The per-step key `WaveFront` maps each i = 1..T to the summary, over the states with \|G'\| >= 2 and i <= T, of the mean over the origins of \|S_i\|, weighted as `Invariants`. Until the first reflection S_i is the sphere of radius i about v, so `WaveReflectionStep` is at most ecc(v) + 1 <= T. Every vertex of S_i is in S_i-1 or a neighbour of it, so d(S_i-1, u) is 0 or 1 for u in S_i and 0, 1 or 2 for its neighbours: each step marks S_i-1 and its neighbours and reads the marks, with no search over G'. One origin's wave takes O(sum over i of the degrees of S_i-1 and S_i), at most O(T (\|V'\| + \|E'\|)), and the family O(\|V'\| D' (\|V'\| + \|E'\|)) per state, the origins split over the lanes. A step reads only the degrees of S_i-1 and S_i, the vertices the step rule itself reads, so each origin costs the work of its fronts. The \|V'\| factor is the definition's average over every origin. On a cycle of n vertices the front from any origin holds the two vertices at distance i for i < n/2.
+
 **`StepStatistics` topology.** The family `"Topology"` adds four `Invariants` entries: Betti numbers over GF(2), the field of two elements. The clique complex of G has a k-simplex for each set of k + 1 vertices of G that are joined in pairs. The Vietoris-Rips complex at scale r is Infrageometry's `BallIntersectionComplex[vertices, r, 2]` with its option `Metric` set to the graph G (Infrageometry@ffa5fe4:Kernel/InfraTopology/BallIntersectionComplex.wl:29-70): a set of vertices is a simplex when every two of them have balls of radius r with a common vertex. Two vertices at distance d have such balls when d <= 2r, so at r = 1 the complex is the clique complex of G², the graph that joins two vertices of G at distance 1 or 2. With V, E, T and Q the vertices, edges, triangles and tetrahedra of a complex and ∂k its boundary maps over GF(2), b0 = V - rank ∂1, b1 = E - rank ∂1 - rank ∂2 and b2 = T - rank ∂2 - rank ∂3.
 
 | Entry | Definition | Undefined when |

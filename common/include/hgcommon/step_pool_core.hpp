@@ -29,18 +29,20 @@ namespace common {
 // The slots. Slots below SP_MULTIPLICITY and from SP_DIST_SUM on hold doubles as sp_key_of
 // keys; SP_ARITY, SP_DEGREE and SP_MULTIPLICITY hold integers as themselves.
 enum : uint32_t {
-    SP_INVARIANTS = 0,           // the 62 "Invariants" in reply order, slots 0..61
-    SP_NUM_INVARIANTS = 62,
+    SP_INVARIANTS = 0,           // the 65 "Invariants" in reply order, slots 0..64
+    SP_NUM_INVARIANTS = 65,
     SP_ARITY = SP_NUM_INVARIANTS,        // a hyperedge's arity
     SP_DEGREE = SP_NUM_INVARIANTS + 1,   // a vertex's slot degree
     SP_MULTIPLICITY = SP_NUM_INVARIANTS + 2,  // a class's raw state count, weight 1 per class
     SP_DIST_SUM = SP_NUM_INVARIANTS + 3, // distribution k's sum of x^(j+1): slot SP_DIST_SUM +
                                          // 8 k + 2 j for its high double, + 1 for its low double
     SP_BALL = SP_DIST_SUM + 8 * SG_DISTS,  // the ball-growth dimension at radius r: slot
-                                           // SP_BALL + 3 (r - 1); the mean log geodesic count
-                                           // at distance d: slot SP_BALL + 3 (d - 1) + 1; the
-                                           // orbital velocity at radius r: SP_BALL + 3 (r - 1) + 2
-    SP_SERIES = 3,                         // the per-radius series interleaved from SP_BALL
+                                           // SP_BALL + 4 (r - 1); the mean log geodesic count
+                                           // at distance d: slot SP_BALL + 4 (d - 1) + 1; the
+                                           // orbital velocity at radius r: SP_BALL + 4 (r - 1) + 2;
+                                           // the mean wave-front size at step i:
+                                           // SP_BALL + 4 (i - 1) + 3
+    SP_SERIES = 4,                         // the per-radius series interleaved from SP_BALL
 };
 
 HG_HD inline bool sp_integer_slot(uint32_t slot) {
@@ -107,7 +109,8 @@ HG_HD inline uint32_t sp_invariant_bit(uint32_t slot) {
     if (slot <= 51) return SG_BRANCH_ALIGNMENT;
     if (slot <= 55) return SG_GEODESIC_BUNDLE;
     if (slot <= 58) return SG_LENSING;
-    return SG_ROTATION;
+    if (slot <= 61) return SG_ROTATION;
+    return SG_WAVE_FRONT;
 }
 
 // The `want` bit of state_record that computes "Invariants" slot `slot`: its defined bit, except
@@ -177,6 +180,9 @@ HG_HD inline bool sp_invariant(const StateInvariantValues& s, const SgGeometry& 
         case 59: out = g.orbital_velocity; break;
         case 60: out = g.rotation_exponent; break;
         case 61: out = g.rotation_residual; break;
+        case 62: out = g.wave_front_size; break;
+        case 63: out = g.wave_front_coverage; break;
+        case 64: out = g.wave_reflection_step; break;
         default: return false;
     }
     return true;
@@ -221,6 +227,7 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         put(SP_BALL + SP_SERIES * d + 1, r.geodesic()[d]);
     for (uint32_t k = 0; k < r.num_rotation; ++k)
         put(SP_BALL + SP_SERIES * k + 2, r.rotation()[k]);
+    for (uint32_t k = 0; k < r.num_wave; ++k) put(SP_BALL + SP_SERIES * k + 3, r.wave()[k]);
 }
 
 }  // namespace common

@@ -387,7 +387,7 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                                         "StepStatisticsMeasures '" + k + "' is not one of "
                                         "VolumeGrowth, Geodesics, EdgeCurvature, Combinatorial, "
                                         "Particles, DimensionGradient, Topology, MetricTensor, Holonomy, "
-                                        "BranchAlignment, Equilibrium, GeodesicAnalysis, "
+                                        "BranchAlignment, Equilibrium, GeodesicAnalysis, WaveFront, "
                                         "Branchial");
                                 bits |= bit;
                             }

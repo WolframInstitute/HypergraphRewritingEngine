@@ -34,7 +34,10 @@ sgrGeodesicBundle::usage = "sgrGeodesicBundle[edges] gives the GeodesicProperTim
 sgrLensing::usage = "sgrLensing[edges] gives the LensingDeflection, LensingImpactParameter and LensingDeflectionRatio of a state, each Missing[] when no pair of the largest component passes near the centre.";
 sgrRotationCurve::usage = "sgrRotationCurve[edges] gives the orbital velocities v(r), r = 1..R_C, about the vertices of greatest local dimension, or {} when R_C < 2.";
 sgrRotation::usage = "sgrRotation[edges] gives the OrbitalVelocity, RotationCurveExponent and RotationCurveResidual of a state, each Missing[] when R_C < 2.";
-sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
+sgrWaveFronts::usage = "sgrWaveFronts[edges] gives, for each vertex v of the largest component G', the fronts S_1..S_T of the wave from v (FindAdvancingInfraFront of WolframInstitute/InfraGeometry), T = 2 D' for D' the diameter of G', as <|\"Graph\" -> G', \"Steps\" -> T, \"Fronts\" -> <|v -> {S_1, ..., S_T}, ...|>|>; Missing[] when G' has fewer than 2 vertices.";
+sgrWaveFrontCurve::usage = "sgrWaveFrontCurve[edges] gives, for i = 1..T, the mean over the origins of G' of the front size |S_i|, or {} when G' has fewer than 2 vertices.";
+sgrWaveFront::usage = "sgrWaveFront[edges] gives the WaveFrontSize, WaveFrontCoverage and WaveReflectionStep of a state, each Missing[] when G' has fewer than 2 vertices.";
+sgrEdgeInvariants::usage ="sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
 sgrTopology::usage = "sgrTopology[edges] gives CliqueBetti0, CliqueBetti1, CliqueBetti2 (the Betti numbers over GF(2) of the clique complex of the state's graph) and RipsBetti1 (of the clique complex of its square).";
@@ -226,7 +229,39 @@ sgrRotation[edges_List] := Module[{v = sgrRotationCurve[edges], x, y, n, a},
   <|"OrbitalVelocity" -> N[Mean[v], 20], "RotationCurveExponent" -> N[n, 20],
     "RotationCurveResidual" -> N[Sqrt[Mean[(y - a - n x)^2]], 20]|>];
 
-geometryNames = Join[geodesicBundleNames, lensingNames, rotationNames, {"CliqueBetti0",
+(* Wave front (docs/SPEC.md, "StepStatistics wave front"): from each vertex v of G', the state
+   (S_(i-1), S_i) with S_(-1) = S_0 = {v} steps to (S_i, S_(i+1)), each u of S_i moving to its
+   neighbours one step farther from S_(i-1) than u, else to its neighbours one step nearer, else
+   staying, as FindAdvancingInfraFront does; distances to S_(i-1) from GraphDistanceMatrix of G'.
+   T = 2 D'. *)
+waveFrontNames = {"WaveFrontSize", "WaveFrontCoverage", "WaveReflectionStep"};
+waveFrontsFrom[g_Graph, dm_, idx_, v_, t_] := Module[{vs = VertexList[g], step},
+  step = Function[pair, Module[{prev = pair[[1]], cur = pair[[2]], dp},
+    dp = AssociationThread[vs, Min /@ Transpose[dm[[idx /@ prev]]]];
+    {cur, Union[Catenate[Function[u, With[
+        {out = Select[AdjacencyList[g, u], dp[#] == dp[u] + 1 &],
+         in = Select[AdjacencyList[g, u], dp[#] == dp[u] - 1 &]},
+        Which[out =!= {}, out, in =!= {}, in, True, {u}]]] /@ cur]]}]];
+  Rest[NestList[step, {{v}, {v}}, t][[All, 2]]]];
+sgrWaveFronts[edges_List] := Module[{gp = largestComponentGraph[edges], vs, dm, idx, t},
+  vs = VertexList[gp];
+  If[Length[vs] < 2, Return[Missing[]]];
+  dm = GraphDistanceMatrix[gp]; idx = AssociationThread[vs -> Range[Length[vs]]];
+  t = 2 Max[dm];
+  <|"Graph" -> gp, "Steps" -> t, "Distances" -> dm, "Index" -> idx,
+    "Fronts" -> AssociationMap[waveFrontsFrom[gp, dm, idx, #, t] &, vs]|>];
+sgrWaveFrontCurve[edges_List] := With[{w = sgrWaveFronts[edges]},
+  If[MissingQ[w], {}, N[Mean[Map[Length, Values[w["Fronts"]], {2}]], 20]]];
+sgrWaveFront[edges_List] := Module[{w = sgrWaveFronts[edges], n, dm, idx, cover, refl},
+  If[MissingQ[w], Return[AssociationMap[Missing[] &, waveFrontNames]]];
+  n = Length[w["Fronts"]]; dm = w["Distances"]; idx = w["Index"];
+  cover = KeyValueMap[Length[Union[{#1}, Catenate[#2]]]/n &, w["Fronts"]];
+  refl = KeyValueMap[Function[{v, fronts}, SelectFirst[Range[Length[fronts]],
+    Function[i, AnyTrue[fronts[[i]], dm[[idx[v], idx[#]]] < i &]]]], w["Fronts"]];
+  <|"WaveFrontSize" -> N[Mean[Flatten[Map[Length, Values[w["Fronts"]], {2}]]], 20],
+    "WaveFrontCoverage" -> N[Mean[cover], 20], "WaveReflectionStep" -> N[Mean[refl], 20]|>];
+
+geometryNames = Join[geodesicBundleNames, lensingNames, rotationNames, waveFrontNames, {"CliqueBetti0",
   "CliqueBetti1", "CliqueBetti2", "RipsBetti1",
   "MetricTensorGap", "HolonomyTriangle", "HolonomySquare", "AlignmentMoment1", "AlignmentMoment2",
   "AlignmentMoment3", "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
@@ -590,6 +625,7 @@ sgrStateGeometry[edges_List] := Module[
     Sequence @@ Normal[N[sgrGeodesicBundle[edges]]],
     Sequence @@ Normal[N[sgrLensing[edges]]],
     Sequence @@ Normal[N[sgrRotation[edges]]],
+    Sequence @@ Normal[N[sgrWaveFront[edges]]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
       Thread[growthNames -> If[growth === {}, ConstantArray[Missing[], 6], Mean[growth]]]]|>];
 

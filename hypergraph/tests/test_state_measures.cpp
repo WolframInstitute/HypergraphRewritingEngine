@@ -31,6 +31,7 @@ struct Measured {
     std::vector<double> vv;
     std::vector<double> log_geodesic;   // the mean ln sigma at d = 1..D
     std::vector<double> rotation;       // the orbital velocity at r = 1..R_C
+    std::vector<double> wave;           // the mean wave-front size at i = 1..T
     uint32_t n = 0;
     double at(uint32_t k, uint32_t v) const { return vv[k * n + v]; }
 };
@@ -45,6 +46,7 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
     r.vv.assign(hgcommon::SG_VERTEX_VALUES * slots, 0.0);
     r.log_geodesic.assign(slots + 1, 0.0);
     r.rotation.assign(slots + 1, 0.0);
+    r.wave.assign(2 * (slots + 1), 0.0);
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), r.g, ball.data(),
                                         static_cast<uint32_t>(ball.size()), needed, ~0u,
@@ -52,7 +54,8 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
                                         r.vv.data(), r.log_geodesic.data(),
                                         static_cast<uint32_t>(r.log_geodesic.size()),
                                         hgcommon::SG_GRAPH_CONSECUTIVE, r.rotation.data(),
-                                        static_cast<uint32_t>(r.rotation.size()))) {
+                                        static_cast<uint32_t>(r.rotation.size()), r.wave.data(),
+                                        static_cast<uint32_t>(r.wave.size()))) {
         EXPECT_GT(needed, scratch.size());
         scratch.resize(needed);
     }
@@ -60,6 +63,7 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
     r.vv.resize(hgcommon::SG_VERTEX_VALUES * r.n);
     r.log_geodesic.resize(r.g.geodesic_radii);
     r.rotation.resize(r.g.rotation_radii);
+    r.wave.resize(r.g.wave_steps);
     return r;
 }
 
@@ -702,4 +706,63 @@ TEST(StateMeasures, HexagonalPatchRotationCurve) {
     EXPECT_NEAR(m.g.rotation_exponent, 0.0, 1e-14);
     EXPECT_NEAR(m.g.orbital_velocity, 3.0 / pi, 1e-15);
     EXPECT_FALSE(measure(cycle(8)).g.defined & hgcommon::SG_ROTATION);
+}
+
+// The wave front (docs/SPEC.md, "StepStatistics wave front") on C6, T = 2 D' = 6. From any
+// origin v: S1 = {v - 1, v + 1}, S2 = {v - 2, v + 2}, S3 = {v + 3}; v + 3 has no neighbour
+// farther from S2, so it reflects to S4 = {v - 2, v + 2}, then S5 = {v - 1, v + 1}, S6 = {v}.
+// Sizes 2, 2, 1, 2, 2, 1, mean 10/6; every vertex is visited; S4 is the first front with a
+// vertex nearer v than its step.
+TEST(StateMeasures, CycleOfSixWaveFront) {
+    const Measured m = measure(cycle(6));
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_WAVE_FRONT);
+    EXPECT_EQ(m.g.wave_steps, 6u);
+    EXPECT_EQ(m.wave, (std::vector<double>{2, 2, 1, 2, 2, 1}));
+    EXPECT_EQ(m.g.wave_front_size, 10.0 / 6.0);
+    EXPECT_EQ(m.g.wave_front_coverage, 1.0);
+    EXPECT_EQ(m.g.wave_reflection_step, 4.0);
+}
+
+// P3 = 1 - 2 - 3, T = 4. From 1: {2}, {3}, {2} (3 reflects), {1}; from 2: {1, 3}, {2} (both
+// reflect), {1, 3}, {2}; from 3 as from 1. Mean sizes 4/3, 1, 4/3, 1; the mean size 14/12;
+// reflection steps 3, 2, 3.
+TEST(StateMeasures, PathOfThreeWaveFront) {
+    const Measured m = measure({{1, 2}, {2, 3}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_WAVE_FRONT);
+    EXPECT_EQ(m.g.wave_steps, 4u);
+    EXPECT_EQ(m.wave, (std::vector<double>{4.0 / 3.0, 1.0, 4.0 / 3.0, 1.0}));
+    EXPECT_EQ(m.g.wave_front_size, 14.0 / 12.0);
+    EXPECT_EQ(m.g.wave_front_coverage, 1.0);
+    EXPECT_EQ(m.g.wave_reflection_step, 8.0 / 3.0);
+}
+
+// One edge, also given twice, T = 2: each origin's front is the other vertex, then itself.
+// A state of one vertex (a self-loop) or of no edge has no wave front.
+TEST(StateMeasures, WaveFrontEdgeCases) {
+    for (const auto& edges : {std::vector<std::vector<uint32_t>>{{1, 2}},
+                              std::vector<std::vector<uint32_t>>{{1, 2}, {2, 1}},
+                              std::vector<std::vector<uint32_t>>{{1, 2}, {1, 1}}}) {
+        const Measured m = measure(edges);
+        ASSERT_TRUE(m.g.defined & hgcommon::SG_WAVE_FRONT);
+        EXPECT_EQ(m.wave, (std::vector<double>{1.0, 1.0}));
+        EXPECT_EQ(m.g.wave_front_size, 1.0);
+        EXPECT_EQ(m.g.wave_front_coverage, 1.0);
+        EXPECT_EQ(m.g.wave_reflection_step, 2.0);
+    }
+    EXPECT_FALSE(measure({{1, 1}}).g.defined & hgcommon::SG_WAVE_FRONT);
+    EXPECT_FALSE(measure({{1}, {2}}).g.defined & hgcommon::SG_WAVE_FRONT);
+    EXPECT_FALSE(measure({}).g.defined & hgcommon::SG_WAVE_FRONT);
+}
+
+// On the 6 x 6 torus every origin gives the same fronts: until the first reflection the sphere
+// of radius i, 4i vertices for i < 3, then 10 at i = 3 (|S(v, 3)| on the 6 x 6 torus).
+TEST(StateMeasures, TorusWaveFrontStartsWithSpheres) {
+    const Measured m = measure(grid(6, 6, true));
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_WAVE_FRONT);
+    EXPECT_EQ(m.g.wave_steps, 12u);
+    ASSERT_GE(m.wave.size(), 3u);
+    EXPECT_EQ(m.wave[0], 4.0);
+    EXPECT_EQ(m.wave[1], 8.0);
+    EXPECT_EQ(m.wave[2], 10.0);
+    EXPECT_EQ(m.g.wave_front_coverage, 1.0);
 }

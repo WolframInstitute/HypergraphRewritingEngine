@@ -49,8 +49,8 @@ HG_HD inline uint32_t si_runs(const uint32_t* a, uint32_t n) {
 
 // One state's invariants and geometry (state_geometry_core.hpp) as stored per class: the values,
 // then num_distributions per-vertex distributions (SgDistribution, SG_DISTS of them or none),
-// num_ball ball-growth dimensions, num_geodesic mean log geodesic counts and num_rotation orbital
-// velocities (doubles), and the num_edges arities ascending and num_vertices slot degrees
+// num_ball ball-growth dimensions, num_geodesic mean log geodesic counts, num_rotation orbital
+// velocities and num_wave mean wave-front sizes (doubles), and the num_edges arities ascending and num_vertices slot degrees
 // descending as (value, count) runs (uint32 word pairs), directly after the record.
 // The runs give back the sorted sequences, which is what "StepStatistics" reads.
 struct StateInvariantRecord {
@@ -64,6 +64,8 @@ struct StateInvariantRecord {
     uint32_t num_degree_runs = 0;
     uint32_t num_geodesic = 0;
     uint32_t num_rotation = 0;
+    uint32_t num_wave = 0;
+    uint32_t reserved = 0;
     HG_HD const SgDistribution* distributions() const {
         return reinterpret_cast<const SgDistribution*>(this + 1);
     }
@@ -72,8 +74,9 @@ struct StateInvariantRecord {
     }
     HG_HD const double* geodesic() const { return ball() + num_ball; }
     HG_HD const double* rotation() const { return geodesic() + num_geodesic; }
+    HG_HD const double* wave() const { return rotation() + num_rotation; }
     HG_HD const uint32_t* arity_runs() const {
-        return reinterpret_cast<const uint32_t*>(rotation() + num_rotation);
+        return reinterpret_cast<const uint32_t*>(wave() + num_wave);
     }
     HG_HD const uint32_t* degree_runs() const { return arity_runs() + 2 * num_arity_runs; }
     // f(value) for each arity, ascending.
@@ -89,9 +92,10 @@ struct StateInvariantRecord {
             for (uint32_t k = 0; k < r[2 * i + 1]; ++k) f(r[2 * i]);
     }
     HG_HD static uint64_t bytes(uint32_t arity_runs, uint32_t degree_runs, uint32_t nball,
-                                uint32_t ndist, uint32_t ngeodesic, uint32_t nrotation) {
+                                uint32_t ndist, uint32_t ngeodesic, uint32_t nrotation,
+                                uint32_t nwave) {
         return (sizeof(StateInvariantRecord) + sizeof(SgDistribution) * uint64_t{ndist} +
-                8 * (uint64_t{nball} + ngeodesic + nrotation) +
+                8 * (uint64_t{nball} + ngeodesic + nrotation + nwave) +
                 8 * (uint64_t{arity_runs} + degree_runs) +
                 7) &
                ~uint64_t{7};
@@ -349,12 +353,13 @@ struct SiCsrEdges {
 };
 
 // Scratch bytes state_record needs before the geometry: the invariants' words, the three output
-// arrays, the per-vertex distributions, the ball-growth dimensions, the mean log geodesic counts
-// and the orbital velocities.
+// arrays, the per-vertex distributions, the ball-growth dimensions, the mean log geodesic counts,
+// the orbital velocities (slots + 1 each) and the mean wave-front sizes (2 (slots + 1): T is at
+// most twice the vertex count).
 HG_HD inline uint64_t si_record_fixed_bytes(uint32_t slots, uint32_t m, uint32_t lanes) {
     const uint64_t words = si_scratch_words(slots, m, lanes) + m + 2 * uint64_t{slots} + 1;
     return ((4 * words + 7) & ~uint64_t{7}) + sizeof(SgDistribution) * SG_DISTS +
-           3 * 8 * (uint64_t{slots} + 1);
+           5 * 8 * (uint64_t{slots} + 1);
 }
 
 // A first scratch size for state_record: the geometry's graph and its metrics at maximum degree 8.
@@ -387,13 +392,14 @@ struct SiResult {
     const double* ball = nullptr;
     const double* geodesic = nullptr;
     const double* rotation = nullptr;
+    const double* wave = nullptr;
     const uint32_t* arities = nullptr;
     const uint32_t* degrees = nullptr;
-    uint32_t m = 0, n = 0, nball = 0, ngeodesic = 0, nrotation = 0;
+    uint32_t m = 0, n = 0, nball = 0, ngeodesic = 0, nrotation = 0, nwave = 0;
     uint32_t ndists = SG_DISTS;   // sg_dists_for of the request
     HG_HD uint64_t bytes() const {
         return StateInvariantRecord::bytes(si_runs(arities, m), si_runs(degrees, n), nball,
-                                           ndists, ngeodesic, nrotation);
+                                           ndists, ngeodesic, nrotation, nwave);
     }
 };
 
@@ -423,7 +429,8 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     double* rotation = reinterpret_cast<double*>(scratch + fixed - 8 * (uint64_t{S} + 1));
     double* geodesic = rotation - (uint64_t{S} + 1);
     double* ball = geodesic - (uint64_t{S} + 1);
-    auto* dists = reinterpret_cast<SgDistribution*>(reinterpret_cast<unsigned char*>(ball) -
+    double* wave = ball - 2 * (uint64_t{S} + 1);
+    auto* dists = reinterpret_cast<SgDistribution*>(reinterpret_cast<unsigned char*>(wave) -
                                                     sizeof(SgDistribution) * SG_DISTS);
     if (fixed > capacity) {
         needed = si_record_bytes_hint(S, m, par.width());
@@ -435,7 +442,8 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     size_t geo_need = 0;
     if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
                            ball, S + 1, geo_need, want, par, largest, largest_n, dists, nullptr,
-                           nullptr, geodesic, S + 1, graph, rotation, S + 1))
+                           nullptr, geodesic, S + 1, graph, rotation, S + 1, wave,
+                           2 * (S + 1)))
         need = fixed + geo_need;
     par.sync();
     if (need) {
@@ -454,6 +462,8 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
         r.ngeodesic = r.g.geodesic_radii;
         r.rotation = rotation;
         r.nrotation = r.g.rotation_radii;
+        r.wave = wave;
+        r.nwave = r.g.wave_steps;
         r.ndists = sg_dists_for(want);
     }
     return true;
@@ -504,6 +514,8 @@ HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r)
     rec->num_ball = r.nball;
     rec->num_geodesic = r.ngeodesic;
     rec->num_rotation = r.nrotation;
+    rec->num_wave = r.nwave;
+    rec->reserved = 0;
     rec->num_distributions = r.ndists;
     auto* d = reinterpret_cast<SgDistribution*>(rec + 1);
     for (uint32_t k = 0; k < r.ndists; ++k) d[k] = r.dists[k];
@@ -513,7 +525,9 @@ HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r)
     for (uint32_t i = 0; i < r.ngeodesic; ++i) gd[i] = r.geodesic[i];
     double* rt = gd + r.ngeodesic;
     for (uint32_t i = 0; i < r.nrotation; ++i) rt[i] = r.rotation[i];
-    uint32_t* w = reinterpret_cast<uint32_t*>(rt + r.nrotation);
+    double* wv = rt + r.nrotation;
+    for (uint32_t i = 0; i < r.nwave; ++i) wv[i] = r.wave[i];
+    uint32_t* w = reinterpret_cast<uint32_t*>(wv + r.nwave);
     auto write_runs = [&](const uint32_t* a, uint32_t n) {
         uint32_t runs = 0;
         for (uint32_t i = 0; i < n; ++i) {

@@ -106,6 +106,9 @@ logGeodesicOf[vs_List, rule_String] := logGeodesicOf[vs, rule] = sgrLogGeodesicC
 rotationCurve[edges_List] := rotationCurveOf[edges[[All, 2 ;;]]];
 rotationCurveOf[vs_List] := rotationCurveOf[vs, sgrStatisticsGraph];
 rotationCurveOf[vs_List, rule_String] := rotationCurveOf[vs, rule] = N[sgrRotationCurve[vs], 20];
+waveFrontCurve[edges_List] := waveFrontCurveOf[edges[[All, 2 ;;]]];
+waveFrontCurveOf[vs_List] := waveFrontCurveOf[vs, sgrStatisticsGraph];
+waveFrontCurveOf[vs_List, rule_String] := waveFrontCurveOf[vs, rule] = sgrWaveFrontCurve[vs];
 
 summary[values_List, round_ : 1] := If[values === {}, <|"N" -> 0|>,
   <|"N" -> Length[values], "Mean" -> N[Mean[values]],
@@ -128,7 +131,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "HolonomySquare", "AlignmentMoment1", "AlignmentMoment2", "AlignmentMoment3",
   "GeodesicProperTime", "GeodesicProperTimeVariance", "GeodesicBundleSpread", "GeodesicCurvature",
   "LensingDeflection", "LensingImpactParameter", "LensingDeflectionRatio", "OrbitalVelocity",
-  "RotationCurveExponent", "RotationCurveResidual"};
+  "RotationCurveExponent", "RotationCurveResidual", "WaveFrontSize", "WaveFrontCoverage",
+  "WaveReflectionStep"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
@@ -177,7 +181,7 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
   pairsByStep = If[branchial,
     GroupBy[{outOf[#From], outOf[#To]} & /@ res["BranchialEdges"], stepOf[First[#]] &], <||>];
   KeyValueMap[Function[{k, sts},
-    Module[{pop, cheap, ginv, geo, vvals, evals, balls, geodesics, rotations, mult, classes,
+    Module[{pop, cheap, ginv, geo, vvals, evals, balls, geodesics, rotations, waves, mult, classes,
         evIds, rec},
       pop = If[byClass, DeleteDuplicatesBy[sts, #CanonicalHash &], sts];
       cheap = cheapInvariants[#Edges] & /@ pop;
@@ -188,6 +192,7 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
       balls = ballGrowth[#Edges] & /@ pop;
       geodesics = logGeodesic[#Edges] & /@ pop;
       rotations = rotationCurve[#Edges] & /@ pop;
+      waves = waveFrontCurve[#Edges] & /@ pop;
       mult = Values[Counts[Lookup[sts, "CanonicalHash"]]]; classes = Length[mult];
       evIds = Keys[Select[eventStep, # == k &]];
       rec = <|"Step" -> k, "RawStates" -> Length[sts], "Classes" -> classes,
@@ -228,7 +233,10 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
           {d, Max[0, Length /@ geodesics]}]],
         "RotationCurve" -> Association[Table[
           r -> summary[Select[rotations, Length[#] >= r &][[All, r]], 0.01],
-          {r, Max[0, Length /@ rotations]}]]|>;
+          {r, Max[0, Length /@ rotations]}]],
+        "WaveFront" -> Association[Table[
+          i -> summary[Select[waves, Length[#] >= i &][[All, i]], 0.01],
+          {i, Max[0, Length /@ waves]}]]|>;
       If[branchial, Join[rec, branchialKeys[sts, Lookup[pairsByStep, k, {}],
         Union[Flatten[#Edges[[All, 2 ;;]] & /@ Lookup[byStep, 0, {}]]]]], rec]]],
     byStep]];
@@ -377,7 +385,8 @@ Do[
     Module[{res = HGEvolve[rules, init, steps, "StepStatistics", "CanonicalizeStates" -> None],
         extra},
       extra = Select[res, KeyExistsQ[#, "EdgeInvariants"] || KeyExistsQ[#, "LogGeodesicCount"] ||
-          KeyExistsQ[#, "Equilibrium"] ||
+          KeyExistsQ[#, "Equilibrium"] || KeyExistsQ[#, "WaveFront"] ||
+          KeyExistsQ[#["Invariants"], "WaveFrontSize"] ||
           KeyExistsQ[#["Invariants"], "BallDimension"] ||
           KeyExistsQ[#["Invariants"], "CliqueBetti0"] ||
           KeyExistsQ[#["Invariants"], "MetricTensorGap"] ||
@@ -471,5 +480,32 @@ If[Head[whd] =!= ResourceFunction || Head[wrc] =!= ResourceFunction,
     If[Max[worst] <= 10^-9,
       Print["PASS  Function Repository: ", n, " states, largest relative deviation ", worst],
       failures++; Print["FAIL  Function Repository: ", n, " states, largest relative deviation ", worst]]]];
+
+(* === InfraGeometry's FindAdvancingInfraFront === *)
+
+(* The fronts of sgrWaveFronts against FindAdvancingInfraFront of WolframInstitute/InfraGeometry
+   (InfraSet.wl), loaded from the paclet directory HG_INFRAGEOMETRY names, for every origin of
+   every state of every case with at least two vertices in G', under both graph rules. Without
+   HG_INFRAGEOMETRY the check prints INFRAGEOMETRY UNAVAILABLE and fails. *)
+With[{dir = Environment["HG_INFRAGEOMETRY"]},
+  If[!StringQ[dir] || FailureQ[Quiet[PacletDirectoryLoad[dir]]] ||
+      FailureQ[Quiet[Needs["WolframInstitute`InfraGeometry`"]]] ||
+      !ListQ[WolframInstitute`InfraGeometry`FindAdvancingInfraFront[Graph[{1 <-> 2}], 1, 1]],
+    failures++; Print["INFRAGEOMETRY UNAVAILABLE"],
+    Module[{states = 0, origins = 0, bad = {}},
+      Do[Block[{sgrStatisticsGraph = rule},
+        Do[Module[{w = sgrWaveFronts[s]},
+          If[!MissingQ[w],
+            states++;
+            KeyValueMap[Function[{v, fronts},
+              origins++;
+              If[Rest[WolframInstitute`InfraGeometry`FindAdvancingInfraFront[w["Graph"], v,
+                  w["Steps"]]] =!= fronts, AppendTo[bad, {rule, s, v}]]], w["Fronts"]]]],
+          {s, DeleteDuplicates[allStates]}]], {rule, {"Consecutive", "AllPairs"}}];
+      If[bad === {},
+        Print["PASS  InfraGeometry FindAdvancingInfraFront: ", states, " states, ", origins,
+          " origins"],
+        failures++; Print["FAIL  InfraGeometry FindAdvancingInfraFront: ", Length[bad],
+          " origins differ, first ", Short[First[bad], 6]]]]]];
 
 Print[If[failures == 0, "STATE STATISTICS VERIFIED", "STATE STATISTICS FAILED: " <> ToString[failures]]];

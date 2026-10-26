@@ -4934,7 +4934,8 @@ TEST(StateStatistics, RecordStoresSequencesAsRuns) {
     EXPECT_EQ(rec.num_degree_runs, 1u);
     EXPECT_EQ(storage.size() * 8,
               hgcommon::StateInvariantRecord::bytes(1, 1, rec.num_ball, rec.num_distributions,
-                                                    rec.num_geodesic, rec.num_rotation));
+                                                    rec.num_geodesic, rec.num_rotation,
+                                                    rec.num_wave));
     const auto inv = hg::stats::state_invariants(torus);
     EXPECT_EQ(inv.arities, std::vector<int64_t>(288, 2));
     EXPECT_EQ(inv.degree_sequence, std::vector<int64_t>(144, 4));
@@ -5440,6 +5441,31 @@ TEST(StateStatistics, BranchialCycleMeasures) {
 // for. The record of a state computed with every family gives, under the base set, the 25
 // "Invariants" and 3 "VertexInvariants" of the base set and no "EdgeInvariants" or
 // "LogGeodesicCount"; under "Particles" the 4 particle entries and its 2 distributions more.
+// The wave front of a disconnected state is that of its largest component: P3 with a separate
+// edge has P3's values (StateMeasures.PathOfThreeWaveFront), and the record keeps the four mean
+// front sizes, which the step record lists under "WaveFront" with the family requested.
+TEST(StateStatistics, WaveFrontReadsTheLargestComponent) {
+    std::vector<uint64_t> storage;
+    const hgcommon::StateInvariantRecord* rec =
+        hg::stats::invariant_record({{1, 2}, {2, 3}, {7, 8}}, storage);
+    ASSERT_TRUE(rec->g.defined & hgcommon::SG_WAVE_FRONT);
+    EXPECT_EQ(rec->g.wave_front_size, 14.0 / 12.0);
+    EXPECT_EQ(rec->g.wave_reflection_step, 8.0 / 3.0);
+    ASSERT_EQ(rec->num_wave, 4u);
+    EXPECT_EQ(rec->wave()[0], 4.0 / 3.0);
+    EXPECT_EQ(rec->wave()[3], 1.0);
+    hg::stats::StepInput in;
+    hg::stats::add_class(in, 7, 2, rec);
+    const wxf::WXFValue with(hg::stats::step_record(
+        1, in, false, hgcommon::SG_MEASURES_BASE | hg::stats::measure_bits("WaveFront")));
+    const wxf::WXFValue* front = assoc_at(with, "WaveFront");
+    ASSERT_NE(front, nullptr);
+    EXPECT_EQ(std::get<wxf::WXFValueAssociation>(front->data).size(), 4u);
+    EXPECT_NE(assoc_at(*assoc_at(with, "Invariants"), "WaveReflectionStep"), nullptr);
+    const wxf::WXFValue without(hg::stats::step_record(1, in, false));
+    EXPECT_EQ(assoc_at(without, "WaveFront"), nullptr);
+}
+
 TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     std::vector<uint64_t> storage;
     const hgcommon::StateInvariantRecord* rec =
@@ -5467,7 +5493,7 @@ TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     EXPECT_EQ(keys(*assoc_at(topology, "Invariants")).size(), 29u);
     EXPECT_NE(assoc_at(*assoc_at(topology, "Invariants"), "RipsBetti1"), nullptr);
     const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
-    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 62u);
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 65u);
     EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
     EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
     EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);

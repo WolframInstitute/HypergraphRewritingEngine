@@ -2849,7 +2849,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
     size_t compared = 0, with_growth = 0, ternary = 0, with_gap = 0, with_holonomy = 0, with_alignment = 0;
-    size_t with_bundle = 0, with_lensing = 0, with_rotation = 0;
+    size_t with_bundle = 0, with_lensing = 0, with_rotation = 0, with_wave = 0;
     for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
@@ -2953,7 +2953,10 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::lensing_ratio,
                   &hgcommon::SgGeometry::orbital_velocity,
                   &hgcommon::SgGeometry::rotation_exponent,
-                  &hgcommon::SgGeometry::rotation_residual})
+                  &hgcommon::SgGeometry::rotation_residual,
+                  &hgcommon::SgGeometry::wave_front_size,
+                  &hgcommon::SgGeometry::wave_front_coverage,
+                  &hgcommon::SgGeometry::wave_reflection_step})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
             for (uint32_t k = 0; k < 3; ++k) {
                 EXPECT_TRUE(same(a->g.clique_betti[k], b->g.clique_betti[k])) << w.name;
@@ -2979,6 +2982,10 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
             for (uint32_t k = 0; k < a->num_rotation; ++k)
                 EXPECT_TRUE(same(a->rotation()[k], b->rotation()[k])) << w.name;
             if (a->num_rotation) ++with_rotation;
+            ASSERT_EQ(a->num_wave, b->num_wave) << w.name;
+            for (uint32_t k = 0; k < a->num_wave; ++k)
+                EXPECT_TRUE(same(a->wave()[k], b->wave()[k])) << w.name;
+            if (a->num_wave) ++with_wave;
             // The per-vertex distributions, byte for byte.
             ASSERT_EQ(a->num_distributions, b->num_distributions) << w.name;
             EXPECT_EQ(std::memcmp(a->distributions(), b->distributions(),
@@ -2993,6 +3000,7 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
     EXPECT_GT(with_bundle, 0u);
     EXPECT_GT(with_lensing, 0u);
     EXPECT_GT(with_rotation, 0u);
+    EXPECT_GT(with_wave, 0u);
     EXPECT_GT(ternary, 0u);
     EXPECT_GT(with_gap, 0u);
     EXPECT_GT(with_holonomy, 0u);
