@@ -1351,9 +1351,15 @@ struct ChildIdentity {
 
 // A RecordEntry's work, on the calling block's IR scratch: the state's IR canonical form
 // (state_exact_hash_device), then its record from that form (record_state_invariants_device).
+// With `claim_exact` (RecordEntry::claim_exact) the state's exact hash is claimed on its IR form
+// in `exact_map` and published to state_exact_hash, and the record is computed only for the
+// class's first state.
 template <class Par>
-__device__ void compute_state_record(const DeviceState& ds, StateId sid, DeviceArena::View arena,
-                                     uint32_t*& slot, uint64_t& slot_words, Par par) {
+__device__ void compute_state_record(const DeviceState& ds, StateId sid, bool claim_exact,
+                                     DedupMap::DeviceView exact_map,
+                                     typename Pool<uint32_t>::DeviceView forms,
+                                     DeviceArena::View arena, uint32_t*& slot,
+                                     uint64_t& slot_words, Par par) {
     uint64_t exact = 0;
     uint32_t* form = nullptr;
     uint32_t form_words = 0;
@@ -1363,6 +1369,17 @@ __device__ void compute_state_record(const DeviceState& ds, StateId sid, DeviceA
         if (par.leader()) ds.errors.record(error_kind_for(st));
         return;
     }
+    if (claim_exact) {
+        uint32_t first = 0;
+        if (par.leader()) {
+            const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask, form,
+                                                   form_words, exact_map, forms);
+            ds.state_exact_hash[sid] = ec.key;
+            first = ec.canonical == sid ? 1u : 0u;
+        }
+        par.sync();
+        if (!par.bcast(first)) return;
+    }
     record_state_invariants_device(ds, sid, form, form_words, arena, slot, slot_words, par);
 }
 
@@ -1370,7 +1387,8 @@ template <class Par>
 __device__ __forceinline__ ChildIdentity canonicalise_child(
         const DeviceState& ds, StateId sid, EventId evt, uint32_t num_events, StateId parent,
         uint32_t keyed, CanonicalizationMode state_mode, EventSignatureKeys event_keys, bool need_ranks,
-        bool need_exact, bool want_orbits, bool dedup, DeviceArena::View arena, uint32_t*& slot,
+        bool need_exact, bool exact_for_records, bool want_orbits, bool dedup,
+        DeviceArena::View arena, uint32_t*& slot,
         uint64_t& slot_words, DedupMap::DeviceView dedup_map, DedupMap::DeviceView exact_map,
         DedupMap::DeviceView event_map, typename Pool<uint32_t>::DeviceView forms,
         typename RingBuffer<uint32_t>::DeviceView ready, WorkLogView<RecordEntry>& records,
@@ -1409,11 +1427,15 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
 
     // The exact isomorphism hash is a different question from the mode's key and coincides with
     // it only in Full. Computed only when an event identity or a transition key will read it.
+    // When only "StepStatistics" reads it (`exact_for_records`), a None or Automatic child's
+    // exact hash is the record worker's (RecordEntry::claim_exact): nothing in the evolution waits
+    // for it, and the child's IR runs on an idle block.
+    const bool defer_exact = exact_for_records && !twin && state_mode != CanonicalizationMode::Full;
     uint64_t exact = h;
     ExactHashStatus ex_st = ExactHashStatus::kOk;
     uint32_t* eform = nullptr;
     uint32_t eform_words = 0;
-    if (!twin && key_st == ExactHashStatus::kOk && need_exact &&
+    if (!twin && key_st == ExactHashStatus::kOk && need_exact && !defer_exact &&
         state_mode != CanonicalizationMode::Full)
         ex_st = state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks,
                                         false, &eform, &eform_words, par);
@@ -1461,7 +1483,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             // input hash, and that read happens on another block.
             publish_canonical_hash(ds, sid, h);
 
-            if (need_exact) {
+            if (need_exact && !defer_exact) {
                 if (ex_st != ExactHashStatus::kOk) {
                     ds.errors.record(error_kind_for(ex_st));
                     exact = 0;
@@ -1498,8 +1520,8 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
     }
     // The class's record is computed by an idle block (compute_state_record), from this
     // state's IR canonical form, so the child is registered without waiting for it.
-    if (ds.record_invariants && want_record && par.leader() &&
-        !records.append(RecordEntry{sid, 0u}))
+    if (ds.record_invariants && (want_record || (defer_exact && ok)) && par.leader() &&
+        !records.append(RecordEntry{sid, 0u, defer_exact ? 1u : 0u}))
         ds.errors.record(ErrorKind::kStateInvariantsFull);
     ChildIdentity out;
     out.canonical = par.bcast(canonical);
@@ -1622,6 +1644,8 @@ __global__ void k_persistent_evolve(
     const bool reads_keys = transition_keys_read(ds, dedup, state_mode);
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0, reads_keys);
     const bool need_exact = ds.record_invariants || run_needs_exact_hash(event_keys, reads_keys);
+    const bool exact_for_records =
+        ds.record_invariants && !run_needs_exact_hash(event_keys, reads_keys);
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -1814,6 +1838,7 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t record_base;
     __shared__ uint32_t record_count;
     __shared__ StateId  record_sid;
+    __shared__ uint32_t record_claim_exact;
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
     uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
@@ -1877,7 +1902,8 @@ __global__ void k_persistent_evolve(
             id = canonicalise_child(ds, child_sid, child_event, child_events, child_parent,
                                     child_keyed,
                                     state_mode, event_keys, need_ranks, need_exact,
-                                    ds.state_edge_orbit != nullptr, dedup, arena, ir_slot,
+                                    exact_for_records, ds.state_edge_orbit != nullptr, dedup,
+                                    arena, ir_slot,
                                     ir_slot_words, dedup_map, exact_map, event_map, forms, ready,
                                     ev.records, acc_irkey, acc_evkey, IrWarpAll{});
         if (id.capture) {
@@ -2072,7 +2098,7 @@ __global__ void k_persistent_evolve(
                 ChildIdentity id{};
                 if (sid != INVALID_ID)
                     id = canonicalise_child(ds, sid, evt, 1u, parent, keyed, state_mode, event_keys,
-                                            need_ranks, need_exact,
+                                            need_ranks, need_exact, exact_for_records,
                                             ds.state_edge_orbit != nullptr, dedup, arena,
                                             tile_slot[tile], tile_slot_words[tile], dedup_map,
                                             exact_map, event_map, forms, ready, ev.records,
@@ -2347,7 +2373,11 @@ __global__ void k_persistent_evolve(
         // only the reply reads a record. Booked after the record is written and fenced.
         if (threadIdx.x == 0) {
             record_count = ev.records.claim(1u, record_base);
-            if (record_count) record_sid = ev.records.await(record_base).state;
+            if (record_count) {
+                const RecordEntry& re = ev.records.await(record_base);
+                record_sid = re.state;
+                record_claim_exact = re.claim_exact;
+            }
         }
         __syncthreads();
         if (record_count) {
@@ -2357,7 +2387,8 @@ __global__ void k_persistent_evolve(
                 ir_slot_words = region_words;
             }
             __syncthreads();
-            compute_state_record(ds, record_sid, arena, ir_slot, ir_slot_words, IrWarpAll{});
+            compute_state_record(ds, record_sid, record_claim_exact != 0u, exact_map, forms,
+                                 arena, ir_slot, ir_slot_words, IrWarpAll{});
             __threadfence();
             __syncthreads();
             if (threadIdx.x == 0) {

@@ -113,7 +113,10 @@ A state that creates its class under "StepStatistics" appends a `RecordEntry` to
 and a block with no other work computes the class's record from it (`compute_state_record`: the
 state's IR canonical form, then `record_state_invariants_device`). The state is registered and
 expanded without waiting for its record. The detector counts record entries as it counts expand
-entries.
+entries. When only the records read a None or Automatic child's exact hash (no event identity, no
+transition key), the child appends its entry with `claim_exact` set instead of computing the
+hash: the block computes the IR, claims the exact hash, publishes it to `state_exact_hash`, and
+computes the record when the child is its class's first. A step's chain then holds no IR.
 
 Its capture and replay are
 the host's, through the shared cores: each class retains its representative's expansion as

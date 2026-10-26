@@ -38,9 +38,13 @@ struct ExpandEntry {
 
 // A state whose "StepStatistics" record (record_state_invariants_device) an idle block computes.
 // Only the reply reads a record, so the state is registered and expanded without waiting for it.
+// With `claim_exact` set the block also computes the state's exact hash and claims it, and
+// computes the record only when the state is its class's first (canonicalise_child defers a
+// child's exact hash that only the records read).
 struct RecordEntry {
     StateId  state;
     uint32_t published;
+    uint32_t claim_exact = 0;
 };
 
 struct ExploreView {

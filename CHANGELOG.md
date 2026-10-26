@@ -58,6 +58,10 @@
   state's held matches with the whole block. The copies ran on one thread and took most of each
   step: a 40-step `"StepStatistics"` run on a 9 x 9 torus spent 250 ms on the device, now 147 ms.
 
+- On the GPU, a `"StepStatistics"` run with `"CanonicalizeStates"` None or Automatic computes the
+  exact hash of a new state on an idle block when only the statistics read it. A step no longer
+  waits for the state's canonical labelling.
+
 - The engine has a host memory limit, `"Tuning" -> <|"MemoryLimit" -> bytes|>` or the
   environment variable `HG_TUNE_MEMORY_LIMIT`. The default is half of physical memory, and a value
   above physical memory is lowered to it. An evolution that reaches the limit stops and gives a
