@@ -423,6 +423,11 @@ void push_branchial_state_edges(wxf::WXFValueAssociation& result,
 class StreamRecordSink {
 public:
     explicit StreamRecordSink(wxf::Writer& w) : w_(w) {}
+    // The record's key in the association of records: written before begin.
+    void key(int64_t id) {
+        w_.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w_.write(id);
+    }
     void begin(std::size_t fields) {
         w_.write_byte(static_cast<uint8_t>(wxf::Token::Association));
         w_.write_varint(fields);
@@ -454,10 +459,7 @@ public:
         }
     }
 private:
-    void key_(const char* k) {
-        w_.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w_.write(std::string(k));
-    }
+    void key_(const char* k) { w_.write_key(k); }
     wxf::Writer& w_;
 };
 
@@ -583,13 +585,19 @@ wxf::WXFValue record_list(const std::vector<std::array<int64_t, N>>& rows,
     return wxf::WXFValue(wxf::Encoded{w.release_data()});
 }
 
-// A relation's record list ("CausalEdges", "BranchialEdges"), its rows ascending: the list's order
-// is a function of its pairs, where the order the run registered them in is a function of the
-// schedule. Both engines write their relation lists through this.
+// A relation's rows ("CausalEdges", "BranchialEdges") in ascending order: the list's order is a
+// function of its pairs, where the order the run registered them in is a function of the schedule.
+template <size_t N>
+void sort_relation_rows(std::vector<std::array<int64_t, N>>& rows) {
+    std::sort(rows.begin(), rows.end());
+}
+
+// A relation's record list, its rows in sort_relation_rows order. Both engines write their
+// relation lists through this.
 template <size_t N>
 wxf::WXFValue relation_list(std::vector<std::array<int64_t, N>> rows,
                             const std::array<const char*, N>& keys, const ParallelFor& par) {
-    std::sort(rows.begin(), rows.end());
+    sort_relation_rows(rows);
     return record_list(rows, keys, par);
 }
 

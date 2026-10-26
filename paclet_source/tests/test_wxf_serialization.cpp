@@ -34,6 +34,7 @@
 
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
+#include "paclet_source/reply_out.hpp"
 #include "paclet_source/state_statistics.hpp"
 #include "paclet_source/cpu_engine_holder.hpp"
 #ifdef HG_GPU_BACKEND
@@ -5463,8 +5464,8 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
 
 namespace {
 
-// A "StateMatrices" value (WXF bytes) read back: its "States" and each matrix, in key order, and
-// whether each was a SparseArray.
+// A "StateMatrices" value read back from the bytes the reply carries for it: its "States" and
+// each matrix, in key order, and whether each was a SparseArray.
 struct ReadMatrices {
     std::vector<int64_t> states;
     std::vector<std::pair<std::string, std::vector<std::vector<double>>>> m;
@@ -5477,7 +5478,9 @@ struct ReadMatrices {
 };
 ReadMatrices read_matrices(const wxf::WXFValue& v) {
     ReadMatrices r;
-    wxf::Parser p(std::get<wxf::Encoded>(v.data).bytes);
+    wxf::Writer w;
+    w.write(v);
+    wxf::Parser p(w.data());
     p.read_association([&](const std::string& k, wxf::Parser& vp) {
         if (k == "States") {
             r.states = vp.read<std::vector<int64_t>>();
@@ -7377,3 +7380,161 @@ TEST(PartialResults, HgEvolveUnderItsMemoryLimitReturnsWhatItBuilt) {
                            "NumStates"));
 }
 #endif
+
+namespace {
+// Rows of the "States", "Events" and relation lists in one form for both replies: each record
+// or row as integers, in order.
+using Rows = std::vector<std::vector<int64_t>>;
+
+// Record `key` of a wire reply: per record its integer fields and integer lists in field order,
+// an edge list as its edges' ids then vertices.
+Rows wire_records(const std::vector<uint8_t>& reply, const std::string& key) {
+    Rows out;
+    wxf::Parser p(reply);
+    p.skip_header();
+    p.read_association([&](const std::string& k, wxf::Parser& v) {
+        if (k != key) { v.skip_value(); return; }
+        v.read_association([&](const std::string&, wxf::Parser& rec) {
+            std::vector<int64_t> row;
+            rec.read_association([&](const std::string& field, wxf::Parser& f) {
+                if (field == "Edges") {
+                    for (const auto& e : f.read<std::vector<std::vector<int64_t>>>())
+                        row.insert(row.end(), e.begin(), e.end());
+                } else if (field == "ConsumedEdges" || field == "ProducedEdges") {
+                    for (int64_t x : f.read<std::vector<int64_t>>()) row.push_back(x);
+                } else {
+                    row.push_back(f.read<int64_t>());
+                }
+            });
+            out.push_back(std::move(row));
+        });
+    });
+    return out;
+}
+
+Rows wire_relation(const std::vector<uint8_t>& reply, const std::string& key) {
+    Rows out;
+    wxf::Parser p(reply);
+    p.skip_header();
+    p.read_association([&](const std::string& k, wxf::Parser& v) {
+        if (k != key) { v.skip_value(); return; }
+        v.read_function([&](const std::string&, size_t n, wxf::Parser& items) {
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<int64_t> row;
+                items.read_association([&](const std::string&, wxf::Parser& f) {
+                    row.push_back(f.read<int64_t>());
+                });
+                out.push_back(std::move(row));
+            }
+        });
+    });
+    return out;
+}
+
+Rows array_records(const hgffi::ArrayReply& r, const std::string& key) {
+    for (const auto& [name, t] : r.tables) {
+        if (name != key) continue;
+        Rows out(t.rows);
+        for (size_t i = 0; i < t.rows; ++i)
+            for (const auto& [cname, c] : t.columns) {
+                using K = hgffi::Column::Kind;
+                if (c.kind == K::Int) {
+                    out[i].push_back(c.ints[i]);
+                } else if (c.kind == K::IntLists) {
+                    for (int64_t j = c.offsets[i]; j < c.offsets[i + 1]; ++j) out[i].push_back(c.ints[j]);
+                } else if (c.kind == K::Edges) {
+                    for (int64_t j = c.offsets[i]; j < c.offsets[i + 1]; ++j) {
+                        out[i].push_back(c.ints[j]);
+                        for (int64_t v = c.vertex_offsets[j]; v < c.vertex_offsets[j + 1]; ++v)
+                            out[i].push_back(c.vertices[v]);
+                    }
+                }
+            }
+        return out;
+    }
+    return {};
+}
+
+Rows array_relation(const hgffi::ArrayReply& r, const std::string& key) {
+    for (const auto& [name, rel] : r.relations) {
+        if (name != key) continue;
+        Rows out(rel.rows);
+        const size_t k = rel.names.size();
+        for (size_t i = 0; i < rel.rows; ++i)
+            out[i].assign(rel.cells.begin() + i * k, rel.cells.begin() + (i + 1) * k);
+        return out;
+    }
+    return {};
+}
+}  // namespace
+
+// THE TWO REPLY FORMS CARRY ONE REPLY. The same job, given as WXF bytes to run_rewriting_core and
+// as a value to run_rewriting_arrays, gives the same records, relations and counts (one worker,
+// so the ids agree too), in every identity mode. In the GPU binary the array job runs on the CPU
+// engine.
+TEST(ArrayReply, CarriesTheWireReply) {
+    using wxf::WXFValue;
+    const HostBridge host;
+    for (const char* mode : {"None", "Automatic", "Full"}) {
+        auto edges = [](std::initializer_list<std::vector<int64_t>> es) {
+            wxf::WXFValueList l;
+            for (const auto& e : es) {
+                wxf::WXFValueList edge;
+                for (int64_t v : e) edge.push_back(WXFValue(v));
+                l.push_back(WXFValue(std::move(edge)));
+            }
+            return WXFValue(std::move(l));
+        };
+        wxf::WXFValueList data;
+        for (const char* d : {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates",
+                              "NumEvents", "NumCausalEdges", "NumBranchialEdges"})
+            data.push_back(WXFValue(std::string(d)));
+        const WXFValue job(wxf::WXFValueAssociation{
+            {WXFValue(std::string("InitialStates")),
+             WXFValue(wxf::WXFValueList{edges({{1, 2}, {1, 3}})})},
+            {WXFValue(std::string("Rules")),
+             WXFValue(wxf::WXFValueAssociation{
+                 {WXFValue(std::string("Rule1")),
+                  WXFValue(wxf::Function{"Rule", {edges({{0, 1}, {0, 2}}),
+                                                  edges({{0, 1}, {0, 3}, {1, 3}, {2, 3}})}})}})},
+            {WXFValue(std::string("Steps")), WXFValue(int64_t{3})},
+            {WXFValue(std::string("Options")),
+             WXFValue(wxf::WXFValueAssociation{
+                 {WXFValue(std::string("CanonicalizeStates")), WXFValue(wxf::Symbol{mode})},
+                 {WXFValue(std::string("Threads")), WXFValue(int64_t{1})},
+                 {WXFValue(std::string("RequestedData")), WXFValue(std::move(data))}})},
+        });
+        wxf::Writer w;
+        w.write_header();
+        w.write(job);
+        const std::vector<uint8_t> wire = run_rewriting_core(w.release_data(), host);
+        const hgffi::ArrayReply arrays = run_rewriting_arrays(job, host);
+        SCOPED_TRACE(mode);
+#ifdef HG_GPU_BACKEND
+        // The GPU binary answers the wire job on the device and the array job on the CPU engine:
+        // the two engines agree on the counts, and their run-local ids differ.
+        for (const char* key : {"States", "Events"})
+            EXPECT_EQ(wire_records(wire, key).size(), array_records(arrays, key).size()) << key;
+        for (const char* key : {"CausalEdges", "BranchialEdges"})
+            EXPECT_EQ(wire_relation(wire, key).size(), array_relation(arrays, key).size()) << key;
+#else
+        for (const char* key : {"States", "Events"}) {
+            const Rows a = wire_records(wire, key);
+            EXPECT_FALSE(a.empty()) << key;
+            EXPECT_EQ(a, array_records(arrays, key)) << key;
+        }
+        for (const char* key : {"CausalEdges", "BranchialEdges"})
+            EXPECT_EQ(wire_relation(wire, key), array_relation(arrays, key)) << key;
+#endif
+        int64_t wire_states = -1, array_states = -2;
+        wxf::Parser p(wire);
+        p.skip_header();
+        p.read_association([&](const std::string& k, wxf::Parser& v) {
+            if (k == "NumStates") wire_states = v.read<int64_t>();
+            else v.skip_value();
+        });
+        for (const auto& [k, v] : arrays.values)
+            if (k.get<std::string>() == "NumStates") array_states = v.get<int64_t>();
+        EXPECT_EQ(wire_states, array_states);
+    }
+}

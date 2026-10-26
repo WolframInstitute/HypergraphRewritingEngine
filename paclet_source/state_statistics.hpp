@@ -167,6 +167,27 @@ enum : uint32_t {
 constexpr uint32_t kMeasureBranchial = 1u << 30;
 // "Equilibrium": each step's stability scores over the steps before it (hgcommon/equilibrium_core.hpp).
 constexpr uint32_t kMeasureEquilibrium = 1u << 29;
+
+// The "StepStatisticsMeasures" names and their bits.
+struct MeasureName {
+    const char* name;
+    uint32_t bits;
+};
+inline constexpr MeasureName kMeasureNames[] = {
+    {"VolumeGrowth", hgcommon::SG_VOLUME_GROWTH},
+    {"Geodesics", hgcommon::SG_GEODESIC},
+    {"EdgeCurvature", hgcommon::SG_NONLAZY_OLLIVIER},
+    {"Combinatorial", hgcommon::SG_COMBINATORIAL},
+    {"Particles", hgcommon::SG_PARTICLE},
+    {"DimensionGradient", hgcommon::SG_DIMENSION_GRADIENT},
+    {"Topology", hgcommon::SG_TOPOLOGY},
+    {"MetricTensor", hgcommon::SG_METRIC_TENSOR},
+    {"Holonomy", hgcommon::SG_HOLONOMY},
+    {"BranchAlignment", hgcommon::SG_BRANCH_ALIGNMENT},
+    {"Equilibrium", kMeasureEquilibrium},
+    {"GeodesicAnalysis", hgcommon::SG_GEODESIC_ANALYSIS},
+    {"Branchial", kMeasureBranchial},
+};
 uint32_t measure_bits(const std::string& name);
 
 // The "StepStatisticsMatrices" names, in kMatrix* bit order from kMatrixStateOverlap.

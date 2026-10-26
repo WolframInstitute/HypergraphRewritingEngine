@@ -9,6 +9,7 @@
 #include "cpu_engine_holder.hpp"
 #include "delivery_cursor.hpp"
 #include "graph_marshal.hpp"
+#include "reply_out.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/content_core.hpp"
 #include "state_statistics.hpp"
@@ -350,6 +351,112 @@ stats::StepInput StepStatisticsCollector::gather(uint32_t step,
     }
     in.branchial.pairs = std::move(pairs);
     return in;
+}
+
+void TableSink::begin(std::size_t fields) {
+    if (t_.rows == 0) fields_ = fields;
+    else if (fields != fields_ || field_ != fields_)
+        throw std::logic_error("a record table's records have different fields");
+    fields_ = fields;
+    field_ = 0;
+    ++t_.rows;
+}
+
+Column& TableSink::column_(const char* key, Column::Kind kind) {
+    const size_t at = field_++;
+    if (t_.rows == 1) {
+        Column c;
+        c.kind = kind;
+        if (kind != Column::Kind::Int) c.offsets.push_back(0);
+        if (kind == Column::Kind::Edges) c.vertex_offsets.push_back(0);
+        t_.columns.emplace_back(key, std::move(c));
+    }
+    if (at >= t_.columns.size() || t_.columns[at].first != key || t_.columns[at].second.kind != kind)
+        throw std::logic_error(std::string("a record table's records have different fields at ") +
+                               key);
+    return t_.columns[at].second;
+}
+
+void TableSink::i64(const char* key, int64_t v) {
+    column_(key, Column::Kind::Int).ints.push_back(v);
+}
+
+void TableSink::i64_list(const char* key, const std::vector<int64_t>& v) {
+    Column& c = column_(key, Column::Kind::IntLists);
+    c.ints.insert(c.ints.end(), v.begin(), v.end());
+    c.offsets.push_back(static_cast<int64_t>(c.ints.size()));
+}
+
+void TableSink::edges(const char* key,
+                      const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& e) {
+    Column& c = column_(key, Column::Kind::Edges);
+    for (const auto& [id, verts] : e) {
+        c.ints.push_back(id);
+        c.vertices.insert(c.vertices.end(), verts.begin(), verts.end());
+        c.vertex_offsets.push_back(static_cast<int64_t>(c.vertices.size()));
+    }
+    c.offsets.push_back(static_cast<int64_t>(c.ints.size()));
+}
+
+void TableSink::vertex_reals(const char* key, const std::vector<std::pair<uint32_t, double>>& kv) {
+    Column& c = column_(key, Column::Kind::VertexReals);
+    for (const auto& [v, x] : kv) {
+        c.ints.push_back(static_cast<int64_t>(v));
+        c.reals.push_back(x);
+    }
+    c.offsets.push_back(static_cast<int64_t>(c.ints.size()));
+}
+
+namespace {
+
+// `from` appended to `to`, each entry after the first of `from` shifted by `to`'s last entry.
+void append_offsets(std::vector<int64_t>& to, const std::vector<int64_t>& from) {
+    const int64_t base = to.back();
+    for (size_t i = 1; i < from.size(); ++i) to.push_back(from[i] + base);
+}
+
+}  // namespace
+
+Table join_tables(std::vector<Table>&& parts) {
+    Table out;
+    for (Table& p : parts) {
+        if (p.rows == 0) continue;
+        if (out.rows == 0) {
+            out = std::move(p);
+            continue;
+        }
+        if (p.columns.size() != out.columns.size())
+            throw std::logic_error("a record table's parts have different fields");
+        for (size_t k = 0; k < p.columns.size(); ++k) {
+            Column& to = out.columns[k].second;
+            const Column& from = p.columns[k].second;
+            if (out.columns[k].first != p.columns[k].first || to.kind != from.kind)
+                throw std::logic_error("a record table's parts have different fields");
+            if (to.kind != Column::Kind::Int) append_offsets(to.offsets, from.offsets);
+            if (to.kind == Column::Kind::Edges) append_offsets(to.vertex_offsets, from.vertex_offsets);
+            to.ints.insert(to.ints.end(), from.ints.begin(), from.ints.end());
+            to.vertices.insert(to.vertices.end(), from.vertices.begin(), from.vertices.end());
+            to.reals.insert(to.reals.end(), from.reals.begin(), from.reals.end());
+        }
+        out.rows += p.rows;
+    }
+    return out;
+}
+
+void ArrayReply::branchial_state_edges(const marshal::BranchialStateEdgeSet& set) {
+    Relation edges;
+    edges.names = {"From", "To"};
+    edges.rows = set.edges.size();
+    for (const auto& [from, to] : set.edges) {
+        edges.cells.push_back(from);
+        edges.cells.push_back(to);
+    }
+    relations.emplace_back("BranchialStateEdges", std::move(edges));
+    Relation vertices;
+    vertices.names = {"Vertex"};
+    vertices.rows = set.vertices.size();
+    vertices.cells = set.vertices;
+    relations.emplace_back("BranchialStateVertices", std::move(vertices));
 }
 
 }  // namespace ffi
@@ -1411,29 +1518,28 @@ bool sparse_matrices(const hgcommon::BoMatrices& x) {
 
 namespace {
 
-// "StateMatrices" as WXF bytes: "States", then each asked-for matrix, row and column i for the
-// i-th state, copied from the arrays the rows filled: the overlap and the cosine of a level as a
-// SparseArray when sparse_matrices, every other matrix as a packed array.
+// "StateMatrices": "States", then each asked-for matrix, row and column i for the i-th state,
+// moved out of the arrays the rows filled (`vertex_m`, `edge_m`): the overlap and the cosine of a
+// level written as a SparseArray when sparse_matrices, every other matrix as a packed array.
 wxf::WXFValue state_matrices(uint32_t which, const std::vector<int64_t>& ids,
-                             const hgcommon::BoMatrices& vertex, const hgcommon::BoMatrices& edge) {
+                             const hgcommon::BoMatrices& vertex, const hgcommon::BoMatrices& edge,
+                             std::vector<double>* vertex_m, std::vector<double>* edge_m) {
     const size_t k = ids.size();
-    uint32_t asked = 0;
-    for (uint32_t i = 0; i < 6; ++i) asked += (which >> (2 + i)) & 1u;
     const bool sparse[2] = {sparse_matrices(vertex), sparse_matrices(edge)};
-    wxf::Writer w;
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(1 + asked);
-    w.write_key("States");
-    w.write_function("List", k);
-    for (int64_t id : ids) w.write(id);
+    wxf::WXFValueList states;
+    states.reserve(k);
+    for (int64_t id : ids) states.push_back(wxf::WXFValue(id));
+    wxf::WXFValueAssociation out;
+    out.push_back({wxf::WXFValue("States"), wxf::WXFValue(std::move(states))});
     for (uint32_t i = 0; i < 6; ++i) {
         if (!(which & (kMatrixStateOverlap << i))) continue;
-        w.write_key(kMatrixNames[i]);
-        const double* m = (i < 3 ? vertex : edge).m[i % 3];
-        if (i % 3 != 2 && sparse[i / 3]) w.write_sparse_reals(k, k, m);
-        else w.write_packed_reals({k, k}, m);
+        wxf::PackedReals m;
+        m.dims = {k, k};
+        m.values = std::move((i < 3 ? vertex_m : edge_m)[i % 3]);
+        m.sparse = i % 3 != 2 && sparse[i / 3];
+        out.push_back({wxf::WXFValue(kMatrixNames[i]), wxf::WXFValue(std::move(m))});
     }
-    return wxf::WXFValue(wxf::Encoded{w.release_data()});
+    return wxf::WXFValue(std::move(out));
 }
 
 }  // namespace
@@ -1473,7 +1579,8 @@ wxf::WXFValueAssociation BranchialStepWork::finish() {
     if (w.which & kBranchialOverlap) overlap_keys(rec);
     if ((w.which & kBranchialMatrices) && !w.over_limit)
         rec.push_back({wxf::WXFValue("StateMatrices"),
-                       state_matrices(w.which, w.ids, w.vertex_matrices, w.edge_matrices)});
+                       state_matrices(w.which, w.ids, w.vertex_matrices, w.edge_matrices,
+                                      w.vertex_m, w.edge_m)});
     return rec;
 }
 
@@ -1632,19 +1739,8 @@ void branchial_from_multiplicities(const std::vector<StepPoint>& points,
 }
 
 uint32_t measure_bits(const std::string& name) {
-    if (name == "VolumeGrowth") return hgcommon::SG_VOLUME_GROWTH;
-    if (name == "Geodesics") return hgcommon::SG_GEODESIC;
-    if (name == "EdgeCurvature") return hgcommon::SG_NONLAZY_OLLIVIER;
-    if (name == "Combinatorial") return hgcommon::SG_COMBINATORIAL;
-    if (name == "Particles") return hgcommon::SG_PARTICLE;
-    if (name == "DimensionGradient") return hgcommon::SG_DIMENSION_GRADIENT;
-    if (name == "GeodesicAnalysis") return hgcommon::SG_GEODESIC_ANALYSIS;
-    if (name == "Topology") return hgcommon::SG_TOPOLOGY;
-    if (name == "MetricTensor") return hgcommon::SG_METRIC_TENSOR;
-    if (name == "Holonomy") return hgcommon::SG_HOLONOMY;
-    if (name == "BranchAlignment") return hgcommon::SG_BRANCH_ALIGNMENT;
-    if (name == "Equilibrium") return kMeasureEquilibrium;
-    if (name == "Branchial") return kMeasureBranchial;
+    for (const MeasureName& m : kMeasureNames)
+        if (name == m.name) return m.bits;
     return 0;
 }
 
@@ -2367,13 +2463,8 @@ wxf::WXFValue StepStatisticsJobs::reply() {
             eq.push_back({wxf::WXFValue("DimensionTrend"), wxf::WXFValue(e.dimension_trend)});
             eq.push_back({wxf::WXFValue("SizeTrend"), wxf::WXFValue(e.size_trend)});
             eq.push_back({wxf::WXFValue("Window"), wxf::WXFValue(static_cast<int64_t>(e.window))});
-            // The symbol True or False as WXF bytes: 's', the name's length, the name.
-            const std::string name = e.equilibrated ? "True" : "False";
-            wxf::Encoded flag;
-            flag.bytes.push_back('s');
-            flag.bytes.push_back(static_cast<uint8_t>(name.size()));
-            flag.bytes.insert(flag.bytes.end(), name.begin(), name.end());
-            eq.push_back({wxf::WXFValue("Equilibrated"), wxf::WXFValue(std::move(flag))});
+            eq.push_back({wxf::WXFValue("Equilibrated"),
+                          wxf::WXFValue(wxf::Symbol{e.equilibrated ? "True" : "False"})});
             rec.push_back({wxf::WXFValue("Equilibrium"), wxf::WXFValue(std::move(eq))});
         }
         out.push_back(wxf::WXFValue(std::move(rec)));

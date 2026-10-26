@@ -842,10 +842,80 @@ void Writer::write<WXFValue>(const WXFValue& value) {
             }
         } else if constexpr (std::is_same_v<T, Encoded>) {
             append(v.bytes);
+        } else if constexpr (std::is_same_v<T, Symbol>) {
+            write_symbol(v.name);
+        } else if constexpr (std::is_same_v<T, Boxed<Function>>) {
+            write_function(v->head, v->args.size());
+            for (const auto& item : v->args) write(item);
+        } else if constexpr (std::is_same_v<T, Boxed<PackedReals>>) {
+            if (v->sparse && v->dims.size() == 2)
+                write_sparse_reals(v->dims[0], v->dims[1], v->values.data());
+            else
+                write_packed_reals(v->dims, v->values.data());
         } else {
             write(v);  // Use generic write for primitives
         }
     }, value.data);
+}
+
+// =============================================================================
+// ValueParser
+// =============================================================================
+
+const WXFValue& ValueParser::peek_() const {
+    if (pos_ >= count_) throw ParseError("Unexpected end of WXF data", pos_);
+    return values_[pos_];
+}
+
+const WXFValue& ValueParser::next_() {
+    const WXFValue& v = peek_();
+    ++pos_;
+    return v;
+}
+
+int64_t ValueParser::integer_(size_t width) const {
+    const WXFValue& v = peek_();
+    if (!v.holds<int64_t>()) throw TypeError("Expected integer type", pos_);
+    const int64_t x = v.get<int64_t>();
+    // The token Writer::write chooses for x, and Parser::read's refusal to narrow it.
+    size_t token = 8;
+    if (x >= std::numeric_limits<int8_t>::min() && x <= std::numeric_limits<int8_t>::max()) token = 1;
+    else if (x >= std::numeric_limits<int16_t>::min() && x <= std::numeric_limits<int16_t>::max()) token = 2;
+    else if (x >= std::numeric_limits<int32_t>::min() && x <= std::numeric_limits<int32_t>::max()) token = 4;
+    if (width < token)
+        throw TypeError("Cannot narrow int" + std::to_string(8 * token) + " to smaller type", pos_);
+    return x;
+}
+
+void ValueParser::read_association(const AssociationCallback& callback) {
+    const WXFValue& v = peek_();
+    if (!v.holds<WXFValueAssociation>()) throw TypeError("Expected association", pos_);
+    for (const auto& [key, value] : v.get<WXFValueAssociation>()) {
+        std::string name;
+        if (key.holds<std::string>()) name = key.get<std::string>();
+        else if (key.holds<Symbol>()) name = key.get<Symbol>().name;
+        else if (key.holds<int64_t>()) name = std::to_string(key.get<int64_t>());
+        else throw TypeError("Association key must be String, Symbol, or Integer", pos_);
+        ValueParser value_parser(value);
+        callback(name, value_parser);
+    }
+    next_();
+}
+
+void ValueParser::read_function(const FunctionCallback& callback) {
+    const WXFValue& v = peek_();
+    if (const Function* fp = v.function()) {
+        const Function& f = *fp;
+        ValueParser args(f.args.data(), f.args.size());
+        callback(f.head, f.args.size(), args);
+    } else if (v.holds<WXFValueList>()) {
+        const WXFValueList& items = v.get<WXFValueList>();
+        ValueParser args(items.data(), items.size());
+        callback("List", items.size(), args);
+    } else {
+        throw TypeError("Expected function", pos_);
+    }
+    next_();
 }
 
 Pieces Pieces::of(std::vector<uint8_t> bytes) {

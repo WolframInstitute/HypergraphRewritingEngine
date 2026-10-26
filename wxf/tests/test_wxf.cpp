@@ -1313,3 +1313,103 @@ TEST(WxfValueCopy, BadAllocDuringCopyThrows) {
     EXPECT_EXIT(copy_list_under_cap(), ::testing::ExitedWithCode(0), "");
 }
 #endif
+
+// A Symbol, a Function and a PackedReals in a WXFValue write the bytes of the Writer call each
+// stands for.
+TEST(WxfValueKinds, WriteTheirTokens) {
+    auto bytes_of = [](const wxf::WXFValue& v) {
+        wxf::Writer w;
+        w.write(v);
+        return w.release_data();
+    };
+    wxf::Writer sym;
+    sym.write_symbol("True");
+    EXPECT_EQ(bytes_of(wxf::WXFValue(wxf::Symbol{"True"})), sym.data());
+
+    wxf::Writer fn;
+    fn.write_function("Rule", 2);
+    fn.write(int64_t{1});
+    fn.write(std::string("x"));
+    EXPECT_EQ(bytes_of(wxf::WXFValue(wxf::Function{"Rule", {wxf::WXFValue(int64_t{1}),
+                                                            wxf::WXFValue(std::string("x"))}})),
+              fn.data());
+
+    const std::vector<double> m = {1.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0};
+    wxf::Writer packed, sparse;
+    packed.write_packed_reals({3, 3}, m.data());
+    sparse.write_sparse_reals(3, 3, m.data());
+    EXPECT_EQ(bytes_of(wxf::WXFValue(wxf::PackedReals{{3, 3}, m, false})), packed.data());
+    EXPECT_EQ(bytes_of(wxf::WXFValue(wxf::PackedReals{{3, 3}, m, true})), sparse.data());
+}
+
+namespace {
+// Each key's reads of an association, as text, "refused" for a read that throws: int, int64,
+// double, string, list of strings, and a function of two integer lists.
+template <class P>
+std::vector<std::string> association_reads(P& parser) {
+    std::vector<std::string> out;
+    auto attempt = [&](const std::function<std::string()>& f) {
+        try {
+            out.push_back(f());
+        } catch (const wxf::WXFException&) {
+            out.push_back("refused");
+        }
+    };
+    parser.read_association([&](const std::string& key, P& v) {
+        const size_t at = v.position();
+        out.push_back(key);
+        attempt([&] { return std::to_string(v.template read<int>()); });
+        v.seek(at);
+        attempt([&] { return std::to_string(v.template read<int64_t>()); });
+        v.seek(at);
+        attempt([&] { return std::to_string(v.template read<double>()); });
+        v.seek(at);
+        attempt([&] { return v.template read<std::string>(); });
+        v.seek(at);
+        attempt([&] { return std::to_string(v.template read<std::vector<std::string>>().size()); });
+        v.seek(at);
+        attempt([&] {
+            std::string s;
+            v.read_function([&](const std::string& head, size_t n, P& args) {
+                s = head + "/" + std::to_string(n) + "/" +
+                    std::to_string(args.template read<std::vector<int64_t>>().at(0));
+                s += "," + std::to_string(args.template read<std::vector<int64_t>>().at(0));
+            });
+            return s;
+        });
+        v.seek(at);
+        v.skip_value();
+    });
+    return out;
+}
+}  // namespace
+
+// wxf::ValueParser reads a value as wxf::Parser reads the bytes the Writer makes of it: the same
+// results and the same refusals.
+TEST(WxfValueParser, AgreesWithParserOnTheValuesBytes) {
+    using wxf::WXFValue;
+    const WXFValue job(wxf::WXFValueAssociation{
+        {WXFValue(std::string("Steps")), WXFValue(int64_t{3})},
+        {WXFValue(std::string("Big")), WXFValue(int64_t{1} << 40)},
+        {WXFValue(std::string("Mode")), WXFValue(wxf::Symbol{"Full"})},
+        {WXFValue(std::string("Rate")), WXFValue(0.25)},
+        {WXFValue(std::string("Names")),
+         WXFValue(wxf::WXFValueList{WXFValue(std::string("a")), WXFValue(wxf::Symbol{"b"})})},
+        {WXFValue(std::string("Rule")),
+         WXFValue(wxf::Function{"Rule", {WXFValue(wxf::WXFValueList{WXFValue(int64_t{0})}),
+                                         WXFValue(wxf::WXFValueList{WXFValue(int64_t{1})})}})},
+    });
+    wxf::Writer w;
+    w.write(job);
+    const std::vector<uint8_t> bytes = w.release_data();
+    wxf::Parser parser(bytes);
+    wxf::ValueParser values(job);
+    const auto from_bytes = association_reads(parser);
+    const auto from_value = association_reads(values);
+    EXPECT_EQ(from_bytes, from_value);
+    // The comparison covers a symbol read as a string, a Rule read as a function, and refusals
+    // (an int64 read as int among them).
+    EXPECT_NE(std::find(from_value.begin(), from_value.end(), "Full"), from_value.end());
+    EXPECT_NE(std::find(from_value.begin(), from_value.end(), "Rule/2/0,1"), from_value.end());
+    EXPECT_GE(std::count(from_value.begin(), from_value.end(), "refused"), 20);
+}

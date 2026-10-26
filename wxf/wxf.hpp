@@ -105,16 +105,60 @@ struct Encoded {
     std::vector<uint8_t> bytes;
 };
 
+// A symbol (True, Full, None, ...), written with the Symbol token. A std::string is written as a
+// String; a Parser reads either kind into a std::string.
+struct Symbol {
+    std::string name;
+};
+
+// head[args...] for a head other than List (Rule[lhs, rhs]). A list is a WXFValueList.
+struct Function {
+    std::string head;
+    WXFValueList args;
+};
+
+// An array of reals of dimensions `dims` (rank 1 or more), row-major. Written as
+// Writer::write_packed_reals, or as Writer::write_sparse_reals when `sparse` (rank 2 only).
+struct PackedReals {
+    std::vector<size_t> dims;
+    std::vector<double> values;
+    bool sparse = false;
+};
+
+// A value of a kind larger than the others, held on the heap and copied deeply, so the kind does
+// not widen every WXFValue: a WXFValue is the size of a std::string and the variant's index
+// (40 bytes with libstdc++, against 64 with Function or PackedReals held in place).
+template <class T>
+class Boxed {
+public:
+    Boxed(T v) : p_(std::make_unique<T>(std::move(v))) {}
+    Boxed(const Boxed& o) : p_(std::make_unique<T>(*o.p_)) {}
+    Boxed(Boxed&&) noexcept = default;
+    Boxed& operator=(const Boxed& o) {
+        p_ = std::make_unique<T>(*o.p_);
+        return *this;
+    }
+    Boxed& operator=(Boxed&&) noexcept = default;
+    const T& operator*() const { return *p_; }
+    const T* operator->() const { return p_.get(); }
+
+private:
+    std::unique_ptr<T> p_;
+};
+
 struct WXFValue {
     using Data = std::variant<
         std::monostate,           // Null/empty
         int64_t,                  // Integer
         double,                   // Real
-        std::string,              // String or Symbol
+        std::string,              // String
         std::vector<uint8_t>,     // BinaryString
         WXFValueList,             // List of values
         WXFValueAssociation,      // Association (arbitrary keys and values)
-        Encoded                   // An expression already written as WXF bytes
+        Encoded,                  // An expression already written as WXF bytes
+        Symbol,
+        Boxed<Function>,
+        Boxed<PackedReals>
     >;
     Data data;
 
@@ -152,7 +196,19 @@ struct WXFValue {
 
     template<typename T>
     bool holds() const { return std::holds_alternative<T>(data); }
+
+    // The Function or PackedReals this value holds; null when it holds another kind.
+    const Function* function() const {
+        const auto* b = std::get_if<Boxed<Function>>(&data);
+        return b ? &**b : nullptr;
+    }
+    const PackedReals* packed_reals() const {
+        const auto* b = std::get_if<Boxed<PackedReals>>(&data);
+        return b ? &**b : nullptr;
+    }
 };
+static_assert(sizeof(WXFValue) <= sizeof(std::string) + alignof(std::string),
+              "a WXFValue is a std::string and an index; hold a larger kind in a Boxed");
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -305,6 +361,77 @@ private:
     // Both big-number tokens have one wire shape; one body reads either.
     std::string read_big_number(Token expected, const char* what);
 };
+
+/**
+ * ValueParser - reads a sequence of in-memory WXFValues through the reading interface of Parser
+ * (read<T>, read_association, read_function, position, seek, skip_value), so one templated
+ * reader serves bytes and values. A value is accepted where Parser accepts the bytes the Writer
+ * makes of it: an integer is read as T only when the token the Writer would choose for it fits
+ * T, a real only from a double, a std::string from a std::string or a Symbol, a vector from a
+ * WXFValueList or a List Function. position() counts values, not bytes.
+ */
+class ValueParser {
+public:
+    ValueParser(const WXFValue* values, size_t count) : values_(values), count_(count) {}
+    explicit ValueParser(const WXFValue& value) : values_(&value), count_(1) {}
+
+    void skip_header() {}
+    size_t position() const noexcept { return pos_; }
+    void seek(size_t pos) { pos_ = pos; }
+    bool at_end() const noexcept { return pos_ >= count_; }
+    void skip_value() { next_(); }
+
+    template<typename T>
+    T read();
+
+    using AssociationCallback = std::function<void(const std::string&, ValueParser&)>;
+    using FunctionCallback = std::function<void(const std::string&, size_t, ValueParser&)>;
+    void read_association(const AssociationCallback& callback);
+    void read_function(const FunctionCallback& callback);
+
+private:
+    const WXFValue& peek_() const;
+    const WXFValue& next_();
+    // The integer, checked against the widest WXF integer token T can take.
+    int64_t integer_(size_t width) const;
+    const WXFValue* values_;
+    size_t count_;
+    size_t pos_ = 0;
+};
+
+template<typename T>
+T ValueParser::read() {
+    if constexpr (std::is_integral_v<T>) {
+        const int64_t v = integer_(sizeof(T));
+        next_();
+        return static_cast<T>(v);
+    } else if constexpr (std::is_same_v<T, double>) {
+        const WXFValue& v = peek_();
+        if (!v.holds<double>()) throw TypeError("Expected 64-bit real", pos_);
+        next_();
+        return v.get<double>();
+    } else if constexpr (std::is_same_v<T, std::string>) {
+        const WXFValue& v = peek_();
+        if (v.holds<std::string>()) { next_(); return v.get<std::string>(); }
+        if (v.holds<Symbol>()) { next_(); return v.get<Symbol>().name; }
+        throw TypeError("Expected String or Symbol token for std::string", pos_);
+    } else if constexpr (is_vector_v<T> && !std::is_same_v<T, std::vector<uint8_t>>) {
+        const WXFValue& v = peek_();
+        const WXFValueList* items = nullptr;
+        if (v.holds<WXFValueList>()) items = &v.get<WXFValueList>();
+        else if (v.function() && v.function()->head == "List") items = &v.function()->args;
+        else throw TypeError("Expected List function", pos_);
+        ValueParser inner(items->data(), items->size());
+        T result;
+        result.reserve(items->size());
+        for (size_t i = 0; i < items->size(); ++i)
+            result.push_back(inner.read<typename T::value_type>());
+        next_();
+        return result;
+    } else {
+        static_assert(is_wxf_serializable<T>::value, "Type not supported for WXF serialization");
+    }
+}
 
 /**
  * WXF Writer - Serializes C++ types to WXF binary data

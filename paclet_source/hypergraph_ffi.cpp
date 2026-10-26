@@ -34,6 +34,7 @@
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
+#include "reply_out.hpp"         // WireReply and ArrayReply, the two reply forms
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
 #include "hgcommon/memory_limit.hpp"  // process_memory_limit, for "Device"
@@ -65,15 +66,16 @@ namespace ffi_helpers {
     // IMPORTANT: Rules must use numeric vertex IDs, not symbolic patterns!
     // Valid:   {{0, 1}, {1, 2}} -> {{0, 1}, {1, 2}, {2, 3}}
     // Invalid: {{x, y}, {y, z}} -> {{x, y}, {y, z}, {z, w}}
+    template <class P>
     std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>>
-    read_rules_association(wxf::Parser& parser) {
+    read_rules_association(P& parser) {
         std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> rules;
 
-        parser.read_association([&](const std::string& rule_name, wxf::Parser& rule_parser) {
+        parser.read_association([&](const std::string& rule_name, P& rule_parser) {
             // Each rule value should be a function Rule[lhs, rhs]
             std::vector<std::vector<std::vector<int64_t>>> rule_parts;
 
-            rule_parser.read_function([&](const std::string& head, size_t count, wxf::Parser& args_parser) {
+            rule_parser.read_function([&](const std::string& head, size_t count, P& args_parser) {
                 if (head != "Rule" || count != 2) {
                     throw std::runtime_error("Expected Rule[lhs, rhs]");
                 }
@@ -81,8 +83,8 @@ namespace ffi_helpers {
                 // Read LHS and RHS using recursive templates
                 // Catch type errors and provide helpful message about symbolic vs numeric rules
                 try {
-                    auto lhs = args_parser.read<std::vector<std::vector<int64_t>>>();
-                    auto rhs = args_parser.read<std::vector<std::vector<int64_t>>>();
+                    auto lhs = args_parser.template read<std::vector<std::vector<int64_t>>>();
+                    auto rhs = args_parser.template read<std::vector<std::vector<int64_t>>>();
                     rule_parts = {lhs, rhs};
                 } catch (const wxf::TypeError& e) {
                     throw std::runtime_error(
@@ -144,27 +146,24 @@ static hgffi::SessionSlot& worker_session() {
 // dependency runs one way -- it writes ParsedJob and reads nothing a later phase produces.
 // Everything after it in that function reads the same fields, which is why the op boundary
 // (#12) had to be drawn by binding references rather than by extracting a second function.
-static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& host,
-                      hgffi::ParsedJob& req) {
-        // Parse WXF input
-        wxf::Parser parser(wxf_bytes);
-        parser.skip_header();
-
+// `P` is wxf::Parser over the job's WXF bytes, or wxf::ValueParser over the job as a value.
+template <class P>
+static void parse_job(P& parser, hgffi::ParsedJob& req) {
         // Parse main association
-        parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
+        parser.read_association([&](const std::string& key, P& value_parser) {
             if (key == "InitialStates") {
-                req.initial_states_raw = value_parser.read<std::vector<std::vector<std::vector<int64_t>>>>();
+                req.initial_states_raw = value_parser.template read<std::vector<std::vector<std::vector<int64_t>>>>();
             }
             else if (key == "InitialEdges") {
                 // Legacy single-state format
-                auto edges_data = value_parser.read<std::vector<std::vector<int64_t>>>();
+                auto edges_data = value_parser.template read<std::vector<std::vector<int64_t>>>();
                 req.initial_states_raw.push_back(edges_data);
             }
             else if (key == "Rules") {
                 req.parsed_rules_raw = ffi_helpers::read_rules_association(value_parser);
             }
             else if (key == "Steps") {
-                req.steps = value_parser.read<int>();
+                req.steps = value_parser.template read<int>();
                 // Every budget check in the engine is `step > max_steps_`, and this is cast to
                 // size_t downstream -- so a negative value becomes SIZE_MAX and no check ever
                 // fires. The run then ends only by exhausting the SegmentedArray ceiling,
@@ -175,7 +174,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                 }
             }
             else if (key == "Options") {
-                value_parser.read_association([&](const std::string& option_key, wxf::Parser& option_parser) {
+                value_parser.read_association([&](const std::string& option_key, P& option_parser) {
                     // A read that throws mid-value leaves the cursor INSIDE the value, and a
                     // skip from there consumes the wrong tokens -- every later option then
                     // parses from a shifted offset. Recovery seeks back here first.
@@ -185,7 +184,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                         // (the catch below skips it with a warning) rather than cast to size_t,
                         // where -1 becomes 2^64-1 and acts as no cap without a message.
                         auto read_cap = [&]() -> size_t {
-                            const int64_t v = option_parser.read<int64_t>();
+                            const int64_t v = option_parser.template read<int64_t>();
                             if (v < 0)
                                 throw std::runtime_error(
                                     "a cap is a non-negative integer (0 is no cap), got " +
@@ -208,16 +207,16 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                         } else if (option_key == "MatchesPerStateRule") {
                             req.matches_per_state_rule = read_cap();
                         } else if (option_key == "RandomSeed") {
-                            req.random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
+                            req.random_seed = static_cast<uint64_t>(option_parser.template read<int64_t>());
                         } else if (option_key == "Threads") {
                             // 0 is Automatic: HG_TUNE_THREADS or the derived count.
-                            const int64_t n = option_parser.read<int64_t>();
+                            const int64_t n = option_parser.template read<int64_t>();
                             if (n != 0) req.tuning.set(hgcommon::Tune::Threads, n);
                         } else if (option_key == "Tuning") {
                             // Each key is read on its own, so one bad entry is skipped with a
                             // warning and the others apply.
                             option_parser.read_association([&](const std::string& name,
-                                                               wxf::Parser& p) {
+                                                               P& p) {
                                 const size_t at = p.position();
                                 try {
                                     const auto t = hgcommon::TuningOverrides::by_option(name);
@@ -226,7 +225,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                             "'" + name + "' is not a tuning name; the names are " +
                                             hgcommon::TuningOverrides::option_names(
                                                 hgcommon::Tune::Threads));
-                                    req.tuning.set(*t, p.read<int64_t>());
+                                    req.tuning.set(*t, p.template read<int64_t>());
                                 } catch (const std::exception& e) {
                                     p.seek(at);
                                     p.skip_value();
@@ -236,24 +235,24 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 }
                             });
                         } else if (option_key == "ExplorationProbability") {
-                            req.exploration_probability = finite(option_parser.read<double>());
+                            req.exploration_probability = finite(option_parser.template read<double>());
                         } else if (option_key == "TransitionRate") {
-                            req.transition_rate = finite(option_parser.read<double>());
+                            req.transition_rate = finite(option_parser.template read<double>());
                         } else if (option_key == "RuleWeights") {
-                            std::vector<double> weights = option_parser.read<std::vector<double>>();
+                            std::vector<double> weights = option_parser.template read<std::vector<double>>();
                             for (double w : weights) finite(w);
                             req.rule_weights = std::move(weights);
                         } else if (option_key == "BranchialStep") {
                             // 0=All, positive=1-based step index, negative=from end (-1=final)
-                            req.branchial_step = static_cast<int>(option_parser.read<int64_t>());
+                            req.branchial_step = static_cast<int>(option_parser.template read<int64_t>());
                         } else if (option_key == "EdgeDeduplication") {
-                            std::string symbol = option_parser.read<std::string>();
+                            std::string symbol = option_parser.template read<std::string>();
                             req.edge_deduplication = (symbol == "True");
                         } else if (option_key == "IncludeVertexCurvature") {
                             req.include_vertex_curvature =
-                                option_parser.read<std::string>() == "True";
+                                option_parser.template read<std::string>() == "True";
                         } else if (option_key == "IncludeCanonicalHashes") {
-                            std::string symbol = option_parser.read<std::string>();
+                            std::string symbol = option_parser.template read<std::string>();
                             req.include_canonical_hashes = (symbol == "True");
                         } else if (option_key == "RequestedData") {
                             // Parse list of data component names
@@ -271,7 +270,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             req.include_num_causal_edges = false;
                             req.include_num_branchial_edges = false;
 
-                            auto components = option_parser.read<std::vector<std::string>>();
+                            auto components = option_parser.template read<std::vector<std::string>>();
                             for (const auto& comp : components) {
                                 if (comp == "States") req.include_states = true;
                                 else if (comp == "Events") req.include_events = true;
@@ -296,7 +295,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             std::vector<std::string> keys;
                             bool is_list = true;
                             try {
-                                keys = option_parser.read<std::vector<std::string>>();
+                                keys = option_parser.template read<std::vector<std::string>>();
                             } catch (...) {
                                 // A failure mid-list (the header parses, an element does not)
                                 // leaves the cursor inside the list; re-align to the value start.
@@ -319,7 +318,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 }
                                 req.event_signature_keys = sig;
                             } else {
-                                const std::string symbol = option_parser.read<std::string>();
+                                const std::string symbol = option_parser.template read<std::string>();
                                 if (symbol == "None") {
                                     req.event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 } else if (symbol == "Full") {
@@ -342,7 +341,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             // the EVOLUTION deduplicates states by, so each is answered by the
                             // engine as it runs: None gives every state its own id, Automatic
                             // deduplicates by content, Full by the exact canonical form.
-                            std::string symbol = option_parser.read<std::string>();
+                            std::string symbol = option_parser.template read<std::string>();
                             if (symbol == "None" || symbol == "False") {
                                 req.state_canon_mode = hypergraph::StateCanonicalizationMode::None;
                                 req.canonicalize_states_mode = "None";
@@ -358,13 +357,13 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                     "'" + symbol + "' is not None, Automatic or Full");
                             }
                         } else if (option_key == "StepStatisticsWeighting") {
-                            const std::string w = option_parser.read<std::string>();
+                            const std::string w = option_parser.template read<std::string>();
                             if (w == "States") req.step_statistics_by_class = false;
                             else if (w == "Classes") req.step_statistics_by_class = true;
                             else throw std::runtime_error(
                                 "StepStatisticsWeighting '" + w + "' is not States or Classes");
                         } else if (option_key == "StatisticsGraph") {
-                            const std::string w = option_parser.read<std::string>();
+                            const std::string w = option_parser.template read<std::string>();
                             if (w == "Consecutive") req.statistics_graph = hgcommon::SG_GRAPH_CONSECUTIVE;
                             else if (w == "AllPairs") req.statistics_graph = hgcommon::SG_GRAPH_ALL_PAIRS;
                             else throw std::runtime_error(
@@ -372,7 +371,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                         } else if (option_key == "StepStatisticsMeasures") {
                             // Automatic is the empty list and All every name.
                             uint32_t bits = 0;
-                            for (const auto& k : option_parser.read<std::vector<std::string>>()) {
+                            for (const auto& k : option_parser.template read<std::vector<std::string>>()) {
                                 const uint32_t bit = hg::stats::measure_bits(k);
                                 if (!bit)
                                     throw std::runtime_error(
@@ -391,10 +390,10 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             std::vector<std::string> code;
                             std::vector<double> constants;
                             option_parser.read_association(
-                                [&](const std::string& k, wxf::Parser& p) {
-                                    if (k == "Code") code = p.read<std::vector<std::string>>();
+                                [&](const std::string& k, P& p) {
+                                    if (k == "Code") code = p.template read<std::vector<std::string>>();
                                     else if (k == "Constants")
-                                        constants = p.read<std::vector<double>>();
+                                        constants = p.template read<std::vector<double>>();
                                     else p.skip_value();
                                 });
                             try {
@@ -404,7 +403,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             }
                         } else if (option_key == "StepStatisticsBranchial") {
                             uint32_t bits = 0;
-                            for (const auto& k : option_parser.read<std::vector<std::string>>()) {
+                            for (const auto& k : option_parser.template read<std::vector<std::string>>()) {
                                 if (k == "Graph") bits |= hg::stats::kBranchialGraph;
                                 else if (k == "Overlap") bits |= hg::stats::kBranchialOverlap;
                                 else throw std::runtime_error(
@@ -414,7 +413,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 (req.step_statistics_branchial & hg::stats::kBranchialMatrices) | bits;
                         } else if (option_key == "StepStatisticsMatrices") {
                             uint32_t bits = 0;
-                            for (const auto& k : option_parser.read<std::vector<std::string>>()) {
+                            for (const auto& k : option_parser.template read<std::vector<std::string>>()) {
                                 const uint32_t bit = hg::stats::matrix_bit(k);
                                 if (!bit)
                                     throw std::runtime_error(
@@ -428,7 +427,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 (req.step_statistics_branchial & ~hg::stats::kBranchialMatrices) | bits;
                         } else if (option_key == "StepStatisticsMatrixLimit") {
                             // Bytes; 0 is Automatic.
-                            const int64_t v = option_parser.read<int64_t>();
+                            const int64_t v = option_parser.template read<int64_t>();
                             if (v < 0)
                                 throw std::runtime_error(
                                     "StepStatisticsMatrixLimit is a byte count or Automatic, got " +
@@ -443,10 +442,10 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             req.event_ordering_names.clear();
                             try {
                                 req.event_ordering_names =
-                                    option_parser.read<std::vector<std::string>>();
+                                    option_parser.template read<std::vector<std::string>>();
                             } catch (const wxf::TypeError&) {
                                 option_parser.seek(option_value_start);
-                                std::string name = option_parser.read<std::string>();
+                                std::string name = option_parser.template read<std::string>();
                                 if (name == "Automatic")
                                     req.event_ordering_automatic = true;
                                 else if (name != "None")
@@ -454,9 +453,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             }
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
-                            req.graph_properties = option_parser.read<std::vector<std::string>>();
+                            req.graph_properties = option_parser.template read<std::vector<std::string>>();
                         } else {
-                            std::string symbol = option_parser.read<std::string>();
+                            std::string symbol = option_parser.template read<std::string>();
                             bool value = (symbol == "True");
 
                             if (option_key == "ShowGenesisEvents") {
@@ -529,21 +528,21 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
             // `Session` is the opaque handle: a per-worker counter, 0 reserved for "no session",
             // so no client can construct one and none is confused with absence.
             else if (key == "Op") {
-                req.session_op = value_parser.read<std::string>();
+                req.session_op = value_parser.template read<std::string>();
             }
             else if (key == "Session") {
-                req.session_handle = static_cast<uint64_t>(value_parser.read<int64_t>());
+                req.session_handle = static_cast<uint64_t>(value_parser.template read<int64_t>());
             }
             // The frontier states a `Step` expands, by effective id. Absent means all of them;
             // an empty list means none.
             else if (key == "From") {
-                req.session_from = value_parser.read<std::vector<int64_t>>();
+                req.session_from = value_parser.template read<std::vector<int64_t>>();
                 req.session_from_given = true;
             }
             // "Delta" sends only what this session has not been sent; anything else is a full
             // delivery, which also resets the record.
             else if (key == "Delivery") {
-                req.delivery_delta = (value_parser.read<std::string>() == "Delta");
+                req.delivery_delta = (value_parser.template read<std::string>() == "Delta");
             }
             else {
                 value_parser.skip_value();
@@ -829,6 +828,15 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         }
         return out;
 }
+
+// The device's reply is WXF only: an in-process ArrayReply job runs on the CPU engine.
+template <class Out>
+static void run_gpu_reply(hgffi::ParsedJob& req, const HostBridge& host, Out& out) {
+    if constexpr (Out::kWire)
+        out.set_pieces(run_gpu_job(req, host));
+    else
+        throw std::runtime_error("the GPU engine replies in WXF only");
+}
 #endif  // HG_GPU_BACKEND
 
 // Everything a FRESH run needs before it can be serialized: the identity and recording
@@ -1017,8 +1025,8 @@ static void push_counts(wxf::WXFValueAssociation& out, const hgffi::ParsedJob& r
 // THE REPLY OF A RUN THAT EXHAUSTED ITS MEMORY, when the whole reply does not fit either: the
 // requested counts and the warnings, the last of them saying that the lists were left out, and
 // "Reduced" -> 1. HGEvolve then gives empty lists for what the reply leaves out.
-static std::vector<uint8_t> reduced_reply(const hgffi::ParsedJob& req, hypergraph::Hypergraph& hg,
-                                          hypergraph::ParallelEvolutionEngine& engine) {
+static wxf::WXFValueAssociation reduced_reply(const hgffi::ParsedJob& req, hypergraph::Hypergraph& hg,
+                                              hypergraph::ParallelEvolutionEngine& engine) {
     wxf::WXFValueAssociation out;
     const size_t genesis_pairs =
         hg.quotient_reconstruction() && req.show_genesis_events
@@ -1035,27 +1043,19 @@ static std::vector<uint8_t> reduced_reply(const hgffi::ParsedJob& req, hypergrap
         true));
     out.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
     out.push_back({wxf::WXFValue("Reduced"), wxf::WXFValue(int64_t{1})});
-    wxf::Writer w;
-    w.write_header();
-    w.write(wxf::WXFValue(out));
-    return w.release_data();
+    return out;
 }
 
-std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
-                                        const HostBridge& host) {
-    return run_rewriting_core_pieces(wxf_bytes, host).join();
-}
-
-wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
-                                      const HostBridge& host) {
-    // Built before the reply when the evolution ran out of memory (reduced_reply), and answered
-    // when the reply runs out of memory as well. It outlives the engine, which the unwinding
-    // frees first.
-    std::vector<uint8_t> reduced;
+// One job, from its parse to its reply in `reply` (reply_out.hpp). `parse(req)` fills the job.
+// The reply that the evolution ran out of memory for (reduced_reply) is kept in `reply` before the
+// reply is built, and given when building the reply runs out of memory as well. It outlives the
+// engine, which the unwinding frees first.
+template <class Out, class Parse>
+static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
     uint64_t job_memory_limit = 0;
     try {
         hgffi::ParsedJob req;
-        parse_job(wxf_bytes, host, req);
+        parse(req);
         // Held until the reply is built, which allocates as well.
         const hypergraph::JobMemoryLimit memory_limit(req.tuning);
         req.memory_limit = job_memory_limit = memory_limit.bytes();
@@ -1104,12 +1104,15 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         const bool custom_keys = req.event_signature_keys != hypergraph::EVENT_SIG_NONE &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_FULL &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
-        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session;
-        if (req.positional_event_identity && !cpu_session)
+        // A job replied in arrays (in-process) runs on the CPU engine: the device replies in WXF.
+        const bool cpu_reply = !Out::kWire;
+        const bool on_cpu =
+            req.positional_event_identity || custom_keys || cpu_session || cpu_reply;
+        if (req.positional_event_identity && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
                 "mode"});
-        else if (custom_keys && !cpu_session)
+        else if (custom_keys && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
                 "Full and Automatic"});
@@ -1123,13 +1126,14 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             // forever. The process-boundary gate caught exactly that: Close was the one verb
             // that errored.
 #ifdef HG_GPU_BACKEND
-            if (!on_cpu) return run_gpu_job(req, host);
-            worker_session().close(req.session_handle);
-            return wxf::Pieces::of(hgmarshal::session_ack(hgffi::SessionSlot::kNoSession));
-#else
-            worker_session().close(req.session_handle);
-            return wxf::Pieces::of(hgmarshal::session_ack(hgffi::SessionSlot::kNoSession));
+            if (!on_cpu) {
+                run_gpu_reply(req, host, reply);
+                return;
+            }
 #endif
+            worker_session().close(req.session_handle);
+            reply.session_ack(hgffi::SessionSlot::kNoSession);
+            return;
         }
 
         // WHERE THE ENGINE COMES FROM is the whole of the op boundary. `Step` and `Query` answer
@@ -1228,7 +1232,10 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                                          hgffi::SessionSlot::already_live_message(other));
         }
         // The GPU binary answers the job on the device unless it runs on the CPU engine (above).
-        if (!on_cpu) return run_gpu_job(req, host);
+        if (!on_cpu) {
+            run_gpu_reply(req, host, reply);
+            return;
+        }
 #endif
 
         // The graph and its engine, owned together by a holder rather than as two locals.
@@ -1475,10 +1482,9 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         }
 
         if (engine.get_error_type() == job_system::ErrorType::OutOfMemory)
-            reduced = reduced_reply(req, hg, engine);
+            reply.keep_reduced(reduced_reply(req, hg, engine));
 
-        // Build WXF output - only include requested data components
-        wxf::WXFValueAssociation full_result;
+        // The reply below includes only the requested data components.
 
         // An `Open` retains the engine, and the reply has to carry the handle -- a session the
         // caller cannot name is a leak it cannot close. Taken HERE, before serialization, so the
@@ -1503,16 +1509,14 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             try {
                 const uint64_t h = worker_session().open(std::move(engine_holder));
                 undelivered_open.handle = h;
-                full_result.push_back({wxf::WXFValue("Session"),
-                                       wxf::WXFValue(static_cast<int64_t>(h))});
+                reply.value("Session", wxf::WXFValue(static_cast<int64_t>(h)));
             } catch (const hgffi::SessionError& e) {
                 throw std::runtime_error(std::string("Open refused: ") + e.what());
             }
         } else if (held_session) {
             // Echoed so every reply that came from a session says which one, and a caller
             // multiplexing over replies never has to match one to a request to find out.
-            full_result.push_back({wxf::WXFValue("Session"),
-                                   wxf::WXFValue(static_cast<int64_t>(req.session_handle))});
+            reply.value("Session", wxf::WXFValue(static_cast<int64_t>(req.session_handle)));
         }
 
         // THE FRONTIER, in every reply a session gives. A caller cannot steer a continuation
@@ -1529,17 +1533,13 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 const int64_t eff = get_effective_state_id(raw);
                 if (seen.insert(eff).second) frontier.push_back(wxf::WXFValue(eff));
             }
-            full_result.push_back({wxf::WXFValue("Frontier"), wxf::WXFValue(frontier)});
+            reply.value("Frontier", wxf::WXFValue(frontier));
         }
 
-        // The States and Events sections dominate the result size, so they are
-        // streamed straight into this scratch Writer as complete key->value blobs
-        // rather than accumulated into an O(states+events) WXFValue tree. They are
-        // spliced ahead of full_result at write time (see the tail of this function);
-        // an Association is a flat concatenation of entries, so the byte stream is
-        // identical to building one combined value tree.
-        wxf::Writer sections;
-        std::size_t streamed_top_sections = 0;
+        // The States and Events sections dominate the result size, so they are written as
+        // records (Out::records) rather than accumulated into an O(states+events) WXFValue
+        // tree: the wire reply streams them into one buffer spliced ahead of the other entries,
+        // which an Association's flat concatenation of entries allows.
 
         // The reply's sections are written in chunks by side jobs on the engine's workers, idle
         // after the evolution; the calling thread runs chunk 0 and then waits for the rest. The
@@ -1590,16 +1590,9 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 emit_sids.push_back(sid);
             }
 
-            // States -> Association[state_id -> state_data], streamed directly.
-            sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            sections.write(std::string("States"));
-            sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            sections.write_varint(emit_sids.size());
-
-            hgmarshal::write_items(sections, emit_sids.size(), on_workers,
-                                   [&](wxf::Writer& out, size_t item) {
+            // States -> Association[state_id -> state_data].
+            reply.records("States", emit_sids.size(), on_workers, [&](size_t item, auto& sink) {
                 const uint32_t sid = emit_sids[item];
-                hgmarshal::StreamRecordSink sink(out);
                 const hypergraph::State& state = hg.get_state(sid);
                 std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
                 edges.reserve(state.edges.count());
@@ -1627,8 +1620,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     exact_hash = hgmarshal::reported_state_hash(edges.empty(), exact_hash);
                 }
                 // Association key: raw state id.
-                out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                out.write(static_cast<int64_t>(sid));
+                sink.key(static_cast<int64_t>(sid));
                 // A hash with the top bit set surfaces as a negative integer (the cast is
                 // bijective, so equality and grouping are preserved).
                 hgmarshal::write_state_record(sink,
@@ -1641,7 +1633,6 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                         req.include_vertex_curvature, nullptr, req.statistics_graph},
                     full_canonicalization, req.undirected_edges, std::move(edges));
             });
-            ++streamed_top_sections;
         }
 
         // The reconstruction's applications, which "Events" and the graphs report under quotient
@@ -1712,47 +1703,41 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 for (uint32_t e = 0; e < recon.id_bound; ++e)
                     if (hg.reconstructed_event_content(e)) apps.push_back(e);
                 const std::vector<uint32_t>& genesis = recon.genesis;
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(std::string("Events"));
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-                sections.write_varint(apps.size() + genesis.size());
                 const std::vector<int64_t> none;
-                hgmarshal::write_items(sections, apps.size(), on_workers,
-                                       [&](wxf::Writer& w, size_t item) {
+                // The applications, then the genesis events.
+                reply.records("Events", apps.size() + genesis.size(), on_workers,
+                            [&](size_t item, auto& sink) {
+                    if (item >= apps.size()) {
+                        const uint32_t eid = genesis[item - apps.size()];
+                        const hypergraph::Event& event = hg.get_event(eid);
+                        const std::vector<int64_t> produced(
+                            event.produced_edges, event.produced_edges + event.num_produced);
+                        const int64_t gid = recon.genesis_reported(eid);
+                        sink.key(gid);
+                        hgmarshal::write_event_record(sink,
+                            hgmarshal::EventRecordIds{
+                                gid, gid,
+                                static_cast<int64_t>(event.rule_index),
+                                static_cast<int64_t>(event.input_state),
+                                static_cast<int64_t>(event.output_state),
+                                static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
+                                static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
+                            minimal, none, produced);
+                        return;
+                    }
                     const uint32_t e = apps[item];
-                    hgmarshal::StreamRecordSink sink(w);
                     const hypergraph::QcEventContent& c = *hg.reconstructed_event_content(e);
                     const auto dense = recon.dense_of_sig.find(recon_event_key(e));
                     const int64_t in = get_effective_state_id(hg.class_frame_state(c.from_class));
-                    const int64_t out = get_effective_state_id(hg.class_frame_state(c.to_class));
-                    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    w.write(static_cast<int64_t>(e));
+                    const int64_t to = get_effective_state_id(hg.class_frame_state(c.to_class));
+                    sink.key(static_cast<int64_t>(e));
                     hgmarshal::write_event_record(sink,
                         hgmarshal::EventRecordIds{
                             static_cast<int64_t>(e),
                             dense == recon.dense_of_sig.end() ? static_cast<int64_t>(e) : dense->second,
-                            static_cast<int64_t>(c.rule), in, out, in, out},
+                            static_cast<int64_t>(c.rule), in, to, in, to},
                         minimal, none, none);
                 });
-                hgmarshal::StreamRecordSink sink(sections);
-                std::vector<int64_t> produced;
-                for (uint32_t eid : genesis) {
-                    const hypergraph::Event& event = hg.get_event(eid);
-                    produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
-                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    const int64_t gid = recon.genesis_reported(eid);
-                    sections.write(gid);
-                    hgmarshal::write_event_record(sink,
-                        hgmarshal::EventRecordIds{
-                            gid, gid,
-                            static_cast<int64_t>(event.rule_index),
-                            static_cast<int64_t>(event.input_state),
-                            static_cast<int64_t>(event.output_state),
-                            static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
-                            static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
-                        minimal, none, produced);
-                }
-                ++streamed_top_sections;
             } else {
 
                 // First pass fixes the emitted event set so the association length is known before
@@ -1766,22 +1751,14 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     emit_eids.push_back(eid);
                 }
 
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(std::string("Events"));
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-                sections.write_varint(emit_eids.size());
-
-                hgmarshal::write_items(sections, emit_eids.size(), on_workers,
-                                       [&](wxf::Writer& w, size_t item) {
+                reply.records("Events", emit_eids.size(), on_workers, [&](size_t item, auto& sink) {
                     const uint32_t eid = emit_eids[item];
-                    hgmarshal::StreamRecordSink sink(w);
                     const hypergraph::Event& event = hg.get_event(eid);
                     const std::vector<int64_t> consumed(event.consumed_edges,
                                                         event.consumed_edges + event.num_consumed);
                     const std::vector<int64_t> produced(event.produced_edges,
                                                         event.produced_edges + event.num_produced);
-                    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    w.write(static_cast<int64_t>(eid));
+                    sink.key(static_cast<int64_t>(eid));
                     hgmarshal::write_event_record(sink,
                         hgmarshal::EventRecordIds{
                             static_cast<int64_t>(eid),
@@ -1794,7 +1771,6 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                             static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
                         minimal, consumed, produced);
                 });
-                ++streamed_top_sections;
             }
         }
 
@@ -1871,10 +1847,8 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                                         static_cast<int64_t>(edge.consumer)});
             }
             }
-            full_result.push_back({wxf::WXFValue("CausalEdges"),
-                                   hgmarshal::relation_list(std::move(causal_edges),
-                                                            {"From", "To", "RawFrom", "RawTo"},
-                                                            on_workers)});
+            reply.relation("CausalEdges", std::move(causal_edges),
+                           {"From", "To", "RawFrom", "RawTo"}, on_workers);
         }
 
         // BranchialEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
@@ -1917,9 +1891,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                                            static_cast<int64_t>(hg.get_canonical_event(edge.event2))});
             }
             }
-            full_result.push_back({wxf::WXFValue("BranchialEdges"),
-                                   hgmarshal::relation_list(std::move(branchial_edges),
-                                                            {"From", "To"}, on_workers)});
+            reply.relation("BranchialEdges", std::move(branchial_edges), {"From", "To"}, on_workers);
         }
 
         // BranchialStateEdges / BranchialStateEdgesAllSiblings -> the state-endpoint projection
@@ -1947,8 +1919,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 }
                 pairs.emplace_back(be.event1, be.event2);
             }
-            hgmarshal::push_branchial_state_edges(
-                full_result,
+            reply.branchial_state_edges(
                 hgmarshal::branchial_state_edges_from_pairs(
                     pairs, bse_output_state, bse_canonical, bse_step, bse_opts));
         }
@@ -1965,8 +1936,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                         emit(events);
                     });
             };
-            hgmarshal::push_branchial_state_edges(
-                full_result,
+            reply.branchial_state_edges(
                 hgmarshal::branchial_state_edges_all_siblings(
                     for_each_group, bse_output_state, bse_canonical, bse_step, bse_opts));
         }
@@ -2208,14 +2178,16 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             hgffi::DeliveryCursor* cursor = nullptr;
             if (held_session && req.delivery_delta) cursor = &holder->delivery_cursor();
             if (held_session && !cursor) holder->delivery_cursor().reset();
-            full_result.push_back(
-                {wxf::WXFValue("GraphData"),
-                 hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor,
-                                             on_workers)});
+            reply.value("GraphData", hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts,
+                                                               cursor, on_workers));
         }
 
         // Only include counts when requested
-        push_counts(full_result, req, hg, engine, recon_genesis_pairs.size());
+        {
+            wxf::WXFValueAssociation counts;
+            push_counts(counts, req, hg, engine, recon_genesis_pairs.size());
+            for (auto& [key, value] : counts) reply.value(key.get<std::string>(), std::move(value));
+        }
 
         // StepStatistics -> per step, the population of raw states summarised from one state per
         // class and the class's multiplicity (state_statistics.hpp). Under quotient exploration
@@ -2292,7 +2264,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 for (auto& [step, by_rule] : rule_counts)
                     weighted[step].rule_counts = std::move(by_rule);
             }
-            wxf::WXFValue reply;
+            wxf::WXFValue statistics;
             if (by_count && (!which || quotient_graph)) {
                 hg::stats::StepStatisticsJobs jobs(
                     req.step_statistics_by_class, which, engine.num_threads(),
@@ -2300,7 +2272,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 jobs.set_measures(hgcommon::SG_MEASURES_BASE | req.statistics_measures);
                 for (auto& [step, in] : weighted) jobs.submit(step, std::move(in));
                 engine.wait_side_jobs();
-                reply = jobs.reply();
+                statistics = jobs.reply();
             } else {
                 // The states give each step's classes and events, or with the count only its
                 // branchial input.
@@ -2312,7 +2284,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     step_statistics->set_measures(hgcommon::SG_MEASURES_BASE |
                                                   req.statistics_measures);
                 }
-                reply = step_statistics->finish(by_count ? &weighted : nullptr);
+                statistics = step_statistics->finish(by_count ? &weighted : nullptr);
                 for (const auto& [step, states] : step_statistics->matrices_over_limit())
                     req.ffi_warnings.push_back(
                         {"StepStatistics", 1,
@@ -2320,7 +2292,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                              step, states, which,
                              hg::stats::matrix_limit_bytes(req.step_statistics_matrix_limit))});
             }
-            full_result.push_back({wxf::WXFValue("StepStatistics"), std::move(reply)});
+            reply.value("StepStatistics", std::move(statistics));
         }
 
         // GlobalEdges -> List of all edges created during evolution
@@ -2330,16 +2302,12 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             const uint32_t num_edges = hg.num_edges();
             for (uint32_t eid = 0; eid < num_edges; ++eid)
                 if (hg.get_edge(eid).id != hypergraph::INVALID_ID) ids.push_back(eid);
-            wxf::Writer w;
-            w.write_function("List", ids.size());
-            hgmarshal::write_items(w, ids.size(), on_workers, [&](wxf::Writer& out, size_t i) {
+            reply.global_edges(ids.size(), on_workers, [&](size_t i, auto&& put) {
                 const hypergraph::Edge& edge = hg.get_edge(ids[i]);
-                out.write_function("List", edge.arity + 1u);
-                out.write(static_cast<int64_t>(ids[i]));
-                for (uint8_t k = 0; k < edge.arity; ++k) out.write(static_cast<int64_t>(edge.vertices[k]));
+                put(static_cast<int64_t>(ids[i]), edge.arity, [&](auto&& f) {
+                    for (uint8_t k = 0; k < edge.arity; ++k) f(static_cast<int64_t>(edge.vertices[k]));
+                });
             });
-            full_result.push_back({wxf::WXFValue("GlobalEdges"),
-                                   wxf::WXFValue(wxf::Encoded{w.release_data()})});
         }
 
         if (req.include_device) {
@@ -2354,7 +2322,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             device.push_back({wxf::WXFValue("OSMemoryLimit"),
                               wxf::WXFValue(hgmarshal::memory_limit_value(
                                   hgcommon::process_memory_limit()))});
-            full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
+            reply.value("Device", wxf::WXFValue(device));
         }
 
         // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]
@@ -2364,18 +2332,13 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             const uint32_t num_states = hg.num_published_states();
             for (uint32_t sid = 0; sid < num_states; ++sid)
                 if (hg.get_state(sid).id != hypergraph::INVALID_ID) sids.push_back(sid);
-            wxf::Writer w;
-            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            w.write_varint(sids.size());
-            hgmarshal::write_items(w, sids.size(), on_workers, [&](wxf::Writer& out, size_t i) {
+            reply.state_bitvectors(sids.size(), on_workers, [&](size_t i, auto&& put) {
                 const hypergraph::State& state = hg.get_state(sids[i]);
-                out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                out.write(static_cast<int64_t>(sids[i]));
-                out.write_function("List", state.edges.count());
-                state.edges.for_each([&](hypergraph::EdgeId eid) { out.write(static_cast<int64_t>(eid)); });
+                put(static_cast<int64_t>(sids[i]), state.edges.count(), [&](auto&& f) {
+                    state.edges.for_each(
+                        [&](hypergraph::EdgeId eid) { f(static_cast<int64_t>(eid)); });
+                });
             });
-            full_result.push_back({wxf::WXFValue("StateBitvectors"),
-                                   wxf::WXFValue(wxf::Encoded{w.release_data()})});
         }
 
         // Warning trail (engine warnings + analysis refusals). A warning marks a partial result
@@ -2384,39 +2347,43 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             wxf::WXFValueList warn;
             for (const auto& w : req.ffi_warnings)
                 warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, w.partial));
-            full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
+            reply.value("Warnings", wxf::WXFValue(warn));
         }
 
-        // Wire-size instrument: per-top-level-key serialized bytes, written to the file
-        // HG_FFI_PAYLOAD_FILE names. Each value is re-serialized into a throwaway writer, so
-        // the cost exists only when the instrument is on; the streamed States/Events sections
-        // are reported as one line (they never pass through full_result).
-        const char* payload_file = std::getenv("HG_FFI_PAYLOAD_FILE");
-        std::vector<std::pair<std::string, size_t>> payload_sizes;
-        if (payload_file)
-            for (const auto& [key, value] : full_result) {
-                wxf::Writer wv;
-                wv.write(value);
-                payload_sizes.emplace_back(
-                    key.holds<std::string>() ? key.get<std::string>() : std::string("?"),
-                    wv.release_data().size());
-            }
-        const size_t sections_bytes = sections.size();
+        if constexpr (Out::kWire) {
+            // Wire-size instrument: per-top-level-key serialized bytes, written to the file
+            // HG_FFI_PAYLOAD_FILE names. Each value is re-serialized into a throwaway writer, so
+            // the cost exists only when the instrument is on; the streamed record sections are
+            // reported as one line.
+            const char* payload_file = std::getenv("HG_FFI_PAYLOAD_FILE");
+            std::vector<std::pair<std::string, size_t>> payload_sizes;
+            if (payload_file)
+                for (const auto& [key, value] : reply.entries()) {
+                    wxf::Writer wv;
+                    wv.write(value);
+                    payload_sizes.emplace_back(
+                        key.template holds<std::string>() ? key.template get<std::string>()
+                                                          : std::string("?"),
+                        wv.release_data().size());
+                }
+            const size_t sections_bytes = reply.sections_bytes();
 
-        // The final top-level association: the streamed States/Events section bytes ahead of
-        // the remaining pairs, as pieces (wxf::association_pieces) whose concatenation is the
-        // reply, so the transport writes each section's bytes where they were built.
-        wxf::Pieces reply = wxf::association_pieces(sections.release_data(),
-                                                    streamed_top_sections, std::move(full_result));
+            // The final top-level association: the streamed record section bytes ahead of the
+            // remaining pairs, as pieces (wxf::association_pieces) whose concatenation is the
+            // reply, so the transport writes each section's bytes where they were built.
+            reply.finish();
 
-        if (payload_file) {
-            if (std::FILE* pf = std::fopen(payload_file, "w")) {
-                std::fprintf(pf, "TOTAL\t%zu\n", reply.size());
-                std::fprintf(pf, "States+Events(streamed)\t%zu\n", sections_bytes);
-                for (const auto& [name, n] : payload_sizes)
-                    std::fprintf(pf, "%s\t%zu\n", name.c_str(), n);
-                std::fclose(pf);
+            if (payload_file) {
+                if (std::FILE* pf = std::fopen(payload_file, "w")) {
+                    std::fprintf(pf, "TOTAL\t%zu\n", reply.size());
+                    std::fprintf(pf, "States+Events(streamed)\t%zu\n", sections_bytes);
+                    for (const auto& [name, n] : payload_sizes)
+                        std::fprintf(pf, "%s\t%zu\n", name.c_str(), n);
+                    std::fclose(pf);
+                }
             }
+        } else {
+            reply.finish();
         }
 
         if (req.show_progress) {
@@ -2424,12 +2391,14 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         }
 
         undelivered_open.handle = 0;
-        return reply;
 
     } catch (const wxf::TypeError& e) {
         throw std::runtime_error(hgmarshal::valid_utf8(std::string("WXF TypeError: ") + e.what()));
     } catch (const std::bad_alloc&) {
-        if (!reduced.empty()) return wxf::Pieces::of(std::move(reduced));
+        if (reply.has_reduced()) {
+            reply.use_reduced();
+            return;
+        }
         throw std::runtime_error(
             "memory exhausted: an allocation failed outside the evolution, and the host memory "
             "limit is " +
@@ -2440,6 +2409,35 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         // Error messages quote names from the request; the caller decodes them as UTF-8.
         throw std::runtime_error(hgmarshal::valid_utf8(e.what()));
     }
+}
+
+std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
+                                        const HostBridge& host) {
+    return run_rewriting_core_pieces(wxf_bytes, host).join();
+}
+
+wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
+                                      const HostBridge& host) {
+    hgffi::WireReply out;
+    run_job(
+        [&](hgffi::ParsedJob& req) {
+            wxf::Parser parser(wxf_bytes);
+            parser.skip_header();
+            parse_job(parser, req);
+        },
+        host, out);
+    return out.take();
+}
+
+hgffi::ArrayReply run_rewriting_arrays(const wxf::WXFValue& job, const HostBridge& host) {
+    hgffi::ArrayReply out;
+    run_job(
+        [&](hgffi::ParsedJob& req) {
+            wxf::ValueParser parser(job);
+            parse_job(parser, req);
+        },
+        host, out);
+    return out;
 }
 
 #ifndef HG_STANDALONE_BINARY
