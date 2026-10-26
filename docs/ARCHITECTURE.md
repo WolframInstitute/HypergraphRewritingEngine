@@ -36,8 +36,12 @@ HGEvolve[...]
 ```
 
 Process isolation: the paclet shells out to the standalone `hg_evolve` binary over
-WXF (stdin/stdout, or a persistent worker over a loopback socket). A crash or an
-Alt-. abort is a process kill, so it never takes down the notebook. The binary is
+WXF. A CPU `HGEvolve` runs one `hg_evolve` process per call (stdin/stdout, `RunProcess`). A GPU
+`HGEvolve` and every session verb go to a persistent worker over a loopback socket, which keeps
+the CUDA context and the session. The CPU calls do not use the socket because Wolfram 15.0's
+`SocketConnect` on Windows takes about 2 s and faulted inside libzeromqlink.dll in 7 of 40 fresh
+wolframscript kernels. A crash or an Alt-. abort is a process kill, so it never takes down the
+notebook. The binary is
 shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the
 LibraryLink library remains only as a last-resort fallback and for the standalone
 analysis functions.

@@ -204,8 +204,11 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
   noDevice = If[StringQ[stderr],
     SelectFirst[StringTrim /@ StringSplit[stderr, "\n"], hgNoDeviceQ, None], None];
   If[proc["ExitCode"] === 3 && StringQ[noDevice], Return[hgEngineError[noDevice]]];
+  (* Under "ShowProgress" the binary's stderr is its progress, printed when the process ends. *)
   If[StringQ[stderr] && StringTrim[stderr] =!= "",
-    Message[HGEvolve::enginemsg, StringTrim[stderr]]];
+    If[TrueQ[$hgShowProgress] && proc["ExitCode"] === 0,
+      Scan[Print, StringSplit[StringTrim[stderr], {"\r\n", "\n"}]],
+      Message[HGEvolve::enginemsg, StringTrim[stderr]]]];
   outStr = proc["StandardOutput"];
   If[proc["ExitCode"] =!= 0 || !StringQ[outStr] || outStr === "",
     Message[HGEvolve::enginefail, proc["ExitCode"]]; Return[$Failed]];
@@ -387,17 +390,22 @@ hgResolveDevice[requested_] := Switch[requested,
         Which[reason === None, "GPU", hgGpuFallbackQ[reason], "CPU", True, $Failed]]],
   _, Message[HGEvolve::baddev, requested]; "CPU"];
 
-(* Route a serialized job to the engine: the persistent socket worker for `dev` (a resolved
-   device) when available, otherwise a one-shot RunProcess of the same binary, otherwise the
-   in-process LibraryLink. A GPU binary that reports no usable device sends the job to the CPU
-   (hgGpuRefused). *)
+(* Route a serialized job to the engine. A "CPU" job runs in a one-shot RunProcess of hg_evolve,
+   and a "GPU" job in the persistent socket worker when available, otherwise in a one-shot
+   RunProcess of hg_evolve_gpu; without the binary, the in-process LibraryLink runs it. A GPU
+   binary that reports no usable device sends the job to the CPU (hgGpuRefused).
+   A CPU job does not use the worker: Wolfram 15.0's SocketConnect takes about 2 s on Windows and
+   in 7 of 40 fresh wolframscript kernels the process faulted inside it (libzeromqlink.dll,
+   0xc0000005), while a one-shot hg_evolve.exe starts in about 30 ms. Sessions need the worker,
+   which holds the session (hgSendJob). *)
 hgCallEngine[wxfBytes_, dev_:"CPU"] := Module[{r},
-  r = hgWorkerTry[dev, wxfBytes];
-  If[ByteArrayQ[r], Return[r]];
-  If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
-    Return[If[hgGpuRefused[First[r]], hgCallEngine[wxfBytes, "CPU"], $Failed]]];
-  If[MatchQ[r, hgEngineError[_String]],
-    Message[HGEvolve::enginemsg, First[r]]; Return[$Failed]];
+  If[dev === "GPU",
+    r = hgWorkerTry[dev, wxfBytes];
+    If[ByteArrayQ[r], Return[r]];
+    If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
+      Return[If[hgGpuRefused[First[r]], hgCallEngine[wxfBytes, "CPU"], $Failed]]];
+    If[MatchQ[r, hgEngineError[_String]],
+      Message[HGEvolve::enginemsg, First[r]]; Return[$Failed]]];
   Which[
     dev === "GPU",
       r = hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes];

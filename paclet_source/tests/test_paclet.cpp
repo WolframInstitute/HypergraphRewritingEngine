@@ -182,6 +182,45 @@ TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
            "output:\n" << out;
 }
 
+// A CPU HGEvolve runs a one-shot hg_evolve and opens no socket: Wolfram 15.0's SocketConnect
+// faulted inside libzeromqlink.dll in 7 of 40 fresh wolframscript kernels on Windows. After a
+// CPU call the kernel holds no CPU worker process and no worker socket.
+TEST_F(PacletTest, ACpuEvolveOpensNoSocket) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+    const std::string code =
+        "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
+        "<< \"HypergraphRewriting`\"; "
+        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"NOSOCK_LOAD_FAIL\"]; Exit[0]]; "
+        "If[!HypergraphRewriting`Private`hgCpuBinaryAvailableQ[], Print[\"NOSOCK_SKIP: no engine "
+        "binary for \", $SystemID]; Exit[0]]; "
+        "n = HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
+        "                                 {{1, 2}, {2, 3}}, 4, \"NumStates\", "
+        "                                 \"Tuning\" -> <|\"MemoryLimit\" -> 2^30|>]; "
+        "w = KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, \"CPU\"] || "
+        "    KeyExistsQ[HypergraphRewriting`Private`$hgWorkerSock, \"CPU\"]; "
+        "If[IntegerQ[n] && n > 0 && !w, Print[\"NOSOCK_OK states=\", n], "
+        "  Print[\"NOSOCK_FAIL: states \", n, \", worker \", w]]";
+
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        const bool verdict = out.find("NOSOCK_OK") != std::string::npos ||
+                             out.find("NOSOCK_FAIL") != std::string::npos ||
+                             out.find("NOSOCK_SKIP") != std::string::npos ||
+                             out.find("NOSOCK_LOAD_FAIL") != std::string::npos;
+        if (verdict) break;
+    }
+    if (out.find("NOSOCK_SKIP") != std::string::npos)
+        GTEST_SKIP() << "this build ships no engine binary for this platform:\n" << out;
+    ASSERT_EQ(out.find("NOSOCK_LOAD_FAIL"), std::string::npos)
+        << "the paclet did not load, so nothing below was exercised:\n" << out;
+    EXPECT_NE(out.find("NOSOCK_OK"), std::string::npos)
+        << "a CPU HGEvolve started the socket worker. WolframScript output:\n" << out;
+}
+
 #else
 
 TEST_F(PacletTest, SkipPacletTests) {

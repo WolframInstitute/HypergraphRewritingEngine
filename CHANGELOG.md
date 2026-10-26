@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A CPU `HGEvolve` runs one `hg_evolve` process per call and opens no socket. On Windows,
+  Wolfram 15.0's `SocketConnect` to the engine worker took about 2 s, and in 7 of 40 fresh
+  wolframscript kernels the Wolfram process faulted inside it ("The product exited for an
+  unknown reason"). A first CPU call now takes about 0.4 s. `"ShowProgress"` prints a CPU run's
+  progress when the run ends. GPU calls and sessions still use the worker.
+
 - The canonical hash costs less on states with many isomorphic components: a search node of
   the canonicalisation no longer clears arrays the size of the state. `"StepStatistics"` on a
   400-point Brill-Lindquist history (41 states, 1641 edges at the start) takes 2.4 s, 4.0 s
