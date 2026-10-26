@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The canonical hash costs less on states with many isomorphic components: a search node of
+  the canonicalisation no longer clears arrays the size of the state. `"StepStatistics"` on a
+  400-point Brill-Lindquist history (41 states, 1641 edges at the start) takes 2.4 s, 4.0 s
+  before. The hashes are unchanged.
+
 - On the CPU, `"MatchesPerStep"` under `"CanonicalizeStates" -> None` computes an initial
   state's canonical hash and edge ranks only when the initial state has a transition. A
   900-edge initial state with no match took 3.8 s, all in that computation.

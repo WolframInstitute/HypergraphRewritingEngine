@@ -498,6 +498,73 @@ TEST_F(IRCanonicalizationTest, MarkedFormsSeparateMarkingsUpToIsomorphism) {
     EXPECT_NE(marked_hash(mixed, {0}), marked_hash(mixed, {1}));
 }
 
+// A state of many isomorphic components: 40 paths a->b->c, 30 edges and one triangle, with its
+// vertices relabelled by a fixed permutation and its edges reversed in order. The search
+// individualises one component per level. Both copies hash equally, the hash does not depend on
+// what the scratch held before (all ones, or the other copy's search), and the ranks of the two
+// copies map each edge to the edge it was relabelled to.
+TEST_F(IRCanonicalizationTest, ManyIsomorphicComponentsHashEquallyWithReusedScratch) {
+    std::vector<std::vector<VertexId>> a;
+    VertexId next = 0;
+    for (int i = 0; i < 40; ++i, next += 3) {
+        a.push_back({next, next + 1});
+        a.push_back({next + 1, next + 2});
+    }
+    for (int i = 0; i < 30; ++i, next += 2) a.push_back({next, next + 1});
+    a.push_back({next, next + 1});
+    a.push_back({next + 1, next + 2});
+    a.push_back({next + 2, next});
+    const uint32_t nv = next + 3;
+    auto relabel = [&](VertexId v) { return (v * 7919u + 13u) % nv; };   // nv = 183, 7919 coprime
+    std::vector<std::vector<VertexId>> b;
+    for (auto it = a.rbegin(); it != a.rend(); ++it) b.push_back({relabel((*it)[0]), relabel((*it)[1])});
+
+    auto encode = [](const std::vector<std::vector<VertexId>>& edges, std::vector<uint8_t>& ea,
+                     std::vector<uint32_t>& eoff, std::vector<uint32_t>& ev) {
+        ea.clear(); eoff.clear(); ev.clear();
+        for (const auto& e : edges) {
+            ea.push_back(static_cast<uint8_t>(e.size()));
+            eoff.push_back(static_cast<uint32_t>(ev.size()));
+            for (auto v : e) ev.push_back(v);
+        }
+        std::vector<uint32_t> verts(ev.size());
+        return hgcommon::ir_renumber_encounter(ev.data(), static_cast<uint32_t>(ev.size()),
+                                               verts.data());
+    };
+    std::vector<uint8_t> ea_a, ea_b;
+    std::vector<uint32_t> eoff_a, ev_a, eoff_b, ev_b;
+    const uint32_t n = encode(a, ea_a, eoff_a, ev_a);
+    ASSERT_EQ(encode(b, ea_b, eoff_b, ev_b), n);
+    const uint32_t e = static_cast<uint32_t>(a.size()), total = static_cast<uint32_t>(ev_a.size());
+    const uint32_t depth = n + 1;
+    std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(n, e, total, depth) + 2, 0xFFFFFFFFu);
+    std::vector<uint32_t> rank_a(e), rank_b(e);
+    const auto ra = hgcommon::ir_canonical_hash(ea_a.data(), eoff_a.data(), ev_a.data(), e, n, total,
+                                                scratch.data(), depth, rank_a.data());
+    const auto rb = hgcommon::ir_canonical_hash(ea_b.data(), eoff_b.data(), ev_b.data(), e, n, total,
+                                                scratch.data(), depth, rank_b.data());
+    std::vector<uint32_t> fresh(scratch.size(), 0u);
+    const auto rf = hgcommon::ir_canonical_hash(ea_a.data(), eoff_a.data(), ev_a.data(), e, n, total,
+                                                fresh.data(), depth);
+    ASSERT_EQ(ra.status, hgcommon::IR_OK);
+    ASSERT_EQ(rb.status, hgcommon::IR_OK);
+    ASSERT_EQ(rf.status, hgcommon::IR_OK);
+    EXPECT_EQ(ra.hash, rb.hash);
+    EXPECT_EQ(ra.hash, rf.hash);
+    EXPECT_EQ(ra.hash, ir.compute_canonical_hash(a));
+    // Edge i of a is edge e - 1 - i of b. An edge's rank is fixed up to the state's
+    // automorphisms, so compare the set of ranks of each component kind: the triangle (the last
+    // 3 edges of a), the single edges (30) and the paths (80).
+    auto ranks = [](const std::vector<uint32_t>& r, uint32_t lo, uint32_t hi) {
+        std::vector<uint32_t> s(r.begin() + lo, r.begin() + hi);
+        std::sort(s.begin(), s.end());
+        return s;
+    };
+    EXPECT_EQ(ranks(rank_a, e - 3, e), ranks(rank_b, 0, 3));
+    EXPECT_EQ(ranks(rank_a, 80, e - 3), ranks(rank_b, 3, e - 80));
+    EXPECT_EQ(ranks(rank_a, 0, 80), ranks(rank_b, e - 80, e));
+}
+
 #if HG_ENGINE_STATS
 // The per-thread depth hint. A star with 100 leaves needs one search level per leaf, past every
 // static rung; a triangle on the same thread afterwards is still canonicalised by the bounded

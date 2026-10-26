@@ -175,8 +175,9 @@ struct IrPartition {
     uint32_t  n;
 
     HG_HD bool is_discrete() const { return ncells == n; }
-    HG_HD uint32_t first_non_singleton() const {
-        for (uint32_t s = 0; s < n; s += clen_at[s]) if (clen_at[s] > 1) return s;
+    // The first cell of length above 1 at or after `from`, which must be a live start.
+    HG_HD uint32_t first_non_singleton(uint32_t from = 0) const {
+        for (uint32_t s = from; s < n; s += clen_at[s]) if (clen_at[s] > 1) return s;
         return n;
     }
 };
@@ -524,6 +525,10 @@ HG_HD inline void ir_initial_partition(
 // and therefore equivariant under vertex relabeling. Refining a cell by a splitter inspects
 // only vertices sharing an edge with it, so a split costs O(boundary); keeping the largest
 // piece at the split cell's id bounds the total to ~O(E log n).
+//
+// edge_epoch (n_edges words) and on_touched (n words) are zero on entry and on return: each
+// splitter clears the entries it set. The caller zeroes them once per search
+// (ir_canonical_hash_of), so a search node costs its splitters' boundaries and not O(n + E).
 // -----------------------------------------------------------------------------------------
 template <class Par = IrSerial, bool Sym = false>
 HG_HD inline void ir_refine(
@@ -552,9 +557,6 @@ HG_HD inline void ir_refine(
         if (seed1 != 0xFFFFFFFFu) worklist[seed1 >> 6] |= (uint64_t(1) << (seed1 & 63));
     }
     }  // leader
-    par.fan(n_edges, [&](uint32_t e) { edge_epoch[e] = 0; });
-    par.fan(n, [&](uint32_t v) { on_touched[v] = 0; });
-    uint32_t epoch = 0;
 
     for (;;) {
         // A discrete partition has nothing left to split, so every splitter still queued
@@ -579,16 +581,16 @@ HG_HD inline void ir_refine(
         if (S >= n) continue;
 
         // Edges incident to S (a start position; the cell's run begins right there),
-        // deduplicated by an epoch stamp. The gather's order feeds the fill whose per-vertex
-        // runs are sorted after, but the stamp and list writes are shared, so: leader.
-        ++epoch;
+        // deduplicated by a stamp that the end of this splitter clears. The gather's order
+        // feeds the fill whose per-vertex runs are sorted after, but the stamp and list writes
+        // are shared, so: leader.
         uint32_t n_inc = 0;
         if (par.leader()) {
             for (uint32_t k = 0; k < pi.clen_at[S]; ++k) {
                 const uint32_t s = pi.lab[S + k];
                 for (uint32_t o = occ_off[s]; o < occ_off[s + 1]; ++o) {
                     const uint32_t e = occ_edge[o];
-                    if (edge_epoch[e] != epoch) { edge_epoch[e] = epoch; inc_edges[n_inc++] = e; }
+                    if (!edge_epoch[e]) { edge_epoch[e] = 1; inc_edges[n_inc++] = e; }
                 }
             }
         }
@@ -748,6 +750,7 @@ HG_HD inline void ir_refine(
             for (uint32_t k = i; k < j; ++k) on_touched[torder[k]] = 0;
             i = j;
         }
+        for (uint32_t k = 0; k < n_inc; ++k) edge_epoch[inc_edges[k]] = 0;
         }  // leader
         par.sync();
         pi.ncells = par.bcast(pi.ncells);
@@ -985,6 +988,9 @@ HG_HD inline IrResult ir_canonical_hash_of(
 
     if (par.leader())
         ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
+    // ir_refine's stamps, zero on entry to every refinement and left zero by each.
+    par.fan(n_edges, [&](uint32_t e) { edge_epoch[e] = 0; });
+    par.fan(n, [&](uint32_t v) { on_touched[v] = 0; });
     par.sync();
 
     IrPartition pi;
@@ -1227,7 +1233,9 @@ HG_HD inline IrResult ir_canonical_hash_of(
     bool returning = false;
     for (;;) {
         if (!returning) {
-            const uint32_t t = pi.first_non_singleton();   // shared reads: uniform on every lane
+            // Every cell before the parent's target is a singleton: refinement only splits,
+            // and an undo restores the parent's partition. Shared reads: uniform on every lane.
+            const uint32_t t = pi.first_non_singleton(d == 0 ? 0u : target_of(d - 1));
             if (t >= n) {
                 if (pi.is_discrete()) {
                     if (par.leader()) leaf(pi, d);
