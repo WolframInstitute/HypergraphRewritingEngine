@@ -119,6 +119,12 @@ struct StepSelectScratch {
     // [cap] each candidate's transition_rank_device at its candidate-pool index, written by the
     // matching that emits it when match_state_rule_splits holds (match_state_rule's out_rank).
     uint64_t* cand_rank = nullptr;
+    // Set when k_seed_root_hashes leaves the roots unlabelled (`labels_at_selection` at the
+    // launch): step 0's selection labels the roots with a transition (root_exact_and_labels),
+    // claiming their exact hashes in exact_map with forms.
+    bool                          root_labels = false;
+    DedupMap::DeviceView          exact_map{};
+    Pool<uint32_t>::DeviceView    forms{};
 };
 
 // The candidate ranks match_state_rule writes as it emits: the selection scratch's when the
@@ -338,6 +344,13 @@ __device__ inline bool held_expand(const DeviceState& ds, const DeviceRule* rule
 }
 
 
+template <class Par>
+__device__ bool root_exact_and_labels(const DeviceState& ds, StateId sid,
+                                      DedupMap::DeviceView exact_map,
+                                      Pool<uint32_t>::DeviceView forms, DeviceArena::View arena,
+                                      uint32_t*& slot, uint64_t& slot_words, bool need_ranks,
+                                      bool& first, Par par);
+
 // "MatchesPerStep" with held match sets (DeviceState::held, held_set.hpp), the host's
 // select_positions over HeldMatches, on the calling block. The step's sets are the
 // sets of the states whose matching emitted candidates of step s, built here (the slots and the
@@ -350,7 +363,8 @@ __device__ inline bool held_expand(const DeviceState& ds, const DeviceRule* rule
 __device__ void held_select_step(const DeviceState& ds, uint32_t s,
                                  typename Pool<MatchRecord>::DeviceView cand,
                                  typename Pool<MatchRecord>::DeviceView found,
-                                 StepSelectScratch sel, const DeviceRule* rules) {
+                                 StepSelectScratch sel, const DeviceRule* rules,
+                                 const SuccessorCtx* succ) {
     const HeldCtx c = held_ctx(ds, rules);
     const uint32_t lane = threadIdx.x, nt = blockDim.x;
     __shared__ uint32_t s_nb;
@@ -414,6 +428,23 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
         }
     }
     __syncthreads();
+    // STEP 0'S ROOTS, when the seed left them unlabelled (StepSelectScratch::root_labels): each
+    // root with a candidate is a set here, and is hashed and labelled by the block before any
+    // key reads its labels. A root with no transition is never hashed (the host's label_root).
+    if (s == 0u && sel.root_labels && succ != nullptr) {
+        for (uint32_t b = 0; b < s_nb; ++b) {
+            bool first = false;
+            root_exact_and_labels(ds, c.sets[sel.idx[b]].state, sel.exact_map, sel.forms,
+                                  succ->arena, *succ->slot, *succ->slot_words, true, first,
+                                  IrWarpAll{});
+        }
+        __threadfence();
+        __syncthreads();
+        if (lane == 0)
+            for (uint32_t b = 0; b < s_nb; ++b)
+                sel.group[b] = ds.state_label[c.sets[sel.idx[b]].state];
+        __syncthreads();
+    }
     // A slot and the slab entry of each candidate, a lane each; sel.rank becomes set << 32 | slot.
     const uint32_t start = s_start, n = s_n;
     for (uint32_t i = start + lane; i < n; i += nt) {
@@ -641,7 +672,7 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     const uint32_t tid = threadIdx.x, nt = blockDim.x;
     const unsigned long long t_select = tid == 0 ? clock64() : 0;
     if (ds.held != 0u) {
-        held_select_step(ds, s, cand, found, sel, rules);
+        held_select_step(ds, s, cand, found, sel, rules, succ);
         if (tid == 0 && sel.cycles) atomicAdd(sel.cycles, clock64() - t_select);
         return;
     }
@@ -910,13 +941,54 @@ __device__ inline void session_frontier_append(const DeviceState& ds, const Sess
     }
 }
 
+// A None or Automatic root's exact hash (an IR pass with ranks), claimed on its form in
+// `exact_map` and published to state_exact_hash, and under lineage labels the root's label and
+// its edges' labels from that hash and the edges' ranks: the host's label_root. `first` is set
+// when the root is its class's first state. False, with the error recorded, when the hash could
+// not be computed. Every lane of `par` calls it.
+template <class Par>
+__device__ bool root_exact_and_labels(const DeviceState& ds, StateId sid,
+                                      DedupMap::DeviceView exact_map,
+                                      Pool<uint32_t>::DeviceView forms, DeviceArena::View arena,
+                                      uint32_t*& slot, uint64_t& slot_words, bool need_ranks,
+                                      bool& first, Par par) {
+    uint64_t exact = 0;
+    uint32_t* eform = nullptr;
+    uint32_t eform_words = 0;
+    const ExactHashStatus st = state_exact_hash_device(ds, sid, arena, slot, slot_words, exact,
+                                                       need_ranks, false, &eform, &eform_words,
+                                                       par);
+    if (st != ExactHashStatus::kOk) {
+        if (par.leader()) ds.errors.record(error_kind_for(st));
+        return false;
+    }
+    uint32_t f = 0;
+    if (par.leader()) {
+        const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask, eform,
+                                               eform_words, exact_map, forms);
+        ds.state_exact_hash[sid] = ec.key;
+        f = ec.canonical == sid ? 1u : 0u;
+        if (ds.state_label) {
+            const uint64_t label = hgcommon::lineage_initial_state(ec.key);
+            ds.state_label[sid] = label;
+            const StateEdgeSlice sl = ds.state_edge_slices[sid];
+            for (uint32_t i = 0; i < sl.count; ++i)
+                ds.edge_label[ds.state_edge_ids[sl.offset + i]] =
+                    hgcommon::lineage_edge(label, ds.state_edge_rank[sl.offset + i]);
+        }
+    }
+    par.sync();
+    first = par.bcast(f) != 0u;
+    return true;
+}
+
 __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
                                    QeView qe, ExploreView ev,
                                    typename Pool<uint32_t>::DeviceView forms,
                                    DedupMap::DeviceView exact_map, uint32_t max_steps,
-                                   SessionView sess) {
+                                   SessionView sess, bool labels_at_selection) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -959,30 +1031,20 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
 
     // The exact hash is a SECOND quantity, and only in Full mode is it the same one. Computed
     // here only if an event identity or a transition key will read it (run_needs_exact_hash).
-    if (need_exact) {
-        uint64_t exact = key;
-        if (state_mode != CanonicalizationMode::Full) {
-            uint32_t* eform = nullptr;
-            uint32_t eform_words = 0;
-            const ExactHashStatus st =
-                state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks,
-                                        false, &eform, &eform_words);
-            if (st != ExactHashStatus::kOk) {
-                ds.errors.record(error_kind_for(st));
-                return;
-            }
-            const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask, eform,
-                                                   eform_words, exact_map, forms);
-            exact = ec.key;
-            if (ds.record_invariants && ec.canonical == sid &&
-                !ev.records.append(RecordEntry{sid, 0u}))
-                ds.errors.record(ErrorKind::kStateInvariantsFull);
-        }
-        ds.state_exact_hash[sid] = exact;
-        // "MatchesPerStep" under None states: the root's lineage labels from its exact hash and
-        // its edges' ranks, as the host's label_root.
+    // With `labels_at_selection` only the lineage labels read it, and step 0's selection computes
+    // it for the roots with a transition (StepSelectScratch::root_labels).
+    if (need_exact && state_mode != CanonicalizationMode::Full && !labels_at_selection) {
+        bool first = false;
+        if (!root_exact_and_labels(ds, sid, exact_map, forms, arena, slot, slot_words, need_ranks,
+                                   first, hgcommon::IrSerial{}))
+            return;
+        if (ds.record_invariants && first && !ev.records.append(RecordEntry{sid, 0u}))
+            ds.errors.record(ErrorKind::kStateInvariantsFull);
+    } else if (need_exact && state_mode == CanonicalizationMode::Full) {
+        ds.state_exact_hash[sid] = key;
+        // "MatchesPerStep" under Full states labels from the class key, as the host's label_root.
         if (ds.state_label) {
-            const uint64_t label = hgcommon::lineage_initial_state(exact);
+            const uint64_t label = hgcommon::lineage_initial_state(key);
             ds.state_label[sid] = label;
             const StateEdgeSlice sl = ds.state_edge_slices[sid];
             for (uint32_t i = 0; i < sl.count; ++i)
@@ -3327,6 +3389,15 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         // The device view is taken once: the rank predicate reads the run's sampling parameters
         // out of it, and it must be the SAME view the kernel is handed.
         const DeviceState dsv = dsk;
+        // Under held "MatchesPerStep" sets with None states, when only the lineage labels read a
+        // root's exact hash, step 0's selection labels the roots that have a transition.
+        const bool labels_at_selection =
+            dsv.held != 0u && state_mode == CanonicalizationMode::None &&
+            dsv.state_label != nullptr && !dsv.record_invariants &&
+            !run_needs_exact_hash(event_keys, transition_keys_read(dsv, dedup, state_mode));
+        step_sel.root_labels = labels_at_selection;
+        step_sel.exact_map = exact_v;
+        step_sel.forms = forms_v;
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner->view(), state_mode,
@@ -3336,7 +3407,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             dsv.state_label != nullptr ||
                 run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                      transition_keys_read(dsv, dedup, state_mode)),
-            pool_v, qe, ev, forms_v, exact_v, max_steps, sess_v);
+            pool_v, qe, ev, forms_v, exact_v, max_steps, sess_v, labels_at_selection);
     }
 
     // MaxStatesPerStep: every step from 1 holds its token (the previous step's selection), then

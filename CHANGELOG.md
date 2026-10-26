@@ -52,7 +52,8 @@
 
 - On the CPU, `"MatchesPerStep"` under `"CanonicalizeStates" -> None` computes an initial
   state's canonical hash and edge ranks only when the initial state has a transition. A
-  900-edge initial state with no match took 3.8 s, all in that computation.
+  900-edge initial state with no match took 3.8 s, all in that computation. The GPU does the
+  same under held match sets, and the same job there took over 120 s and now takes 0.9 s.
 
 - `"StepStatisticsMeasures"` `"WaveFront"` adds `"WaveFrontSize"`, `"WaveFrontCoverage"` and
   `"WaveReflectionStep"` to `"Invariants"` and the per-step key `"WaveFront"`. They follow the wave

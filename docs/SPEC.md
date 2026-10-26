@@ -261,7 +261,9 @@ exact configuration. Sampling and capping options refine this as follows:
 - **Lineage labels.** Under `None` states with `MatchesPerStep` every edge and state carries a
   64-bit label fixed when it is made (`hgcommon::lineage_*`). An initial state's label is a hash
   of its canonical hash, and its edges' labels hash that label with each edge's canonical rank.
-  The host computes them at the initial state's drain, and only when it has a transition.
+  The host computes them at the initial state's drain, and only when it has a transition. The
+  device does the same in step 0's selection when the run holds match sets, and otherwise when
+  it seeds the initial state.
   A transition's lineage key hashes the rule and the matched edges' labels in pattern order. A
   rewrite labels its produced edges by that key and their right-hand-side positions, and the
   state it makes by its input state's label and that key. A transition's key and its position
