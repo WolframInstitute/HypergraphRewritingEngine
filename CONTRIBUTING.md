@@ -75,6 +75,17 @@ docs/VERIFICATION_STATUS.md ("Reference corpus coverage") lists what each case c
 tools/dev/oracle_gate.sh
 ```
 
+First-call gate (needs the Wolfram Engine; a local gate, not run in CI).
+`tools/dev/first_call_gate.sh` starts 40 fresh wolframscript kernels, one at a time under the
+Wolfram lock, and counts the kernels that ended during their first `HGEvolve` call. On Windows
+with Wolfram 15.0 the socket worker of 93d295c2 ended 3 of 40, and the pipe worker 0 of 40 on
+each device. Run it on both devices whenever the paclet's engine transport changes.
+
+```bash
+tools/dev/first_call_gate.sh
+FIRST_CALL_DEVICE=GPU tools/dev/first_call_gate.sh
+```
+
 Paclet (needs a Wolfram Engine): `reference/verify_paclet.wls` loads the local paclet
 and checks `HGEvolve` against the golden corpus.
 

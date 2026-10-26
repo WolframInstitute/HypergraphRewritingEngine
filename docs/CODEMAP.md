@@ -324,6 +324,8 @@ implementation is written `MultiwayReference` and the directory `reference/`.
 - **`verify_sessions.wls`** -- the session verbs' LIFETIME (open, refuse a second open, step, close, reopen), with every prefix depth compared against an independent one-shot `HGEvolve`
 - **`verify_state_statistics.wls`** -- "StepStatistics" against the multiway-statistics probes' definitions computed in Wolfram Language from a raw run, under quotient exploration and full capture, every key of every step; the geometry and branchial keys against `StateGeometryReference.wl`, with "StepStatisticsWeighting" -> "Classes" and "StepStatisticsBranchial" -> All, on the corpus and on random rules; and WolframHausdorffDimension and WolframRicciCurvatureScalar against the Function Repository
 - **`StateGeometryReference.wl`** -- an independent Wolfram Language implementation of the "StepStatistics" geometry and branchial metrics (docs/SPEC.md), from Graph built-ins and an exact transport linear program
+- **`no_socket_check.wl`** -- `hgNoSocketCheck[pacletDir]`: HGEvolve and every session verb on the CPU and the GPU, with `Sockets[]` compared before and after each call; PacletTest.NoCallOpensASocket runs it
+- **`first_call_probe.wls`** -- one fresh kernel's first HGEvolve call on a given device, with a marker written before and after it; `tools/dev/first_call_gate.sh` runs it
 - **`verify_doc_examples.wls`** -- evaluates every example in `docs/en`, each page in a context of its own, and fails on a message, a `Failure`, an unevaluated `HGEvolve`, a `<!-- => ... -->` hint the result does not equal, a graphical result without its image line or image file, or a GPU example that ran on the CPU (`--allow-gpu-fallback` reports that instead); page names after the script limit the run to those pages. `--render-images` (`./build_docs.sh images`) writes the images to `docs/en/images/<Page>/` and the image lines after the blocks
 - **`validate.wls` / `compare_multiwaysystem.wls`** -- validate the reference vs a determinism corpus / cross-check vs the authoritative `MultiwaySystem` paclet
 - **`CANONICALIZATION.md`** -- the canonicalization naming cross-map across the four layers
@@ -430,6 +432,7 @@ rented box that does.
   counts-only replies are compared with full ones on both devices. Unknown findings are shrunk to
   a minimal job (or, for a worker leak, a minimal job sequence) and fail the run; open board
   defects are listed in its `KNOWN` table. Every child runs under `RLIMIT_AS`.
+- **`first_call_gate.sh`** -- the first-call gate (CONTRIBUTING.md, Test): N fresh wolframscript kernels through `reference/first_call_probe.wls`, and the number that ended during their first engine call.
 - **`oracle_gate.sh`** -- the reference corpus gate (CONTRIBUTING.md, Test): `reference/oracle_fuzz.wls`
   on a fixed seed range against a hash-named copy of the paclet, then `worker_fuzz.py` at its
   default budget.

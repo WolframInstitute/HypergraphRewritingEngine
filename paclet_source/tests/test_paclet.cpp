@@ -182,6 +182,35 @@ TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
            "output:\n" << out;
 }
 
+// NO CALL OPENS A SOCKET. Wolfram 15.0's SocketConnect faulted inside libzeromqlink.dll in 7 of
+// 40 fresh wolframscript kernels on Windows, ending the kernel. reference/no_socket_check.wl runs
+// HGEvolve and every session verb on the CPU and on the GPU and compares Sockets[] before and
+// after each call.
+TEST_F(PacletTest, NoCallOpensASocket) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+    const std::string check_file =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/reference/no_socket_check.wl"));
+    const std::string code =
+        "Get[\"" + check_file + "\"]; hgNoSocketCheck[\"" + paclet_dir + "\"]";
+
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        const bool verdict = out.find("NOSOCK_OK") != std::string::npos ||
+                             out.find("NOSOCK_FAIL") != std::string::npos ||
+                             out.find("NOSOCK_LOAD_FAIL") != std::string::npos;
+        if (verdict) break;
+    }
+    ASSERT_EQ(out.find("NOSOCK_LOAD_FAIL"), std::string::npos)
+        << "the paclet did not load, so nothing below was exercised:\n" << out;
+    EXPECT_NE(out.find("NOSOCK_OK"), std::string::npos)
+        << "a paclet call opened a socket. WolframScript output:\n" << out;
+}
+
 // THE WORKER TRANSPORT: hg_evolve --serve on the process's standard streams, no socket. Two calls
 // use one worker; "ShowProgress" prints the worker's progress frames; a worker killed during a
 // job gives HGEvolve::workerlost and $Failed, and the next call starts a new worker and returns.
