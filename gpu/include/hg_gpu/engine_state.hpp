@@ -125,6 +125,8 @@ struct DeviceState {
     // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
     // (select_step, state_cost_of_form_device).
     const hgcommon::StateCost* state_cost = nullptr;
+    // "TransitionCost": field TC_FIELD_NONE when the run has none (transition_cost_device).
+    hgcommon::TransitionCostSpec transition_cost{};
     // "MatchesPerStep" under None states: each edge's and each state's lineage label
     // (hgcommon::lineage_edge, lineage_state), written when the edge or the state is made; null
     // in every other run. [max_edges], [max_states].
@@ -306,6 +308,11 @@ struct DeviceState {
     // bailing on partial work. Host inspects after every kernel sync.
     DeviceErrors::DeviceView errors;
 };
+
+// Whether the step cap reads a cost: "StateCost" or "TransitionCost" (the host's cost_active).
+__host__ __device__ inline bool step_costed(const DeviceState& ds) {
+    return ds.state_cost != nullptr || hgcommon::tc_active(ds.transition_cost);
+}
 
 // Event `ev`'s consumed edge `i`, in match order.
 __device__ __forceinline__ EdgeId event_consumed_edge(const DeviceState& ds, const DeviceEvent& ev,
@@ -503,6 +510,8 @@ public:
     void set_event_ordering(uint32_t order) { event_ordering_ = order; }
     // "StateCost": copied to the device when n != 0; DeviceState::state_cost is null otherwise.
     void set_state_cost(const hgcommon::StateCost& cost);
+    // "TransitionCost" (DeviceState::transition_cost).
+    void set_transition_cost(const hgcommon::TransitionCostSpec& spec) { transition_cost_ = spec; }
 
     uint32_t config_slice_scan_max_edges() const;
     void set_maintain_indices(bool on);
@@ -727,6 +736,7 @@ private:
     uint32_t                           event_ordering_ = 0;
     hgcommon::StateCost*               state_cost_dev_          = nullptr;
     bool                               state_cost_on_           = false;
+    hgcommon::TransitionCostSpec       transition_cost_{};
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

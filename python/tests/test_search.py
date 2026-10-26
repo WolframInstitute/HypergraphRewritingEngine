@@ -107,3 +107,31 @@ def test_refusals_and_warnings():
     with pytest.warns(hg.EngineWarning, match="BestFirstOptions"):
         hg.evolve(TRAP, [[1]], 2, search="BestFirst", max_states_per_step=1,
                   data=["num_states"])
+
+
+def test_best_first_under_a_memory_limit_returns_what_it_built():
+    # 64 MB holds the first few thousand states of this search: the reply is partial and
+    # says so.
+    with pytest.warns(hg.EngineWarning, match="memory exhausted"):
+        r = hg.evolve(RULES, CYCLE, 40, search="BestFirst", search_budget=10 ** 7,
+                      random_seed=7, tuning={"MemoryLimit": 64 << 20},
+                      transition_cost={"Field": "Degree", "TimeStep": 0.3},
+                      data=["num_states"])
+    assert r.num_states > 100
+    assert len(r.path_costs) == r.num_states
+
+
+def test_callback_costs_that_are_not_real_numbers():
+    # NaN and +Infinity order after every finite cost; a value that is not a number raises.
+    def loops_cost_nan(parent, child):
+        return float("nan") if any(e[0] == e[-1] for e in child) else 1.0
+
+    r = hg.evolve(RULES, CYCLE, 3, search="BestFirst", search_budget=5, random_seed=7,
+                  transition_cost=loops_cost_nan, data=["num_states"])
+    # The four transitions that add no loop cost 1 and come first; the loops cost NaN.
+    costs = sorted(r.path_costs.values())
+    assert costs[:5] == [0.0, 1.0, 1.0, 1.0, 1.0]
+    assert all(c == c for c in costs)
+    with pytest.raises(TypeError):
+        hg.evolve(RULES, CYCLE, 2, search="BestFirst", transition_cost=lambda p, c: "x",
+                  data=["num_states"])

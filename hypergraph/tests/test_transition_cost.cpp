@@ -7,6 +7,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <cstring>
 #include <tuple>
 #include <vector>
 
@@ -35,8 +36,7 @@ std::vector<double> field_of(const Edges& edges, uint32_t field) {
     spec.field = field;
     hgcommon::TcFieldOf f;
     hgcommon::tc_field_of(l.view(), spec, f);
-    f.f.resize(f.verts.size());
-    return f.f;
+    return std::vector<double>(f.field.f, f.field.f + f.field.n);
 }
 
 const Edges kCycle = {{1, 2}, {2, 3}, {3, 4}, {4, 1}};
@@ -308,4 +308,113 @@ TEST(TransitionCost, StepCapCostsASuccessorByItsCheapestTransition) {
         EXPECT_EQ(one_edge, 2u) << "seed " << seed;   // both transitions into the kept class
         EXPECT_EQ(others, 0u) << "seed " << seed;
     }
+}
+
+namespace {
+
+// Each created state's (step, canonical hash, path cost), sorted, for a search with `hook`.
+std::vector<std::tuple<uint32_t, uint64_t, double>> hooked(
+    const std::vector<RewriteRule>& rules, const std::vector<std::vector<VertexId>>& init,
+    size_t steps, size_t budget, size_t threads, hgcommon::TransitionCostHook hook,
+    StateCanonicalizationMode mode = StateCanonicalizationMode::None) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(mode);
+    ParallelEvolutionEngine e(&hg, threads);
+    for (const auto& r : rules) e.add_rule(r);
+    e.set_transition_cost(hgcommon::TransitionCostSpec{}, std::move(hook));
+    e.set_best_first(true, budget);
+    e.evolve(std::vector<std::vector<std::vector<VertexId>>>{init}, steps);
+    std::vector<std::tuple<uint32_t, uint64_t, double>> out;
+    for (const auto& [sid, cost] : e.path_costs())
+        out.emplace_back(hg.get_state(sid).step,
+                         IRCanonicalizer{}.compute_canonical_hash(edges_of(hg, sid)), cost);
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        // NaN-free order: step, hash, then the cost's bits.
+        uint64_t x = 0, y = 0;
+        std::memcpy(&x, &std::get<2>(a), sizeof x);
+        std::memcpy(&y, &std::get<2>(b), sizeof y);
+        return std::tie(std::get<0>(a), std::get<1>(a), x) <
+               std::tie(std::get<0>(b), std::get<1>(b), y);
+    });
+    return out;
+}
+
+const std::vector<RewriteRule> kGrow = {
+    make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build(),
+    make_rule(1).lhs({0, 1}).rhs({0, 1}).rhs({1, 1}).build()};
+const std::vector<std::vector<VertexId>> kSquare = {{1, 2}, {2, 3}, {3, 4}, {4, 1}};
+
+}  // namespace
+
+// A budget of 0 creates no state; a state with no match ends the search; a rewrite to the empty
+// state costs the residuals of the deleted vertices.
+TEST(BestFirst, BudgetZeroNoMatchAndTheEmptyState) {
+    auto zero = [](const hgcommon::TcEdges&, const hgcommon::TcEdges&) { return 0.0; };
+    EXPECT_EQ(hooked(kGrow, kSquare, 4, 0, 4, zero).size(), 1u);
+    // {{x,y,z}} matches nothing in a graph of pairs.
+    EXPECT_EQ(hooked({make_rule(0).lhs({0, 1, 2}).rhs({0, 1}).build()}, kSquare, 3, 10, 4, zero)
+                  .size(),
+              1u);
+    // {{x}} -> {} from {{1}}: vertex 1 has degree 0 and loop count 0, so every residual is 0.
+    Hypergraph hg;
+    ParallelEvolutionEngine e(&hg, 2);
+    e.add_rule(make_rule(0).lhs({0}).build());
+    hgcommon::TransitionCostSpec spec;
+    spec.field = hgcommon::TC_FIELD_DEGREE;
+    spec.dt = 0.5;
+    e.set_transition_cost(spec);
+    e.set_best_first(true, 5);
+    e.evolve(std::vector<std::vector<std::vector<VertexId>>>{{{1}}}, 3);
+    ASSERT_EQ(e.path_costs().size(), 2u);
+    for (const auto& [sid, cost] : e.path_costs()) EXPECT_EQ(cost, 0.0);
+    // The 4-cycle with a chord {1,3} deleted: f_P = (3, 2, 3, 2), (A - D) f_P = (-2, 2, -2, 2);
+    // at dt = 1/2 with f_C = (2, 2, 2, 2) the residuals are (0, -1, 0, -1): 2.
+    EXPECT_DOUBLE_EQ(residual({{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 3}}, kCycle,
+                              hgcommon::TC_FIELD_DEGREE, 0.5),
+                     2.0);
+}
+
+// Every cost equal: the rank alone orders the frontier, and the search is the same at 1, 4 and
+// 16 workers. Negative and non-finite costs order the frontier as numbers (NaN as +Infinity).
+TEST(BestFirst, EqualNegativeAndNonFiniteCosts) {
+    auto equal = [](const hgcommon::TcEdges&, const hgcommon::TcEdges&) { return 1.0; };
+    auto negative = [](const hgcommon::TcEdges&, const hgcommon::TcEdges& c) {
+        return -static_cast<double>(c.count());
+    };
+    auto nonfinite = [](const hgcommon::TcEdges&, const hgcommon::TcEdges& c) {
+        return c.count() % 3 == 0 ? std::nan("") : c.count() % 3 == 1 ? HUGE_VAL : 1.0;
+    };
+    for (auto mode : {StateCanonicalizationMode::None, StateCanonicalizationMode::Full}) {
+        for (const hgcommon::TransitionCostHook& h :
+             {hgcommon::TransitionCostHook(equal), hgcommon::TransitionCostHook(negative),
+              hgcommon::TransitionCostHook(nonfinite)}) {
+            const auto one = hooked(kGrow, kSquare, 5, 40, 1, h, mode);
+            ASSERT_EQ(one.size(), 41u);
+            for (size_t threads : {size_t(4), size_t(16)})
+                EXPECT_EQ(hooked(kGrow, kSquare, 5, 40, threads, h, mode), one);
+        }
+    }
+    // With costs -(edges), the search goes deep first: a state at step 5 is created.
+    const auto deep = hooked(kGrow, kSquare, 5, 40, 4, negative);
+    EXPECT_EQ(std::get<0>(deep.back()), 5u);
+    // NaN costs +Infinity: the states created first all have finite path costs.
+    for (const auto& [step, hash, cost] : hooked(kGrow, kSquare, 2, 3, 4, nonfinite))
+        EXPECT_FALSE(std::isnan(cost));
+}
+
+// Self-loops and multi-edges in the fields: {1,1} counts once as a loop and not in the edge
+// multiplicity; a doubled {1,2} counts twice in the edge multiplicity and once in the degree.
+TEST(TransitionCost, SelfLoopsAndMultiEdgesInEveryField) {
+    const Edges single = {{1, 1}};
+    EXPECT_EQ(field_of(single, hgcommon::TC_FIELD_LOOP_COUNT), (std::vector<double>{1}));
+    EXPECT_EQ(field_of(single, hgcommon::TC_FIELD_DEGREE), (std::vector<double>{0}));
+    EXPECT_EQ(field_of(single, hgcommon::TC_FIELD_EDGE_MULTIPLICITY), (std::vector<double>{0}));
+    // A lone vertex has no neighbour: k_v is NaN and its residual is left out.
+    EXPECT_TRUE(std::isnan(field_of(single, hgcommon::TC_FIELD_CURVATURE)[0]));
+    EXPECT_EQ(residual(single, {{1, 1}, {1, 1}}, hgcommon::TC_FIELD_CURVATURE, 0.1), 0.0);
+    // Doubling {1,2}: the degree field does not change (cost 0 at dt = 0), the multiplicity
+    // rises by 1 at both ends (cost 2).
+    EXPECT_EQ(residual({{1, 2}}, {{1, 2}, {1, 2}}, hgcommon::TC_FIELD_DEGREE, 0.0), 0.0);
+    EXPECT_EQ(residual({{1, 2}}, {{1, 2}, {1, 2}}, hgcommon::TC_FIELD_EDGE_MULTIPLICITY, 0.0),
+              2.0);
 }

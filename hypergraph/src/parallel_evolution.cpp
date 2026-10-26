@@ -1093,15 +1093,8 @@ void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& c
     if (costed) {
         std::vector<uint64_t> cost(n);
         for (uint32_t i = 0; i < n; ++i) cost[i] = cands[i].cost;
-        if (per_transition) {
-            // A successor's cost is the lowest cost of a transition into it.
-            std::unordered_map<uint64_t, uint64_t> lowest;
-            for (uint32_t i = 0; i < n; ++i) {
-                auto [it, fresh] = lowest.emplace(succ_rank[i], cost[i]);
-                if (!fresh && cost[i] < it->second) it->second = cost[i];
-            }
-            for (uint32_t i = 0; i < n; ++i) cost[i] = lowest.find(succ_rank[i])->second;
-        }
+        // A successor's cost is the lowest cost of a transition into it.
+        if (per_transition) hgcommon::successor_lowest(id.data(), order.data(), n, cost.data());
         hgcommon::cost_successor_ranks(cost.data(), succ_rank.data(), n, order.data(),
                                        rank.data());
         succ_rank.swap(rank);

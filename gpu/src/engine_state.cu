@@ -446,6 +446,7 @@ DeviceState EngineState::device() const {
         d.undirected                       = undirected_ ? 1u : 0u;
         d.event_order                      = event_ordering_;
         d.state_cost                     = state_cost_on_ ? state_cost_dev_ : nullptr;
+        d.transition_cost                  = transition_cost_;
         d.edge_label                       = lineage_ ? edge_label_ : nullptr;
         d.state_label                      = lineage_ ? state_label_ : nullptr;
         d.step_pending                     = states_per_step_;

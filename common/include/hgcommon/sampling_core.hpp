@@ -527,6 +527,23 @@ HG_HD inline void successor_ranks(const uint64_t* rank, const SuccessorIdentity*
     }
 }
 
+// "TransitionCost": v[i] for every candidate i becomes the smallest v over the candidates of i's
+// successor, a successor's cost being the lowest cost of a transition into it. `order` and `id`
+// are as successor_ranks leaves them.
+HG_HD inline void successor_lowest(const SuccessorIdentity* id, const uint32_t* order,
+                                   uint32_t n, uint64_t* v) {
+    uint32_t s = 0;
+    while (s < n) {
+        uint32_t e = s + 1;
+        while (e < n && same_successor(id[order[s]], id[order[e]])) ++e;
+        uint64_t x = v[order[s]];
+        for (uint32_t j = s + 1; j < e; ++j)
+            if (v[order[j]] < x) x = v[order[j]];
+        for (uint32_t j = s; j < e; ++j) v[order[j]] = x;
+        s = e;
+    }
+}
+
 // v[i] for every candidate i becomes v at the lead candidate of i's successor. `order`, `lead`
 // and `id` are as successor_ranks leaves them (order sorted by successor).
 HG_HD inline void successor_spread(const SuccessorIdentity* id, const uint32_t* order,

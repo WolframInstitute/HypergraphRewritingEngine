@@ -450,6 +450,120 @@ template __device__ bool state_cost_of_form_device<IrTile>(const DeviceState&, c
                                                            uint64_t&, const hgcommon::StateCost&,
                                                            uint64_t&, IrTile);
 
+namespace {
+// A successor cursor's parent with no hyperedges: the cursor yields the right-hand side alone.
+struct NoParentEdges {
+    __device__ bool next(EdgeId&, uint32_t&, const uint32_t*&) { return false; }
+};
+
+// The leader's part of transition_cost_device, in `a`: the parent's hyperedges in compressed
+// rows, the consumed ones as indices into them, the produced ones, then tc_parent_build and
+// tc_child_cost.
+template <class Rhs>
+__device__ bool transition_cost_in(const DeviceState& ds, StateId parent, const EdgeId* consumed,
+                                   uint32_t num_consumed, const Rhs* rhs, uint32_t num_rhs,
+                                   uint32_t new_var_mask, const VertexId* binding,
+                                   hgcommon::SgArena& a, double& out) {
+    uint32_t m = 0, slots = 0;
+    {
+        DeviceContentCursor c(ds, parent);
+        uint32_t arity = 0;
+        const uint32_t* v = nullptr;
+        while (c.next(arity, v)) {
+            ++m;
+            slots += arity;
+        }
+    }
+    uint32_t* off = a.take<uint32_t>(size_t{m} + 1);
+    uint32_t* verts = a.take<uint32_t>(size_t{slots} + 1);
+    EdgeId* ids = a.take<EdgeId>(size_t{m} + 1);
+    if (a.failed) return false;
+    {
+        DeviceContentCursor c(ds, parent);
+        EdgeId id = INVALID_ID;
+        uint32_t arity = 0, w = 0, i = 0;
+        const uint32_t* v = nullptr;
+        off[0] = 0;
+        while (c.next(id, arity, v)) {
+            for (uint32_t k = 0; k < arity; ++k) verts[w++] = v[k];
+            ids[i] = id;
+            off[++i] = w;
+        }
+    }
+    uint32_t gone[kMaxPatternEdges];
+    for (uint32_t c = 0; c < num_consumed; ++c) {
+        gone[c] = 0;
+        for (uint32_t i = 0; i < m; ++i)
+            if (ids[i] == consumed[c]) gone[c] = i;
+    }
+    uint32_t pslots = 0;
+    for (uint32_t r = 0; r < num_rhs; ++r) pslots += rhs[r].arity;
+    uint32_t* poff = a.take<uint32_t>(size_t{num_rhs} + 1);
+    uint32_t* pv = a.take<uint32_t>(size_t{pslots} + 1);
+    if (a.failed) return false;
+    {
+        // Fresh vertices numbered past every vertex id the device hands out.
+        hgcommon::SuccessorCursor<NoParentEdges, Rhs> c(NoParentEdges{}, nullptr, 0, rhs, num_rhs,
+                                                        new_var_mask, binding, 0xFFFFFF00u);
+        uint32_t arity = 0, w = 0, i = 0;
+        const uint32_t* v = nullptr;
+        poff[0] = 0;
+        while (c.next(arity, v)) {
+            for (uint32_t k = 0; k < arity; ++k) pv[w++] = v[k];
+            poff[++i] = w;
+        }
+        num_rhs = i;
+    }
+    hgcommon::TransitionCostSpec spec = ds.transition_cost;
+    spec.graph = ds.statistics_graph;
+    hgcommon::TcParentView p;
+    if (!hgcommon::tc_parent_build(hgcommon::TcEdges{off, verts, m}, spec, a, p)) return false;
+    return hgcommon::tc_child_cost(p, gone, num_consumed, hgcommon::TcEdges{poff, pv, num_rhs},
+                                   spec, a, out);
+}
+}  // namespace
+
+template <class Rhs, class Par>
+__device__ bool transition_cost_device(const DeviceState& ds, StateId parent,
+                                       const EdgeId* consumed, uint32_t num_consumed,
+                                       const Rhs* rhs, uint32_t num_rhs, uint32_t new_var_mask,
+                                       const VertexId* binding, DeviceArena::View arena,
+                                       uint32_t*& slot, uint64_t& slot_words, double& out,
+                                       Par par) {
+    for (int attempt = 0; attempt < 12; ++attempt) {
+        uint32_t ok = 0;
+        uint64_t bits = 0, need = 0;
+        if (par.leader()) {
+            hgcommon::SgArena a;
+            a.base = reinterpret_cast<unsigned char*>(slot);
+            a.capacity = slot ? slot_words * 4u : 0u;
+            double v = 0.0;
+            if (slot && transition_cost_in(ds, parent, consumed, num_consumed, rhs, num_rhs,
+                                           new_var_mask, binding, a, v)) {
+                ok = 1u;
+                memcpy(&bits, &v, sizeof bits);
+            } else {
+                need = a.used + a.extra + 64u;
+            }
+        }
+        ok = par.bcast(ok);
+        if (ok) {
+            bits = par.bcast64(bits);
+            memcpy(&out, &bits, sizeof out);
+            return true;
+        }
+        need = par.bcast64(need);
+        const uint64_t words = (need + 3u) / 4u;
+        const uint64_t grow = words > 2u * slot_words ? words : 2u * slot_words + 1024u;
+        if (!grow_ir_slot(arena, slot, slot_words, grow, par)) return false;
+    }
+    return false;
+}
+
+template __device__ bool transition_cost_device<DeviceRhsEdge, IrTile>(
+    const DeviceState&, StateId, const EdgeId*, uint32_t, const DeviceRhsEdge*, uint32_t, uint32_t,
+    const VertexId*, DeviceArena::View, uint32_t*&, uint64_t&, double&, IrTile);
+
 // "StepStatistics": state `sid`'s record (hgcommon::state_record) into ds.invariant_pool. The
 // invariants read the state's own CSR slice; the geometry reads `form` (form_words words), the
 // state's IR canonical form. The scratch is `slot`: the data is laid out after the form when the

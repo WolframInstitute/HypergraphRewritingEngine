@@ -730,7 +730,9 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     // Successor states, on the whole warp (a Full successor's hash runs on it).
     const bool by_succ = !ds.step_cap_counts_matches && sel.id != nullptr && succ != nullptr &&
                          succ->mode != CanonicalizationMode::None;
-    const bool costed = ds.state_cost != nullptr && sel.cost != nullptr && succ != nullptr;
+    const bool costed = step_costed(ds) && sel.cost != nullptr && succ != nullptr;
+    // Under "TransitionCost" the transitions into one successor can cost differently.
+    const bool per_transition = hgcommon::tc_active(ds.transition_cost);
     // The identities and costs idle blocks computed from the cost log (step_cost_one); a
     // candidate without them is computed here.
     const uint32_t* ready = succ != nullptr ? succ->cand_ready : nullptr;
@@ -756,9 +758,10 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
         if (tid == 0) hgcommon::successor_ranks(sel.rank, sel.id, m, sel.order, sel.srank, sel.lead);
         __syncthreads();
         if (costed) {
-            // One cost per successor, at its lead candidate, then spread to the others.
+            // One cost per successor, at its lead candidate, then spread to the others; under
+            // "TransitionCost" one per candidate, and a successor costs the lowest of them.
             for (uint32_t j = 0; j < m; ++j) {
-                if (!sel.lead[j]) continue;
+                if (!sel.lead[j] && !per_transition) continue;
                 const uint32_t ci = sel.idx[j];
                 const MatchRecord& r = cand.at(ci);
                 uint64_t key = 0;
@@ -777,7 +780,10 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
                 sel.rank[j] = sel.srank[j];
                 g += sel.lead[j];
             }
-            if (costed) hgcommon::successor_spread(sel.id, sel.order, sel.lead, m, sel.cost);
+            if (costed && per_transition)
+                hgcommon::successor_lowest(sel.id, sel.order, m, sel.cost);
+            else if (costed)
+                hgcommon::successor_spread(sel.id, sel.order, sel.lead, m, sel.cost);
             s_groups = g;
         }
     } else if (costed) {
@@ -3188,7 +3194,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
         step_sel.progress = ps.step_progress;
         step_sel.cand_rank = ps.step_cand_rank;
-        const bool costed = dsk.state_cost != nullptr;
+        const bool costed = step_costed(dsk);
         if (dsk.step_cap_counts_matches && !costed) {
             if (ps.step_pos_cap != cap) {
                 if (ps.step_group) cudaFree(ps.step_group);
@@ -3265,7 +3271,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     dsk.held = 0u;
     if (!session && dsk.edge_label != nullptr && dsk.max_states_per_step != 0u &&
         dsk.step_cap_counts_matches && max_lhs < kMaxPatternEdges &&
-        hgcommon::held_matches_apply(true, dsk.state_cost != nullptr, dsk.matches_per_state_rule,
+        hgcommon::held_matches_apply(true, step_costed(dsk), dsk.matches_per_state_rule,
                                      dsk.max_successor_states_per_parent,
                                      dsk.exploration_probability)) {
         const uint64_t words = engine.config().held_pool_words;

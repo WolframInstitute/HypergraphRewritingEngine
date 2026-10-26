@@ -302,7 +302,8 @@ exact configuration. Sampling and capping options refine this as follows:
   that graph, the Ollivier-Ricci curvature k_v, the loop count and the edge multiplicity
   (`hgcommon::tc_transition_cost`). The cost of a transition is its `TransitionCost` plus its
   child's `StateCost`. Under a step cap a successor's cost is the lowest cost of a transition
-  into it. CPU engine only: the GPU binary runs such a job on the CPU engine with a warning.
+  into it. Both devices compute the same cost (`hgcommon::tc_child_cost`) and keep the same
+  states.
 - **`Search` -> `"BestFirst"`** takes, from the initial states, the transition whose child has
   the lowest path cost (the parent's path cost plus the transition's cost), ties broken by the
   transition's rank and then by a key of the parent's history, one transition at a time, until
@@ -310,7 +311,8 @@ exact configuration. Sampling and capping options refine this as follows:
   states a transition into a state already created is dropped. A search with a given
   `RandomSeed` creates the same states at any thread count. The reply's `"PathCosts"` gives each
   state's path cost. The step caps, the draws, quotient exploration, `Generational` and
-  `EventOrderingFunction` do not apply with it, and sessions refuse it. CPU engine only.
+  `EventOrderingFunction` do not apply with it, and sessions refuse it. It runs on the CPU
+  engine, and the GPU binary runs it there with a warning.
 - **`Generational`** is the Wolfram model's single-way update. The evolution
   follows one history from each initial state, and each step is one generation. A state's
   matches are ordered by the standard order (`hgcommon::event_order_before` with

@@ -503,6 +503,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     engine.set_rank_reads_step(hgcommon::rank_reads_step(full_states, in.max_states_per_step));
     engine.set_lineage(lineage);
     engine.set_state_cost(in.max_states_per_step != 0 ? in.state_cost : hgcommon::StateCost{});
+    engine.set_transition_cost(in.max_states_per_step != 0 ? in.transition_cost
+                                                           : hgcommon::TransitionCostSpec{});
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
                         static_cast<uint32_t>(in.rule_weights.size()),

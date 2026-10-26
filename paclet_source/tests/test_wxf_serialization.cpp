@@ -6811,6 +6811,44 @@ TEST(FfiInput, TransitionCostAndBestFirstThroughTheJob) {
               std::string::npos);
 }
 
+// "TransitionCost" under "MaxStatesPerStep" through the job: the loop move on a 4-cycle with two
+// loops, one state per step by the loop count's heat residual. all_tests answers it on the CPU
+// engine and gpu_ffi_tests on the device, with the same counts and no "Engine" warning.
+TEST(FfiInput, TransitionCostGuidesTheStepCapOnEitherDevice) {
+    const StateList seed = {{{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 1}, {1, 1}}};
+    const EdgeList lhs = {{1, 1}, {1, 2}};
+    const EdgeList rhs = {{1, 2}, {2, 2}};
+    HostBridge host;
+    struct Want { const char* field; int64_t states, events; };
+    for (const Want& want : {Want{"LoopCount", 3, 12}, Want{"Degree", 2, 22},
+                             Want{"Curvature", 2, 22}}) {
+        const char* field = want.field;
+        const auto out = run_rewriting_core(build_input(seed, lhs, rhs, 4, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("MaxStatesPerStep"));
+            w.write(int64_t{1});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("RandomSeed"));
+            w.write(int64_t{7});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("TransitionCost"));
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            w.write_varint(2);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Field"));
+            w.write(std::string(field));
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("TimeStep"));
+            w.write(0.25);
+        }, 5), host);
+        EXPECT_TRUE(warning_contexts(out).empty()) << field;
+        EXPECT_EQ(read_int_key(out, "NumStates"), want.states) << field;
+        EXPECT_EQ(read_int_key(out, "NumEvents"), want.events) << field;
+    }
+}
+
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
 // device. The GPU reply read every state as empty when no state contents were requested (their
 // edge counts were not read back), so every state fell into one class and NumStates was 1.

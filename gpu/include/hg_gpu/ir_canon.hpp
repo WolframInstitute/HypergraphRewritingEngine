@@ -101,6 +101,19 @@ __device__ bool state_cost_of_form_device(const DeviceState& ds, const uint32_t*
                                           const hgcommon::StateCost& cost, uint64_t& out_key,
                                           Par par);
 
+// "TransitionCost": the heat residual (hgcommon::tc_child_cost) of the transition that consumes
+// `consumed` of `parent` and produces the right-hand side under `binding`, into `out`. The
+// parent's part (hgcommon::tc_parent_build) and the child's are laid out in the slot and computed
+// by the policy's leader. False when the arena cannot grow the slot. Every lane of the policy
+// calls it with the same arguments and receives the cost. Instantiated for IrTile.
+template <class Rhs, class Par>
+__device__ bool transition_cost_device(const DeviceState& ds, StateId parent,
+                                       const EdgeId* consumed, uint32_t num_consumed,
+                                       const Rhs* rhs, uint32_t num_rhs, uint32_t new_var_mask,
+                                       const VertexId* binding, DeviceArena::View arena,
+                                       uint32_t*& slot, uint64_t& slot_words, double& out,
+                                       Par par);
+
 // "StepStatistics": state `sid`'s invariants and geometry (hgcommon::state_record) as a record in
 // DeviceState::invariant_pool, its offset in DeviceState::state_invariant_at[sid]. `form` is the
 // state's IR canonical form, which the geometry reads; the slot is the caller's IR scratch.

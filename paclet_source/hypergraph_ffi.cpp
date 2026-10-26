@@ -503,8 +503,9 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                                     {"Curvature", hgcommon::TC_FIELD_CURVATURE},
                                     {"LoopCount", hgcommon::TC_FIELD_LOOP_COUNT},
                                     {"EdgeMultiplicity", hgcommon::TC_FIELD_EDGE_MULTIPLICITY}};
-                                for (const auto& [name, f] : kFields)
-                                    if (field == name) req.transition_cost.field = f;
+                                for (const auto& entry : kFields)
+                                    if (field == entry.first)
+                                        req.transition_cost.field = entry.second;
                                 if (field == "Function") req.transition_cost_function = true;
                                 if (req.transition_cost_error.empty()) {
                                     if (!req.transition_cost_function &&
@@ -895,6 +896,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.statistics_graph = req.statistics_graph;
         job.statistics_measures = req.statistics_measures;
         job.state_cost = req.state_cost;
+        job.transition_cost = req.transition_cost;
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         job.generational = req.generational;
@@ -1191,13 +1193,9 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
         // A job replied in arrays (in-process) runs on the CPU engine: the device replies in WXF.
         const bool cpu_reply = !Out::kWire;
-        // "TransitionCost" and "Search" -> "BestFirst" run on the CPU engine: the device has
-        // neither (rc3 item: device port).
-        const bool cost_search = req.best_first || hgcommon::tc_active(req.transition_cost) ||
-                                 req.transition_cost_function;
-        const bool on_cpu =
-            req.positional_event_identity || custom_keys || cpu_session || cpu_reply ||
-            cost_search;
+        // "Search" -> "BestFirst" runs on the CPU engine (docs/TRANSITION_COST.md, Devices).
+        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session ||
+                            cpu_reply || req.best_first;
         if (req.positional_event_identity && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
@@ -1206,10 +1204,9 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             req.ffi_warnings.push_back({"Engine", 1,
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
                 "Full and Automatic"});
-        else if (cost_search && !cpu_session && !cpu_reply)
+        else if (req.best_first && !cpu_session && !cpu_reply)
             req.ffi_warnings.push_back({"Engine", 1,
-                "\"TransitionCost\" and \"Search\" -> \"BestFirst\" run on the CPU engine: the "
-                "device has neither"});
+                "\"Search\" -> \"BestFirst\" runs on the CPU engine"});
 #endif
         if (req.session_op == "InitialCondition") {
             // A generated initial condition, on either device: no rules and no evolution.
@@ -2464,14 +2461,15 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
         // as "States" lists them.
         if (engine.best_first()) {
             std::vector<std::pair<uint32_t, double>> costs;
-            for (const auto& [sid, cost] : engine.path_costs())
-                if (!full_canonicalization || hg.get_canonical_state(sid) == sid)
-                    costs.emplace_back(sid, cost);
+            for (const auto& entry : engine.path_costs())
+                if (!full_canonicalization || hg.get_canonical_state(entry.first) == entry.first)
+                    costs.emplace_back(entry.first, entry.second);
             std::sort(costs.begin(), costs.end());
             wxf::WXFValueAssociation pc;
             pc.reserve(costs.size());
-            for (const auto& [sid, cost] : costs)
-                pc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(cost)});
+            for (const auto& entry : costs)
+                pc.push_back({wxf::WXFValue(static_cast<int64_t>(entry.first)),
+                              wxf::WXFValue(entry.second)});
             reply.value("PathCosts", wxf::WXFValue(pc));
         }
 

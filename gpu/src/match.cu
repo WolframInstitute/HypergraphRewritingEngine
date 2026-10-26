@@ -829,19 +829,20 @@ __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRul
 __device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
                               typename Pool<MatchRecord>::DeviceView out, const SuccessorCtx& ctx,
                               uint32_t i) {
-    // Under Full states counting successors, the cost's canonical form gives the identity.
+    // Under Full states counting successors, the state cost's canonical form gives the identity.
     const bool by_succ = !ds.step_cap_counts_matches && ctx.mode != CanonicalizationMode::None;
-    const bool full_id = by_succ && ctx.mode == CanonicalizationMode::Full;
+    const bool costed = step_costed(ds);
+    const bool full_id = by_succ && ctx.mode == CanonicalizationMode::Full &&
+                         ds.state_cost != nullptr;
     const MatchRecord& m = out.at(i);
     const DeviceRule& rule = rules[m.rule_id];
     hgcommon::SuccessorIdentity id{0, 1};
     uint64_t key = 0;
-    const bool costed = ds.state_cost != nullptr;
     bool ok = true;
     if (costed)
         ok = successor_cost_device(ds, rule, m.state_id, m.matched_edges, ctx, key,
                                    full_id ? &id : nullptr);
-    if (ok && by_succ && (!costed || !full_id))
+    if (ok && by_succ && !full_id)
         ok = successor_identity_device(ds, rule, m.state_id, m.matched_edges, ctx, id);
     if (ok && (threadIdx.x & 31u) == 0) {
         ctx.cand_cost[i] = key;
@@ -861,6 +862,21 @@ __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& r
     uint32_t nc = 0;
     for (uint8_t p = 0; p < rule.num_lhs_edges; ++p)
         if (matched[p] != INVALID_ID) consumed[nc++] = matched[p];
+    // The transition cost first, then the state cost, added as the host adds them
+    // (ParallelEvolutionEngine::successor_identity).
+    const bool transition = hgcommon::tc_active(ds.transition_cost);
+    double tc = 0.0;
+    if (transition &&
+        !transition_cost_device(ds, parent, consumed, nc, rule.rhs, rule.num_rhs_edges,
+                                rule.new_var_mask, binding, ctx.arena, *ctx.slot,
+                                *ctx.slot_words, tc, IrWarpAll{})) {
+        if ((threadIdx.x & 31u) == 0) ds.errors.record(ErrorKind::kIRArenaExhausted);
+        return false;
+    }
+    if (ds.state_cost == nullptr) {
+        out = hgcommon::state_cost_key(tc);
+        return true;
+    }
     uint64_t h = 0;
     uint32_t* form = nullptr;
     uint32_t words = 0;
@@ -872,12 +888,13 @@ __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& r
         return false;
     }
     if (full_id) *full_id = hgcommon::SuccessorIdentity{h, 0};
+    uint64_t s = 0;
     if (!state_cost_of_form_device(ds, form, words, ctx.arena, *ctx.slot, *ctx.slot_words,
-                                   *ds.state_cost, out, IrWarpAll{})) {
+                                   *ds.state_cost, s, IrWarpAll{})) {
         if ((threadIdx.x & 31u) == 0) ds.errors.record(ErrorKind::kIRArenaExhausted);
-        out = hgcommon::state_cost_key(HUGE_VAL);
         return false;
     }
+    out = transition ? hgcommon::state_cost_key(tc + hgcommon::sp_value_of(s)) : s;
     return true;
 }
 

@@ -13,6 +13,7 @@
 #include "hgcommon/quotient_replay_core.hpp"  // QR_ID_LIMIT
 #include "hgcommon/state_invariants_core.hpp"  // StateInvariantRecord
 #include "hgcommon/state_cost_core.hpp"        // StateCost
+#include "hgcommon/transition_cost_core.hpp"   // TransitionCostSpec
 #include "hgcommon/undirected_core.hpp"        // UndirectedRuleInfo
 
 #include <set>
@@ -128,6 +129,9 @@ struct EvolveInput {
     // "StateCost": the step cap keeps the lowest-cost successors (hgcommon/state_cost_core.hpp).
     // n == 0 ranks by the successor rank alone.
     hgcommon::StateCost state_cost;
+    // "TransitionCost": the step cap reads each transition's heat residual as well
+    // (hgcommon/transition_cost_core.hpp); field TC_FIELD_NONE is none.
+    hgcommon::TransitionCostSpec transition_cost;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
     // "Generational": each state's matches are taken in the standard order, each unless it shares

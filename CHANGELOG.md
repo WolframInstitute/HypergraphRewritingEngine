@@ -76,6 +76,18 @@
   exact hash of a new state on an idle block when only the statistics read it. A step no longer
   waits for the state's canonical labelling.
 
+- `"TransitionCost" -> <|"Field" -> f, "TimeStep" -> dt|>` costs a transition by the heat residual
+  of a vertex field from its parent state to its child state: the sum over the vertices of both of
+  (f_child(v) - f_parent(v) - dt ((A - D) f_parent)(v))^2. The fields are `"Degree"`,
+  `"Curvature"`, `"LoopCount"` and `"EdgeMultiplicity"`. A transition's cost adds its child's
+  `"StateCost"`. Under `"MaxStatesPerStep"` a successor state costs the lowest cost of a
+  transition into it. Both engines compute the same cost and keep the same states.
+- `"Search" -> "BestFirst"` with `"SearchBudget" -> n` takes the transition of lowest path cost
+  next, one at a time, until n states are created. The `"PathCosts"` property gives each state's
+  path cost. It runs on the CPU engine.
+- The hgevolve Python client takes `transition_cost` as a dict or a callable
+  `f(parent_edges, child_edges)`, `search` and `search_budget`, and `hg.heat_residual` computes
+  the engine's residual for two edge lists.
 - The engine has a host memory limit, `"Tuning" -> <|"MemoryLimit" -> bytes|>` or the
   environment variable `HG_TUNE_MEMORY_LIMIT`. The default is half of physical memory, and a value
   above physical memory is lowered to it. An evolution that reaches the limit stops and gives a

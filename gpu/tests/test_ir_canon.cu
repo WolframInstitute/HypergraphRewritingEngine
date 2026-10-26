@@ -24,9 +24,11 @@
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/evolve.hpp"
+#include "hgcommon/transition_cost_core.hpp"
 
 #include <cuda_runtime.h>
 
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -282,4 +284,156 @@ TEST(IrCanon, ARefusedDeepRungIsAnArenaOverflow) {
     }
     EXPECT_TRUE(arena);
     EXPECT_FALSE(depth);
+}
+
+// "TransitionCost": hgcommon::tc_child_cost gives the same double on the device as on the host,
+// and the same double when the vertices are numbered differently (the sums are taken in order
+// of value). Cases: the loop move on a 4-cycle (hand value 1/2), a chord, a deleted vertex, a
+// rewrite that consumes and re-produces an edge, multi-edges and self-loops, under every field.
+namespace {
+
+struct TcCase {
+    std::vector<std::vector<uint32_t>> parent;
+    std::vector<uint32_t> consumed;   // indices into parent
+    std::vector<std::vector<uint32_t>> produced;
+};
+
+struct TcFlat {
+    std::vector<uint32_t> off{0}, v;
+    void add(const std::vector<uint32_t>& e) {
+        v.insert(v.end(), e.begin(), e.end());
+        off.push_back(static_cast<uint32_t>(v.size()));
+    }
+};
+
+__global__ void k_tc_child_cost(const uint32_t* poff, const uint32_t* pv, uint32_t pm,
+                                const uint32_t* consumed, uint32_t nc, const uint32_t* qoff,
+                                const uint32_t* qv, uint32_t qm,
+                                hgcommon::TransitionCostSpec spec, unsigned char* scratch,
+                                size_t bytes, double* out, uint32_t* ok) {
+    hgcommon::SgArena a;
+    a.base = scratch;
+    a.capacity = bytes;
+    hgcommon::TcParentView p;
+    double v = 0.0;
+    *ok = hgcommon::tc_parent_build(hgcommon::TcEdges{poff, pv, pm}, spec, a, p) &&
+                  hgcommon::tc_child_cost(p, consumed, nc, hgcommon::TcEdges{qoff, qv, qm},
+                                          spec, a, v)
+              ? 1u
+              : 0u;
+    *out = v;
+}
+
+double tc_host(const TcCase& c, const hgcommon::TransitionCostSpec& spec) {
+    TcFlat p, q;
+    for (const auto& e : c.parent) p.add(e);
+    for (const auto& e : c.produced) q.add(e);
+    std::vector<unsigned char> bytes(size_t{1} << 22);
+    hgcommon::SgArena a;
+    a.base = bytes.data();
+    a.capacity = bytes.size();
+    hgcommon::TcParentView pv;
+    double v = 0.0;
+    EXPECT_TRUE(hgcommon::tc_parent_build(
+        hgcommon::TcEdges{p.off.data(), p.v.data(), static_cast<uint32_t>(c.parent.size())}, spec,
+        a, pv));
+    EXPECT_TRUE(hgcommon::tc_child_cost(
+        pv, c.consumed.data(), static_cast<uint32_t>(c.consumed.size()),
+        hgcommon::TcEdges{q.off.data(), q.v.data(), static_cast<uint32_t>(c.produced.size())},
+        spec, a, v));
+    return v;
+}
+
+template <class T>
+T* to_device(const std::vector<T>& h) {
+    T* d = nullptr;
+    cudaMalloc(&d, sizeof(T) * (h.size() + 1));
+    if (!h.empty()) cudaMemcpy(d, h.data(), sizeof(T) * h.size(), cudaMemcpyHostToDevice);
+    return d;
+}
+
+double tc_device(const TcCase& c, const hgcommon::TransitionCostSpec& spec) {
+    TcFlat p, q;
+    for (const auto& e : c.parent) p.add(e);
+    for (const auto& e : c.produced) q.add(e);
+    uint32_t *poff = to_device(p.off), *pv = to_device(p.v), *qoff = to_device(q.off),
+             *qv = to_device(q.v), *cons = to_device(c.consumed);
+    const size_t bytes = size_t{1} << 22;
+    unsigned char* scratch = nullptr;
+    cudaMalloc(&scratch, bytes);
+    double* out = nullptr;
+    uint32_t* ok = nullptr;
+    cudaMalloc(&out, sizeof(double));
+    cudaMalloc(&ok, sizeof(uint32_t));
+    k_tc_child_cost<<<1, 1>>>(poff, pv, static_cast<uint32_t>(c.parent.size()), cons,
+                              static_cast<uint32_t>(c.consumed.size()), qoff, qv,
+                              static_cast<uint32_t>(c.produced.size()), spec, scratch, bytes,
+                              out, ok);
+    double v = 0.0;
+    uint32_t flag = 0;
+    EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    cudaMemcpy(&v, out, sizeof v, cudaMemcpyDeviceToHost);
+    cudaMemcpy(&flag, ok, sizeof flag, cudaMemcpyDeviceToHost);
+    EXPECT_EQ(flag, 1u);
+    for (void* x : {static_cast<void*>(poff), static_cast<void*>(pv), static_cast<void*>(qoff),
+                    static_cast<void*>(qv), static_cast<void*>(cons), static_cast<void*>(scratch),
+                    static_cast<void*>(out), static_cast<void*>(ok)})
+        cudaFree(x);
+    return v;
+}
+
+// The case with vertex x renamed to 1000 + 7 x (consumed indices unchanged).
+TcCase renamed(TcCase c) {
+    for (auto* side : {&c.parent, &c.produced})
+        for (auto& e : *side)
+            for (auto& x : e) x = 1000u + 7u * x;
+    return c;
+}
+
+uint64_t bits(double x) {
+    uint64_t b = 0;
+    std::memcpy(&b, &x, sizeof b);
+    return b;
+}
+
+}  // namespace
+
+TEST(TransitionCost, ChildCostIsTheSameDoubleOnHostAndDevice) {
+    const std::vector<std::vector<uint32_t>> cycle = {{1, 2}, {2, 3}, {3, 4}, {4, 1}};
+    auto with = [&](std::vector<std::vector<uint32_t>> more) {
+        auto out = cycle;
+        out.insert(out.end(), more.begin(), more.end());
+        return out;
+    };
+    const std::vector<TcCase> cases = {
+        // The loop move: consumes {1,1} (index 4) and {1,2} (0), produces {1,2} and {2,2}.
+        {with({{1, 1}, {1, 1}}), {4, 0}, {{1, 2}, {2, 2}}},
+        {cycle, {}, {{1, 3}}},                                   // a chord
+        {with({{4, 5}}), {4}, {}},                               // vertex 5 deleted
+        {with({{1, 2}, {1, 2}, {3, 3, 3}}), {5, 1}, {{2, 3}, {1, 6}, {6, 6}}},
+        {{{1, 2}, {2, 3}, {3, 1}, {1, 4}, {4, 5}, {5, 6}, {6, 1}, {2, 5}},
+         {7, 3},
+         {{2, 7}, {7, 5}, {1, 7}}},
+        {{{1}}, {0}, {}},                                        // to the empty state
+    };
+    for (uint32_t field : {hgcommon::TC_FIELD_DEGREE, hgcommon::TC_FIELD_CURVATURE,
+                           hgcommon::TC_FIELD_LOOP_COUNT, hgcommon::TC_FIELD_EDGE_MULTIPLICITY}) {
+        for (uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS}) {
+            hgcommon::TransitionCostSpec spec;
+            spec.field = field;
+            spec.graph = graph;
+            spec.dt = 0.3;
+            for (size_t i = 0; i < cases.size(); ++i) {
+                const double host = tc_host(cases[i], spec);
+                EXPECT_EQ(bits(tc_device(cases[i], spec)), bits(host))
+                    << "field " << field << " graph " << graph << " case " << i;
+                EXPECT_EQ(bits(tc_host(renamed(cases[i]), spec)), bits(host))
+                    << "renamed, field " << field << " graph " << graph << " case " << i;
+            }
+        }
+    }
+    hgcommon::TransitionCostSpec loops;
+    loops.field = hgcommon::TC_FIELD_LOOP_COUNT;
+    loops.dt = 0.25;
+    EXPECT_EQ(tc_device(cases[0], loops), 0.5);
 }

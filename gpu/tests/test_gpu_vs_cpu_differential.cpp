@@ -73,6 +73,10 @@ struct Workload {
     double   exploration_probability = 1.0;
     // "StateCost": the step cap keeps the lowest-cost successors (n == 0: none).
     hgcommon::StateCost state_cost;
+    // "TransitionCost": the step cap reads each transition's heat residual (field 0: none).
+    hgcommon::TransitionCostSpec transition_cost;
+    // The CPU engine's worker count (0: one per logical CPU).
+    size_t cpu_threads = 0;
     // Forwarded to EvolveInput::persistent_blocks (0 keeps the default grid).
     uint32_t persistent_blocks = 0;
     // "Generational" (EvolveInput::generational, ParallelEvolutionEngine::set_generational).
@@ -259,7 +263,7 @@ NormalizedResult run_cpu(const Workload& w) {
     // could have been meaningful.
     hg.set_event_signature_keys(to_cpu_event_keys(w.event_canon_mode));
 
-    hypergraph::ParallelEvolutionEngine engine(&hg, /*num_threads=*/0);
+    hypergraph::ParallelEvolutionEngine engine(&hg, w.cpu_threads);
     for (size_t i = 0; i < w.rules.size(); ++i) {
         engine.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
     }
@@ -274,6 +278,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_matches_per_state_rule(w.matches_per_state_rule);
     engine.set_exploration_probability(w.exploration_probability);
     engine.set_state_cost(w.state_cost);
+    engine.set_transition_cost(w.transition_cost);
     engine.set_generational(w.generational);
     engine.set_event_ordering(w.event_ordering);
     engine.set_undirected(w.undirected);
@@ -438,6 +443,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.max_states_per_step = w.max_states_per_step;
     in.step_cap_counts_matches = w.step_cap_counts_matches;
     in.state_cost = w.state_cost;
+    in.transition_cost = w.transition_cost;
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     in.matches_per_state_rule = w.matches_per_state_rule;
     in.exploration_probability = w.exploration_probability;
@@ -2193,6 +2199,81 @@ TEST(Sampling, SuccessorCapsAreTheSameOnBothEngines) {
             }
         }
     }
+}
+
+// "TransitionCost" under the step cap keeps the same states on both engines: the loop move on a
+// 4-cycle with two loops (hand value 1/2 for moving a loop), deletions that make one successor
+// from transitions of different cost, and growth rules, under None, Automatic and Full states,
+// every field, alone and with "StateCost", per step and per transition (MatchesPerStep), at two
+// seeds, with the CPU at 1, 4 and 16 workers. States, events, causal and branchial pairs equal.
+TEST(TransitionCost, StepCapKeepsTheSameStatesOnBothEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+        uint32_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"loop-move", {rule({{0, 0}, {0, 1}}, {{0, 1}, {1, 1}})},
+         {{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 1u}, {1u, 1u}, {1u, 1u}}, 3},
+        {"delete-path", {rule({{0, 1}}, {}), rule({{0, 1}}, {{0, 1}, {0, 1}})},
+         {{1u, 2u}, {2u, 3u}, {3u, 4u}}, 2},
+        {"grow",
+         {rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}}), rule({{0, 1}}, {{0, 1}, {1, 1}})},
+         {{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 1u}}, 3},
+    };
+    struct Cap { uint32_t per_step; bool matches; const hgcommon::StateCost* cost; };
+    size_t runs = 0, guided = 0;
+    const Cap caps[] = {{1, false, nullptr}, {2, false, nullptr}, {2, true, nullptr},
+                        {2, false, &kCostInvariants}};
+    for (const auto& c : cases)
+        for (auto mode : {hg_gpu::CanonicalizationMode::None,
+                          hg_gpu::CanonicalizationMode::Automatic,
+                          hg_gpu::CanonicalizationMode::Full})
+            for (uint32_t field : {hgcommon::TC_FIELD_DEGREE, hgcommon::TC_FIELD_CURVATURE,
+                                   hgcommon::TC_FIELD_LOOP_COUNT,
+                                   hgcommon::TC_FIELD_EDGE_MULTIPLICITY})
+                for (const Cap& cap : caps)
+                    for (uint64_t seed : {uint64_t(7), uint64_t(12345)}) {
+                        Workload w;
+                        w.name = std::string(c.name) + " mode " + std::to_string(int(mode)) +
+                                 " field " + std::to_string(field) + " per_step " +
+                                 std::to_string(cap.per_step) + (cap.matches ? " matches" : "") +
+                                 (cap.cost ? " state cost" : "") + " seed " +
+                                 std::to_string(seed);
+                        w.rules = c.rules;
+                        w.initial_states = {c.init};
+                        w.num_steps = c.steps;
+                        w.canon_mode = mode;
+                        w.random_seed = seed;
+                        w.max_states_per_step = cap.per_step;
+                        w.step_cap_counts_matches = cap.matches;
+                        if (cap.cost) w.state_cost = *cap.cost;
+                        w.transition_cost.field = field;
+                        w.transition_cost.dt = 0.25;
+                        const NormalizedResult gpu = run_gpu(w);
+                        // The cost guides the cap: the same run without it keeps other states.
+                        Workload plain = w;
+                        plain.transition_cost = hgcommon::TransitionCostSpec{};
+                        plain.cpu_threads = 1;
+                        ++runs;
+                        if (run_cpu(plain).event_keys != gpu.event_keys) ++guided;
+                        for (size_t threads : {size_t(1), size_t(4), size_t(16)}) {
+                            w.cpu_threads = threads;
+                            const NormalizedResult cpu = run_cpu(w);
+                            const std::string at = w.name + " cpu workers " +
+                                                   std::to_string(threads);
+                            EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes)
+                                << at;
+                            EXPECT_EQ(gpu.raw_states, cpu.raw_states) << at;
+                            EXPECT_EQ(gpu.num_events, cpu.num_events) << at;
+                            EXPECT_EQ(gpu.event_keys, cpu.event_keys) << at;
+                            EXPECT_EQ(gpu.observable_causal, cpu.observable_causal) << at;
+                            EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial) << at;
+                        }
+                    }
+    // The transition cost changes the kept states in more than half of these runs.
+    EXPECT_GT(guided * 2, runs) << guided << " of " << runs;
 }
 
 // "MatchesPerStep" under None states hands each kept transition's state's match set to its child

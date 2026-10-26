@@ -134,7 +134,7 @@ __device__ inline __noinline__ uint64_t selection_rank_device(const DeviceState&
 // Whether the step selection draws positions ("MatchesPerStep" without "StateCost"), the host's
 // select_positions.
 __device__ inline bool step_selects_positions(const DeviceState& ds) {
-    return ds.max_states_per_step != 0u && ds.step_cap_counts_matches && ds.state_cost == nullptr;
+    return ds.max_states_per_step != 0u && ds.step_cap_counts_matches && !step_costed(ds);
 }
 
 // What the step selection reads per candidate: the step-order key when it draws positions,
