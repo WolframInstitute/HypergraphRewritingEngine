@@ -313,13 +313,13 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   plus a caller's hook and the child's "StateCost" (`successor_identity`). Under
   `MaxStatesPerStep` a successor's cost is the lowest cost of a transition into it
   (`keep_lowest_successors`). Under "Search" -> "BestFirst" each drain adds its transitions with
-  the child's path cost to `bf_pending_` (`best_first_at_drain`), and `run_best_first` takes the
-  lowest (path cost, rank, parent's path key) from a heap, rewrites it and waits for the child's
-  matching before taking the next. One transition is in flight at a time, so the states created
-  depend on the inputs alone; the matching of each state runs on every worker. The device costs
-  transitions under the step cap in its cost log (`step_cost_one`, `transition_cost_device`)
-  and keeps a successor at its cheapest transition (`hgcommon::successor_lowest`). Best-first
-  search runs on the CPU engine.
+  the parent's path cost to `bf_pending_` (`best_first_at_drain`). `run_best_first` costs them in
+  chunks on the workers (`cost_best_first`), takes the lowest (path cost, rank, parent's path
+  key) from a heap, and rewrites and matches it on its own thread (`best_first_inline`,
+  `best_first_driver`) before taking the next. One transition is in flight at a time, so the
+  states created depend on the inputs alone. The device costs transitions under the step cap
+  in its cost log (`step_cost_one`, `transition_cost_device`) and keeps a successor at its
+  cheapest transition (`hgcommon::successor_lowest`). Best-first search runs on the CPU engine.
 
 Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;
 the drain fires once per state), `RuleWeights.*`, `TransitionCost.*` and `BestFirst.*`.

@@ -45,7 +45,7 @@ Each state has a path cost: 0 for an initial state, and the parent's path cost p
 
 With non-negative costs this is Dijkstra's algorithm on the multiway system: states are created in order of path cost. Under "CanonicalizeStates" None every state has one history and its path cost is the sum of the costs along it. Under Full a class is created once, at the least path cost over the histories through the states the search created, and when "Steps" does not cut a history short this is the least path cost over all histories.
 
-One transition is taken at a time, and the next is taken after the child's matching completes, so a search with a given "RandomSeed" creates the same states at any thread count. The rank of a transition reads the seed, as it does for the step caps. The matching of each state runs on all workers.
+One transition is taken at a time, and the next is taken after the child's matching completes, so a search with a given "RandomSeed" creates the same states at any thread count. The rank of a transition reads the seed, as it does for the step caps. The rewrite and the matching of each taken transition run on the thread that drives the search, and the costs of the transitions it adds run on all workers.
 
 The reply has `"PathCosts"`: each state's path cost, by state id.
 
@@ -66,7 +66,7 @@ A state P with m hyperedges, n vertices and k costed transitions:
 - Host, "Degree", "LoopCount" and "EdgeMultiplicity": the parent's part costs O(m log m) once per drain, and each transition O(s log s), where s is the number of incidences of the hyperedges at the rewritten vertices. A drain costs O(m log m + k s log s). Reading the transitions is Omega(k) and reading the parent is Omega(m), so the bound is a log factor above the minimum. The log comes from sorting the vertex ids and the terms.
 - Host, "Curvature": each transition computes the child's curvature in full, one Ollivier transport problem per edge of G. The curvature of a vertex far from the rewrite does not change, so a transition could compute only the vertices near the rewrite. That bound is not implemented.
 - Device: each candidate builds the parent's part itself, so a transition costs O(m log m) on one thread. The candidates of a step run in parallel. Sharing the parent's part between the candidates of a state would bring the device to the host's bound.
-- Best-first search with budget B and frontier F: B heap pops and pushes, O((B + F) log F) on the host thread, plus the matching and the costs of the B expanded states. Every pop waits for the previous child's matching, so the search is sequential in B. The matching of each state runs on all workers.
+- Best-first search with budget B and frontier F: B heap pops and pushes, O((B + F) log F) on the driver thread, plus the matching and the costs of the B expanded states. Every pop waits for the previous child's matching, so the search is sequential in B; the costs of each child's transitions run on all workers.
 
 ## Measurements
 
@@ -83,7 +83,6 @@ Callgrind instructions (Ir), one worker, `hg_evolve` built with the same flags a
 
 For the local fields the cost per transition grows by 47% from n = 100 to n = 1600 while n grows 16-fold, and is 30% to 66% above efed30ff, whose sums ran in vertex order over std::vector storage. For the curvature the cost per transition grows with n, as the bound above says, and is 3% lower.
 
-Best-first search, the growth rules from a 4-cycle with the degree residual: the whole run is 40.3, 68.5, 123.7, 223.6 and 431.3 million Ir for budgets of 250, 500, 1000, 2000 and 4000 states, linear in the budget. The driver's own work (`run_best_first`) is 2,600 Ir per state created.
+Best-first search, the growth rules from a 4-cycle with the degree residual, 10 steps, one worker: the whole run is 39.7, 67.5, 121.9, 220.3 and 424.2 million Ir for budgets of 250, 500, 1000, 2000 and 4000 states, linear in the budget, 103,000 Ir per state created by `run_best_first` with the rewrite, the matching and the costs it runs.
 
-Wall time of the same search with budget 4000, three runs each, box not quiet (load 12): 0.33 s at 1 worker, 0.32 to 0.35 s at 2, 0.38 to 0.44 s at 4, 0.46 to 0.50 s at 8 and 0.54 to 0.62 s at 16, with byte-identical replies.
-
+Wall time of the same search with budget 4000, three runs each, box not quiet (load 5): 1 worker 0.068 to 0.072 s, 2 workers 0.066 to 0.069 s, 4 workers 0.067 to 0.069 s, 8 workers 0.067 to 0.071 s, 16 workers 0.070 to 0.071 s, with byte-identical replies. A wide state (a 2000-vertex cycle with a loop at each vertex, budget 40): 1 worker 0.135 to 0.152 s, 4 workers 0.118 to 0.121 s, 16 workers 0.134 to 0.143 s. The rewrite, the matching and the drain of the popped transition run on the driver thread; the costs of the drained transitions are computed across the workers in chunks of 64 (`cost_best_first`).

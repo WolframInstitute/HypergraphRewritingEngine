@@ -921,8 +921,9 @@ private:
     double transition_cost_of(StateId state, const MatchRecord& match);
 
     // "Search" -> "BestFirst" (set_best_first). A state's drain adds its transitions to
-    // bf_pending_ (best_first_at_drain); run_best_first moves them to its heap between
-    // transitions, takes the first, and waits for the child's matching before the next.
+    // bf_pending_ with the parent's path cost (best_first_at_drain); run_best_first costs them
+    // across the workers (cost_best_first), moves them to its heap, takes the first, and rewrites
+    // and matches it on its own thread before the next.
     // bf_path_cost_ and bf_path_key_ are written by the driver before a root is submitted and
     // by the one rewrite in flight (execute_rewrite_task, with bf_next_), and read by drains
     // that run after the write.
@@ -947,6 +948,7 @@ private:
     BfNode bf_next_{};
     void seed_best_first(StateId root, size_t index);
     void best_first_at_drain(StateId state, uint32_t step);
+    void cost_best_first(std::vector<BfCandidate>& fresh);
     void run_best_first();
     hgcommon::TuningOverrides tuning_;
     size_t causal_set_capacity_{0};

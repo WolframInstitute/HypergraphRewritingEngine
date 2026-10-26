@@ -30,6 +30,20 @@ namespace engine {
 
 namespace {
 
+// Set by run_best_first for its own thread while it runs: the SCAN and EXPAND tasks of the
+// child it matches run on that thread (submit_scan_task, submit_expand_task).
+bool& best_first_driver() {
+    HG_THREAD_LOCAL(bool, on, false);
+    return on;
+}
+
+// Set by run_best_first while it rewrites a popped transition on its own thread: the child's
+// match task then runs on that thread too (submit_match_task_with_context).
+bool& best_first_inline() {
+    HG_THREAD_LOCAL(bool, on, false);
+    return on;
+}
+
 // The scratch marks of the jobs running on this thread because every queue was full,
 // innermost last (see JobSystem::run_inline_).
 using ScratchMarks = std::vector<ConcurrentHeterogeneousArena::Marker>;
@@ -682,6 +696,16 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
         return;
     }
 
+    // Best-first search: the child of the popped transition is matched on the driver thread, and
+    // the tasks its matching spawns run on the workers (run_best_first).
+    if (best_first_inline()) {
+        best_first_inline() = false;
+        note_match_task_pushed(state);
+        note_depth_task_pushed(step);
+        DepthTaskGuard depth_guard(*this, step);
+        execute_match_task(state, step, ctx);
+        return;
+    }
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
 
@@ -796,6 +820,14 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
 
+    // Best-first search: the scans of the state its driver matches run on the driver.
+    if (best_first_driver()) {
+        note_match_task_pushed(data.state);
+        note_depth_task_pushed(data.step);
+        DepthTaskGuard depth_guard(*this, data.step);
+        execute_scan_task(data);
+        return;
+    }
     DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
 
@@ -816,6 +848,15 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
 
+    // Best-first search: the expansions of the state its driver matches run on the driver; a
+    // wide state's completed matches split across the workers (dispatch_expansion).
+    if (best_first_driver()) {
+        note_match_task_pushed(data.state);
+        note_depth_task_pushed(data.step);
+        DepthTaskGuard depth_guard(*this, data.step);
+        execute_expand_task(data);
+        return;
+    }
     DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
 
@@ -1376,16 +1417,38 @@ void ParallelEvolutionEngine::best_first_at_drain(StateId state, uint32_t step) 
     if (cost_at == bf_path_cost_.end() || key_at == bf_path_key_.end()) return;
     std::vector<RankedMatch> cands;
     drain_candidates(state, step, cands);
-    const bool costed = cost_active();
-    for (const RankedMatch& c : cands) {
-        uint64_t cost = 0;
-        const hgcommon::SuccessorIdentity succ =
-            successor_identity(state, *c.match, costed ? &cost : nullptr);
-        const double path = cost_at->second + (costed ? hgcommon::sp_value_of(cost) : 0.0);
-        bf_pending_.push(BfCandidate{hgcommon::state_cost_key(path), c.rank, key_at->second,
-                                     path, succ, *c.match, step},
+    // The costs and identities are computed by run_best_first, across the workers.
+    for (const RankedMatch& c : cands)
+        bf_pending_.push(BfCandidate{0, c.rank, key_at->second, cost_at->second,
+                                     hgcommon::SuccessorIdentity{0, 1}, *c.match, step},
                          hg_->arena());
+}
+
+// The cost key, path cost and successor identity of each of `fresh`, in chunks of
+// kBestFirstCostChunk on the workers.
+void ParallelEvolutionEngine::cost_best_first(std::vector<BfCandidate>& fresh) {
+    constexpr size_t kBestFirstCostChunk = 64;
+    const bool costed = cost_active();
+    auto one = [this, costed](BfCandidate& c) {
+        uint64_t cost = 0;
+        c.succ = successor_identity(c.match.source_state, c.match, costed ? &cost : nullptr);
+        c.path_cost += costed ? hgcommon::sp_value_of(cost) : 0.0;
+        c.cost_key = hgcommon::state_cost_key(c.path_cost);
+    };
+    if (fresh.size() <= kBestFirstCostChunk || is_serial()) {
+        for (BfCandidate& c : fresh) one(c);
+        return;
     }
+    BfCandidate* data = fresh.data();
+    for (size_t begin = 0; begin < fresh.size(); begin += kBestFirstCostChunk) {
+        const size_t end = std::min(begin + kBestFirstCostChunk, fresh.size());
+        job_system_->submit(job_system::make_job<EvolutionJobType>(
+            [data, begin, end, one]() {
+                for (size_t i = begin; i < end; ++i) one(data[i]);
+            },
+            EvolutionJobType::REWRITE));
+    }
+    job_system_->wait_for_completion();
 }
 
 // THE BEST-FIRST DRIVER. One transition at a time: the frontier's first in (path cost, rank,
@@ -1412,15 +1475,20 @@ void ParallelEvolutionEngine::run_best_first() {
             reached.insert(hg_->successor_content_hash(root, nullptr, 0, nothing, nullptr));
     }
     size_t created = 0;
+    std::vector<BfCandidate> fresh;
     for (;;) {
-        bf_pending_.for_each([&](const BfCandidate& c) {
-            heap.push_back(c);
-            std::push_heap(heap.begin(), heap.end(), after);
-        });
-        bf_pending_.reset();
         if (created >= search_budget_ || should_stop_.load(std::memory_order_relaxed) ||
             last_error() != job_system::ErrorType::None)
             break;
+        fresh.clear();
+        bf_pending_.for_each([&](const BfCandidate& c) { fresh.push_back(c); });
+        bf_pending_.reset();
+        cost_best_first(fresh);
+        if (last_error() != job_system::ErrorType::None) break;
+        for (const BfCandidate& c : fresh) {
+            heap.push_back(c);
+            std::push_heap(heap.begin(), heap.end(), after);
+        }
         bool found = false;
         BfCandidate next{};
         while (!heap.empty()) {
@@ -1433,7 +1501,24 @@ void ParallelEvolutionEngine::run_best_first() {
         }
         if (!found) break;
         bf_next_ = BfNode{next.path_cost, hgcommon::splitmix64(next.parent_path ^ next.rank)};
-        submit_rewrite_task(next.match, next.step);
+        // The rewrite and the child's matching run on this thread, so a small state costs no
+        // hand-off to a worker; the tasks the matching spawns run on the workers. An exception
+        // is handed to the job system in a job, which records it as a worker's would be.
+        try {
+            best_first_inline() = true;
+            best_first_driver() = true;
+            note_depth_task_pushed(next.step);
+            DepthTaskGuard depth_guard(*this, next.step);
+            execute_rewrite_task(next.match, next.step, nullptr);
+        } catch (...) {
+            best_first_inline() = false;
+            best_first_driver() = false;
+            job_system_->submit(job_system::make_job<EvolutionJobType>(
+                [e = std::current_exception()]() { std::rethrow_exception(e); },
+                EvolutionJobType::REWRITE));
+        }
+        best_first_inline() = false;
+        best_first_driver() = false;
         job_system_->wait_for_completion();
         ++created;
     }
