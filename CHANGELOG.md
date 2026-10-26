@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- On the CPU, `"MatchesPerStep"` under `"CanonicalizeStates" -> None` computes an initial
+  state's canonical hash and edge ranks only when the initial state has a transition. A
+  900-edge initial state with no match took 3.8 s, all in that computation.
+
 - The engine has a host memory limit, `"Tuning" -> <|"MemoryLimit" -> bytes|>` or the
   environment variable `HG_TUNE_MEMORY_LIMIT`. The default is half of physical memory, and a value
   above physical memory is lowered to it. An evolution that reaches the limit stops and gives a

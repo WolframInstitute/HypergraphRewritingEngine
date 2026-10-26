@@ -147,7 +147,6 @@ void ParallelEvolutionEngine::evolve(
     // Create or get the canonical state (canonical hash computed inside, mode-aware).
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), 0, INVALID_ID);
-    label_root(raw_state);
 
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -249,7 +248,6 @@ void ParallelEvolutionEngine::evolve(
     roots.reserve(initial_states.size());
     for (const auto& state_edges : initial_states) {
         roots.push_back(create_and_register_initial_state(state_edges));
-        label_root(roots.back());
         note_initial_class(roots.back());
     }
     std::sort(initial_classes_.begin(), initial_classes_.end());
@@ -963,6 +961,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         generation_at_drain(state, step);
         return;
     }
+    label_root(state);
     const size_t k = max_successor_states_per_parent_;
     const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
     if (max_states_per_step_ != 0 && step_cap_counts_matches_ && !costed) {
@@ -991,7 +990,8 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
                     set->link(e, edge.vertices, edge.arity);
                 });
         }
-        const uint64_t group = lineage_on_ ? *state_labels_.find(state) : 0u;
+        // A root with no transition has no label (label_root) and an empty block.
+        const uint64_t group = lineage_on_ && set->order.size() != 0 ? *state_labels_.find(state) : 0u;
         HG_STAT(step_candidates_offered_.fetch_add(set->order.size(), std::memory_order_relaxed));
         x->blocks.push(OrderBlock{group, state, set}, match_arena(step));
         return;
@@ -3281,6 +3281,11 @@ uint64_t ParallelEvolutionEngine::selection_rank(StateId state, const MatchRecor
 void ParallelEvolutionEngine::label_root(StateId root) {
     if (!lineage_on_) return;
     const State& s = hg_->get_state(root);
+    if (s.parent_event != INVALID_ID && !hg_->is_genesis_event(s.parent_event)) return;
+    bool transition = false;
+    if (auto stored = state_matches_.lookup(id_key(root)); stored.has_value())
+        (*stored)->for_each([&](const MatchRecord& m) { transition = transition || !m.is_forwarded; });
+    if (!transition) return;
     const uint64_t label =
         hgcommon::lineage_initial_state(hg_->ensure_state_edge_ranks(root, s.edges));
     state_labels_.slot(root, hg_->arena()) = label;

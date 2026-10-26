@@ -1600,6 +1600,25 @@ TEST(SamplingReproducibility, NoneStatesRunOneIrPassPerStateWhoseKeyIsRead) {
         }
     }
 }
+
+// "MatchesPerStep" under None states reads the root's lineage labels only when the root has a
+// transition. Rule {{x,y},{y,z}} -> {{x,z}} has no match in {{0,1},{2,3}}: no event and no IR
+// pass. In {{0,1},{1,2}} it has one: one event and one pass.
+TEST(SamplingReproducibility, MatchesPerStepLabelsARootOnlyWhenItHasATransition) {
+    for (bool matched : {false, true})
+        for (size_t threads : {size_t(1), size_t(4)}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
+            e.set_matches_per_step(1);
+            e.set_random_seed(1);
+            e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {matched ? 1u : 2u, 3u}}, 3);
+            const Hypergraph::IrWorkTotals ir = hg.ir_work();
+            EXPECT_EQ(hg.num_events(), matched ? 1u : 0u) << matched << " at " << threads;
+            EXPECT_EQ(ir.calls - ir.retries, matched ? 1u : 0u) << matched << " at " << threads;
+        }
+}
 #endif
 
 // hgcommon::run_reads_transition_keys, the rule both engines compute each state's hash and ranks

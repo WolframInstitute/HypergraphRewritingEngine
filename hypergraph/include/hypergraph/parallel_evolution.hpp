@@ -1012,7 +1012,10 @@ private:
     uint32_t rank_reads_step_{0};
     SegmentedArray<uint64_t> edge_labels_;
     SegmentedArray<uint64_t> state_labels_;
-    // Labels a root and its edges from its canonical hash and edge ranks.
+    // Labels a root and its edges from its canonical hash and edge ranks, at the root's drain and
+    // only when the root has a transition: the labels are read by its transitions' keys and its
+    // children's labels, and the hash and ranks cost one IR pass. Returns at once for a state
+    // that is not a root.
     void label_root(StateId root);
     // Labels the edges and the state a rewrite of `match` made.
     void label_rewrite(const MatchRecord& match, StateId child, const EdgeId* produced,
