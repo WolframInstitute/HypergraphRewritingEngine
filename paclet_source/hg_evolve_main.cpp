@@ -45,24 +45,12 @@ namespace hgffi = HG_NAMESPACE::ffi;
 #include <vector>
 #include <exception>
 
+#include "loopback_listener.hpp"   // socket_t, HG_CLOSESOCK, open_loopback_listener
 #if defined(_WIN32)
 #include <io.h>
 #include <fcntl.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-using socket_t = SOCKET;
-#define HG_CLOSESOCK closesocket
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#if defined(__GLIBC__)
+#elif defined(__GLIBC__)
 #include <malloc.h>
-#endif
-using socket_t = int;
-#define INVALID_SOCKET (-1)
-#define HG_CLOSESOCK ::close
 #endif
 
 namespace {
@@ -262,34 +250,20 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         return 1;
     }
 #endif
-    socket_t listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener == INVALID_SOCKET) { std::fprintf(stderr, "HGEvolve: socket() failed\n"); return 1; }
-
-    sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;  // OS-assigned free port
-    if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::fprintf(stderr, "HGEvolve: bind() failed\n");
-        HG_CLOSESOCK(listener);
-        return 1;
-    }
-    socklen_t alen = sizeof(addr);
-    getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &alen);
-    unsigned port = ntohs(addr.sin_port);
-    if (portfile) {
-        // Write to a temp file, then atomically rename into place so the parent
-        // never sees a half-written port.
-        std::string tmp = std::string(portfile) + ".tmp";
-        FILE* f = std::fopen(tmp.c_str(), "w");
-        if (f) { std::fprintf(f, "%u\n", port); std::fclose(f); std::rename(tmp.c_str(), portfile); }
-    } else {
-        std::fprintf(reply(), "HGPORT %u\n", port);
-        std::fflush(reply());
-    }
-
-    if (listen(listener, 1) != 0) { std::fprintf(stderr, "HGEvolve: listen() failed\n"); HG_CLOSESOCK(listener); return 1; }
+    const char* failed = nullptr;
+    socket_t listener = open_loopback_listener([portfile](unsigned port) {
+        if (portfile) {
+            // Write to a temp file, then atomically rename into place so the parent
+            // never sees a half-written port.
+            std::string tmp = std::string(portfile) + ".tmp";
+            FILE* f = std::fopen(tmp.c_str(), "w");
+            if (f) { std::fprintf(f, "%u\n", port); std::fclose(f); std::rename(tmp.c_str(), portfile); }
+        } else {
+            std::fprintf(reply(), "HGPORT %u\n", port);
+            std::fflush(reply());
+        }
+    }, &failed);
+    if (listener == INVALID_SOCKET) { std::fprintf(stderr, "HGEvolve: %s failed\n", failed); return 1; }
     socket_t conn = accept(listener, nullptr, nullptr);
     if (conn == INVALID_SOCKET) { std::fprintf(stderr, "HGEvolve: accept() failed\n"); HG_CLOSESOCK(listener); return 1; }
 

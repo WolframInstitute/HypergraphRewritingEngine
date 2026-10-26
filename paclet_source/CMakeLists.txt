@@ -32,6 +32,7 @@ target_compile_definitions(HypergraphRewriting PRIVATE
 # crashes are isolated from the notebook. See docs/ARCHITECTURE.md.
 add_executable(hg_evolve
     hg_evolve_main.cpp
+    loopback_listener.hpp
     hypergraph_ffi.cpp
     paclet_support.cpp
 )
@@ -87,6 +88,7 @@ endif()
 if(TARGET hg_gpu)
     add_executable(hg_evolve_gpu
         hg_evolve_main.cpp
+        loopback_listener.hpp
         hypergraph_ffi.cpp
         hg_gpu_backend.cpp
         paclet_support.cpp

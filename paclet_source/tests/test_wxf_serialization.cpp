@@ -37,6 +37,7 @@
 #include "paclet_source/reply_out.hpp"
 #include "paclet_source/state_statistics.hpp"
 #include "paclet_source/cpu_engine_holder.hpp"
+#include "paclet_source/loopback_listener.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
@@ -2007,6 +2008,34 @@ std::vector<KeyBytes> branchial_record_bytes(const std::vector<uint8_t>& out) {
 
 // "StepStatistics" asked of a session that was opened for another property is what one call
 // asking for it from the start gives, under quotient exploration and under full capture.
+// hg_evolve --serve-socket publishes its port only once the socket listens: a connection made
+// inside the publishing callback, as the paclet's hgWorkerStart makes one as soon as it reads
+// the port file, is accepted. With the port published before listen() it was refused.
+TEST(ServeSocket, ThePortIsPublishedOnceTheSocketListens) {
+    int client = -1;
+    int connected = -1;
+    const char* failed = nullptr;
+    const socket_t listener = open_loopback_listener([&](unsigned port) {
+        client = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr;
+        std::memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(static_cast<uint16_t>(port));
+        connected = ::connect(client, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0
+                        ? 0 : errno;
+    }, &failed);
+    ASSERT_NE(listener, INVALID_SOCKET) << failed;
+    EXPECT_EQ(connected, 0) << std::strerror(connected);
+    if (connected == 0) {
+        const socket_t conn = ::accept(listener, nullptr, nullptr);
+        EXPECT_NE(conn, INVALID_SOCKET);
+        if (conn != INVALID_SOCKET) HG_CLOSESOCK(conn);
+    }
+    if (client >= 0) ::close(client);
+    HG_CLOSESOCK(listener);
+}
+
 TEST(WxfSerializationPin, ASessionServesStepStatisticsItsOpenDidNotName) {
     for (bool quotient : {true, false}) {
         auto opts = [quotient](const std::string& prop) {
