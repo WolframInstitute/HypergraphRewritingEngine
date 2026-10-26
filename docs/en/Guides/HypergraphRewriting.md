@@ -50,10 +50,17 @@ Multiway hypergraph rewriting applies a set of rules to a hypergraph in every po
 
 - `HGEvolve` `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"`, `"MatchesPerStateRule"`, `"MaxStatesPerStep"` and `"MaxSuccessorStatesPerParent"` select a reproducible subsystem with `"RandomSeed"`
 
+### Single Histories
+
+- `HGEvolve` `"Generational" -> True` applies one generation of the Wolfram model per step
+- `HGEvolve` `"EventOrderingFunction"` applies one event per step in one of SetReplace's event orders
+- `HGEvolve` `"MatchesPerStep" -> 1` with `"UniformRandom" -> True` applies one match per step, drawn from `"RandomSeed"`
+
 ### Generated Initial Conditions
 
 - `HGEvolve` a name such as `"Grid"`, `"Torus"` or `"Sprinkling"` in place of the initial hypergraph, shaped by options such as `"GridWidth"`
 - `Association` (WL) a generated initial condition given by its `"Type"` and parameters
+- `HGEvolve` `"InitialCondition"` the initial condition's edges and, for a generated one, its points
 
 ### Continuing an Evolution
 

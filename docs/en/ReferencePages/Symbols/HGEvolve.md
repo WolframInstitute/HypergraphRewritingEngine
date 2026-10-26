@@ -58,6 +58,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"NumStates"`, `"NumEvents"` | the number of states and of events |
 | `"NumCausalEdges"`, `"NumBranchialEdges"` | the number of causal and of branchial pairs |
 | `"GlobalEdges"` | every hyperedge the evolution created, each as its id followed by its vertices |
+| `"InitialCondition"` | the initial condition as an association: `"Edges"`, and for a generated one the generator's other keys, such as `"VertexCoordinates"` (each vertex's point, keyed by the vertex as the states name it) |
 | `"StateBitvectors"` | an association from each state id to the ids of the hyperedges the state holds |
 | `"StepStatistics"` | for each step, statistics of the states at that step |
 | `"Debug"` | an association of the four counts |
@@ -1575,7 +1576,7 @@ HGEvolve[chain, {{1, 2}}, 3, "Device", "Tuning" -> <|"MemoryLimit" -> 2^30|>]["M
 
 ### "ShowProgress"
 
-With `True`, the engine's progress is printed; the result is unchanged:
+With `True`, the engine's progress is printed, on the CPU when the evolution ends and on the GPU as it runs; the result is unchanged:
 
 ```wl
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
@@ -1730,6 +1731,24 @@ bl[opts___] := Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "Sp
 
 <!-- => <|"Plane" -> 26, "Box" -> 14, "Periodic box" -> 17|> -->
 
+The `"InitialCondition"` property gives the generated points. Each of the twenty vertices has a point in the plane, and the edges are the initial state's:
+
+```wl
+ic = HGEvolve[triangle, "BrillLindquist", 0, "InitialCondition", "SprinklingDensity" -> 20, "RandomSeed" -> 1, "BrillLindquistBoxX" -> {-5., 5.}, "BrillLindquistBoxY" -> {-5., 5.}];
+{Length[ic["VertexCoordinates"]], Dimensions[Values[ic["VertexCoordinates"]]], Length[ic["Edges"]]}
+```
+
+<!-- => {20, {20, 2}, 26} -->
+
+Asked for with other properties, it is one more key of the result, and the evolution starts from the same edges:
+
+```wl
+r = HGEvolve[triangle, "BrillLindquist", 1, {"NumStates", "InitialCondition"}, "SprinklingDensity" -> 20, "RandomSeed" -> 1, "BrillLindquistBoxX" -> {-5., 5.}, "BrillLindquistBoxY" -> {-5., 5.}];
+{Keys[r], r["NumStates"] == HGEvolve[triangle, r["InitialCondition"]["Edges"], 1, "NumStates"]}
+```
+
+<!-- => {{"NumStates", "InitialCondition"}, True} -->
+
 ### "EdgeThreshold"
 
 The largest distance joined by an edge of a Brill-Lindquist, a Poisson or a uniform initial condition. Ten Poisson points with the default threshold:
@@ -1783,7 +1802,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-166.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-168.png)
 
 Two steps reach 239 states up to isomorphism:
 
@@ -1937,7 +1956,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-182.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-184.png)
 
 ---
 

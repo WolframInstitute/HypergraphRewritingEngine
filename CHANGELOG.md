@@ -8,10 +8,17 @@
   unknown reason"). A first CPU call now takes about 0.4 s. `"ShowProgress"` prints a CPU run's
   progress when the run ends. GPU calls and sessions still use the worker.
 
-- The canonical hash costs less on states with many isomorphic components: a search node of
-  the canonicalisation no longer clears arrays the size of the state. `"StepStatistics"` on a
-  400-point Brill-Lindquist history (41 states, 1641 edges at the start) takes 2.4 s, 4.0 s
-  before. The hashes are unchanged.
+- The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
+  `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`
+  (each vertex's point, keyed by the vertex as the states name it). With other properties it is
+  one more key of the result. `"InitialCondition"` alone runs no evolution.
+
+- The canonical hash costs less on states with many isomorphic components. A search node of
+  the canonicalisation no longer clears arrays the size of the state, seeds the rest of its
+  target cell only when that can split a cell, and sorts its target cell only when the search
+  returns to it. The canonical hash of a fragmented 900-edge state takes 10 times fewer
+  instructions, and `"StepStatistics"` over a 400-point Brill-Lindquist history (41 states)
+  2.5 times fewer. The hashes, ranks and orbits are unchanged.
 
 - On the CPU, `"MatchesPerStep"` under `"CanonicalizeStates" -> None` computes an initial
   state's canonical hash and edge ranks only when the initial state has a transition. A

@@ -40,6 +40,11 @@ Wolfram Physics Project*](paper/main.pdf). To cite it:
 - **Incremental Match Forwarding**: re-use parent-state matches in child states; only find new matches that involve newly produced edges (selected per rule set by static analysis).
 - **Lock-free Data Structures**: concurrent hash map, key set, lock-free list, lock-free deque, thread-safe arena — the shared protocols model-checked under RC11/scoped-RC11 (GenMC, GPUMC) and TLA+ at their recorded bounds, sanitizer-gated in CI.
 - **Cost-Guided Evolution**: a beam search over the multiway system. `"StateCost"` takes a function of a state's statistics, and with `"MaxStatesPerStep" -> N` each step keeps its N successor states of lowest cost, on the CPU and the GPU, with the same states at any thread count and on either device.
+- **Single Histories**: `"Generational" -> True` applies one generation of the Wolfram model per step (the matches in the standard order, each unless it shares a hyperedge with one taken before), `"EventOrderingFunction"` takes SetReplace's event orderings, and `"MatchesPerStep" -> 1` with `"UniformRandom" -> True` applies one match per step drawn from `"RandomSeed"`.
+- **Undirected Edges**: `"UndirectedEdges" -> True` reads every hyperedge of two vertices as an unordered pair, in matching and in the canonical hash.
+- **Memory Limit**: `"Tuning" -> <|"MemoryLimit" -> bytes|>` (default half of physical memory). An evolution that reaches it stops and returns a partial result with `HGEvolve::overflow`.
+- **Brill-Lindquist Initial States**: points sprinkled in two or three dimensions with the Brill-Lindquist volume element of two black holes, optionally in a periodic box. The `"InitialCondition"` property returns the points with the edges.
+- **Python Client**: the `hgevolve` package ([python/](python/)) runs the CPU engine in-process with HGEvolve's options and returns NumPy arrays.
 - **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, per-step statistics (`"StepStatistics"`), and topology / initial-condition generators.
 
 ## Installation
@@ -101,7 +106,21 @@ HGEvolve[rule, init, 5, "EvolutionCausalBranchialGraph"]
 HGEvolve[rule, init, 10, "StepStatistics", "CanonicalizeStates" -> Full,
   "MaxStatesPerStep" -> 4, "StateCost" -> (Abs[#BallDimension - 2] &),
   "StepStatisticsMeasures" -> {"VolumeGrowth"}]
+
+(* A single history of 10 generations, under a 2 GB memory limit. *)
+HGEvolve[rule, init, 10, "NumEvents", "CanonicalizeStates" -> None, "Generational" -> True,
+  "Tuning" -> <|"MemoryLimit" -> 2^31|>]
 ```
+
+### Python
+
+```python
+import hgevolve as hg
+r = hg.evolve(([[1, 2], [2, 3]], [[1, 2], [2, 3], [3, 1]]), [[1, 2], [2, 3], [3, 1]], 3)
+r.num_states, r.causal_edges.array
+```
+
+[python/README.md](python/README.md) describes the installation, and [python/docs/API.md](python/docs/API.md) the functions and options.
 
 See `paclet_source/README.md` for the full option list (hash strategy, canonicalisation modes, pruning limits, dimension / curvature / geodesic analyses, topology and initial-condition generators).
 
@@ -191,6 +210,7 @@ wxf/            Wolfram Exchange Format serialization (the WL boundary)
 
 paclet/         Wolfram Language paclet (kernel code, bundled binaries, doc notebooks)
 paclet_source/  FFI: run_rewriting_core, the standalone hg_evolve binary, GPU marshaling
+python/         The hgevolve Python client (in-process CPU engine, NumPy replies)
 reference/      Validation oracle (brute-force ground truth) + golden corpus
 verification/   GenMC and GPUMC model-checking harnesses, TLA+ specifications
 tools/          Standalone research/validation probes and profiling harnesses

@@ -423,6 +423,18 @@ Length[HGEvolve[rule, Append[gorard, "Periodic" -> False], 0, "GlobalEdges"]]
 
 <!-- => 724 -->
 
+### The points
+
+The `"InitialCondition"` property returns the generated initial condition with its points. `"VertexCoordinates"` gives each vertex's point, keyed by the vertex as the states name it, so the points can be drawn, measured or triangulated beside the evolution. The 200 points of the box above are three-dimensional, and none is inside a horizon:
+
+```wl
+ic = HGEvolve[rule, gorard, 0, "InitialCondition"];
+pts = Values[ic["VertexCoordinates"]];
+{Dimensions[pts], Min[Norm[# - {0.5, 0., 0.}] & /@ pts] > 0.25, Length[ic["Edges"]]}
+```
+
+<!-- => {{200, 3}, True, 886} -->
+
 ## Poisson-disk and uniform point clouds
 
 `"Poisson"` places points at random in the box from 0 to 10 in each direction, and keeps a point only if it is at least `"PoissonMinDistance"` (1) from every point already kept. It makes up to 100 attempts for each of the `"SprinklingDensity"` points requested, so with a large minimum distance it keeps fewer. Two points closer than `"EdgeThreshold"` are joined; `Automatic` is twice the minimum distance.
@@ -433,7 +445,7 @@ Thirty points requested with a minimum distance of 2:
 initialStateGraph[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "PoissonMinDistance" -> 2., "RandomSeed" -> 1]]
 ```
 
-![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-47.png)
+![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-48.png)
 
 21 points are kept:
 
@@ -477,7 +489,7 @@ Twenty points:
 initialStateGraph[HGEvolve[rule, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1]]
 ```
 
-![Twenty points](../images/InitialConditions/InitialConditions-52.png)
+![Twenty points](../images/InitialConditions/InitialConditions-53.png)
 
 The number of edges at thresholds 2, 3 and 4:
 

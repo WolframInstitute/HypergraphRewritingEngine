@@ -84,6 +84,13 @@ list.
   that run and says so in the result's warnings.
 - `"IncludeCanonicalHashes" -> True` — attach a run-stable isomorphism hash to each
   state, for fusing results across separate runs.
+- `"Generational" -> True`, `"EventOrderingFunction"`, `"MatchesPerStep" -> 1` with
+  `"UniformRandom" -> True` — a single history: one generation, one event in SetReplace's
+  order, or one random match per step.
+- `"UndirectedEdges" -> True` — every hyperedge of two vertices is an unordered pair.
+- `"Tuning" -> <|"MemoryLimit" -> bytes|>` — the engine's memory limit (default half of
+  physical memory); an evolution that reaches it returns a partial result with
+  `HGEvolve::overflow`.
 
 `Options[HGEvolve]` lists the full set.
 
@@ -98,6 +105,14 @@ For example:
 HGEvolve[rules, "Grid", steps, "GridWidth" -> 8, "GridHeight" -> 8]
 HGEvolve[rules, "Torus", steps, "RandomSeed" -> 1]
 ```
+
+The `"InitialCondition"` property returns the generated edges and, for the point clouds,
+each vertex's point (`"VertexCoordinates"`).
+
+## Python
+
+The `hgevolve` package runs the CPU engine in the Python process and takes HGEvolve's
+options; see [python/README.md](../python/README.md).
 
 ## Building from source
 

@@ -479,7 +479,7 @@ HGEvolve::emptyic = "The `1` initial condition generated no edges; raise Sprinkl
 HGEvolve::badrule = "`1` is not a rule lhs -> rhs with a non-empty list of hyperedges on the left and a list of hyperedges on the right, each hyperedge a non-empty list of vertices.";
 HGEvolve::badinit = "`1` is not a hypergraph or a list of hypergraphs. A hypergraph is a non-empty list of hyperedges, each a non-empty list of vertices.";
 HGEvolve::steps = "The number of steps `1` is not a non-negative integer.";
-HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, All.";
+HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, InitialCondition, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but the GPU cannot be used: `1`. Evaluating on the CPU.";
 HGEvolve::nogpu = "TargetDevice -> {\"GPU\", \"Strict\" -> True} requested but the GPU cannot be used: `1`.";
@@ -959,22 +959,46 @@ HGEvolve[_List, _, steps : Except[_Integer], ___] := (Message[HGEvolve::steps, s
 HGEvolve[rules_List, initial : Except[_List], steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
          opts : OptionsPattern[{HGEvolve, Graph}]] :=
-  With[{edges = hgInitialEdges[initial, {opts}]},
-    If[edges === $Failed, $Failed, HGEvolve[rules, edges, steps, property, opts]]]
+  With[{ic = hgInitialCondition[initial, {opts}]},
+    If[ic === $Failed, $Failed,
+      hgWithInitialCondition[ic, property, HGEvolve[rules, ic["Edges"], steps, #, opts] &]]]
+(* "InitialCondition" with an edge list: the association <|"Edges" -> edges|>. Defined before the
+   main definition, which refuses the name as an unknown property. *)
+HGEvolve[rules_List, initialEdges_List, steps_Integer, property : (_String | {__String}),
+         opts : OptionsPattern[{HGEvolve, Graph}]] /;
+    MemberQ[Flatten[{property}], "InitialCondition"] :=
+  hgWithInitialCondition[<|"Edges" -> initialEdges|>, property,
+    HGEvolve[rules, initialEdges, steps, #, opts] &]
 HGSessionOpen[rules_List, initial : Except[_List],
               property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
               opts : OptionsPattern[{HGSessionOpen, Graph}]] :=
   With[{edges = hgInitialEdges[initial, {opts}]},
     If[edges === $Failed, $Failed, HGSessionOpen[rules, edges, property, opts]]]
 
-hgInitialEdges[g_Graph, _List] := List @@@ EdgeList[g]
-hgInitialEdges[name_String, opts_List] := hgInitialEdges[<|"Type" -> Replace[name, "Minkowski" -> "Sprinkling"]|>, opts]
-hgInitialEdges[icResult_Association, _List] /;
-  KeyExistsQ[icResult, "Edges"] && !KeyExistsQ[icResult, "Type"] := icResult["Edges"]
-hgInitialEdges[other_, _List] /; !AssociationQ[other] := (Message[HGEvolve::unknownic, other]; $Failed)
+(* The "InitialCondition" property: `ic` (the initial condition's association, "Edges" and, for a
+   generated one, "VertexCoordinates" and the generator's other keys) in place of that name, and
+   `run` applied to the other requested properties. Only "InitialCondition" runs no evolution. *)
+hgWithInitialCondition[ic_Association, property_, run_] := Module[{props, rest, result},
+  props = DeleteDuplicates[Flatten[{property}]];
+  If[props === {"InitialCondition"}, Return[If[ListQ[property], <|"InitialCondition" -> ic|>, ic]]];
+  rest = DeleteCases[props, "InitialCondition"];
+  If[rest === props, Return[run[property]]];
+  result = run[rest];
+  If[!AssociationQ[result], Return[result]];
+  Association[# -> If[# === "InitialCondition", ic, result[#]] & /@ props]
+]
+
+hgInitialEdges[initial_, opts_List] := With[{ic = hgInitialCondition[initial, opts]},
+  If[ic === $Failed, $Failed, ic["Edges"]]]
+
+hgInitialCondition[g_Graph, _List] := <|"Edges" -> List @@@ EdgeList[g]|>
+hgInitialCondition[name_String, opts_List] := hgInitialCondition[<|"Type" -> Replace[name, "Minkowski" -> "Sprinkling"]|>, opts]
+hgInitialCondition[icResult_Association, _List] /;
+  KeyExistsQ[icResult, "Edges"] && !KeyExistsQ[icResult, "Type"] := icResult
+hgInitialCondition[other_, _List] /; !AssociationQ[other] := (Message[HGEvolve::unknownic, other]; $Failed)
 
 (* A spec association with "Type": the initial condition is generated here, in WL. *)
-hgInitialEdges[initialSpec_Association, opts_List] := Module[
+hgInitialCondition[initialSpec_Association, opts_List] := Module[
   {icType, icResult, edges, newOpts,
    gridWidth, gridHeight, gridHoles, resolution,
    sprinklingDensity, sprinklingTime, sprinklingSpatial, spatialDim,
@@ -1111,7 +1135,7 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
   ];
 
   If[edges === {}, Message[HGEvolve::emptyic, icType]; Return[$Failed]];
-  edges
+  icResult
 ]
 
 (* The job's Options envelope: every option the engine parses, and how each is spelled on the
