@@ -2,6 +2,7 @@
 #include "ir_pinned_states.hpp"
 #include <hypergraph/ir_canonicalization.hpp>
 #include <hypergraph/hypergraph.hpp>
+#include <cstdio>
 #include <vector>
 #include <set>
 #include <algorithm>
@@ -574,8 +575,10 @@ struct Pinned {
     uint32_t status;
 };
 
-// The values of ir_pinned::states() under the ir_core.hpp of 6969681e (before the search changes
-// of 706b1763, d70ab405 and 0cb59287), from .scratch/ir_pinned_gen.cpp.
+// The canonical hash, edge-rank digest, edge-orbit digest and status of each of
+// ir_pinned::states(). IRPinned.DISABLED_PrintTheTable prints this table from the ir_core.hpp that
+// all_tests is built with:
+//   all_tests --gtest_also_run_disabled_tests --gtest_filter=IRPinned.DISABLED_PrintTheTable
 const Pinned kPinned[] = {
     {0x7c26fda4e243a314ull, 0x8849bf21e9158fa2ull, 0x54b0882cd9a76e52ull, 0},
     {0x6fe42661d334d58cull, 0x3410b74e1eb3e5f3ull, 0x902dca9c47fa0dc3ull, 0},
@@ -647,27 +650,42 @@ Encoded encode(const ir_pinned::State& g) {
     return x;
 }
 
+// The hash, rank digest, orbit digest and status the search gives for `g`.
+Pinned search(const ir_pinned::State& g) {
+    const Encoded x = encode(g);
+    std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(x.n, x.e, x.occ, x.n + 1) + 2);
+    std::vector<uint32_t> rank(x.e), orbit(x.e);
+    const auto r = hgcommon::ir_canonical_hash(x.ea.data(), x.eoff.data(), x.ev.data(), x.e, x.n,
+                                               x.occ, scratch.data(), x.n + 1, rank.data(),
+                                               hgcommon::IR_HOST_GENERATORS, orbit.data());
+    return {r.hash, ir_pinned::digest(rank), ir_pinned::digest(orbit),
+            static_cast<uint32_t>(r.status)};
+}
+
 }  // namespace
 
 // THE SEARCH'S OUTPUT IS PINNED. 48 states of disjoint copies, stars, cycles, complete graphs and
 // mixed copies (ir_pinned_states.hpp): the canonical hash, the edge ranks and the edge orbits equal
-// the values the search gave before its per-node changes (stamps cleared per splitter, the
-// remainder seeded only when v's hyperedges meet it, the target cell sorted on return).
+// the values in kPinned.
 TEST(IRPinned, HashRanksAndOrbitsAreThePinnedValues) {
     const auto states = ir_pinned::states();
     ASSERT_EQ(states.size(), sizeof kPinned / sizeof kPinned[0]);
     for (size_t i = 0; i < states.size(); ++i) {
-        const Encoded x = encode(states[i]);
-        std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(x.n, x.e, x.occ, x.n + 1) + 2);
-        std::vector<uint32_t> rank(x.e), orbit(x.e);
-        const auto r = hgcommon::ir_canonical_hash(x.ea.data(), x.eoff.data(), x.ev.data(), x.e,
-                                                   x.n, x.occ, scratch.data(), x.n + 1,
-                                                   rank.data(), hgcommon::IR_HOST_GENERATORS,
-                                                   orbit.data());
-        EXPECT_EQ(static_cast<uint32_t>(r.status), kPinned[i].status) << "state " << i;
-        EXPECT_EQ(r.hash, kPinned[i].hash) << "state " << i;
-        EXPECT_EQ(ir_pinned::digest(rank), kPinned[i].ranks) << "state " << i;
-        EXPECT_EQ(ir_pinned::digest(orbit), kPinned[i].orbits) << "state " << i;
+        const Pinned got = search(states[i]);
+        EXPECT_EQ(got.status, kPinned[i].status) << "state " << i;
+        EXPECT_EQ(got.hash, kPinned[i].hash) << "state " << i;
+        EXPECT_EQ(got.ranks, kPinned[i].ranks) << "state " << i;
+        EXPECT_EQ(got.orbits, kPinned[i].orbits) << "state " << i;
+    }
+}
+
+// Prints kPinned's rows for the ir_core.hpp this binary is built with.
+TEST(IRPinned, DISABLED_PrintTheTable) {
+    for (const auto& g : ir_pinned::states()) {
+        const Pinned p = search(g);
+        std::printf("    {0x%016llxull, 0x%016llxull, 0x%016llxull, %u},\n",
+                    static_cast<unsigned long long>(p.hash), static_cast<unsigned long long>(p.ranks),
+                    static_cast<unsigned long long>(p.orbits), p.status);
     }
 }
 
