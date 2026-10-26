@@ -318,6 +318,47 @@ if(TARGET hg_evolve_gpu)
     )
 endif()
 
+# THE TEST WORKERS: hg_evolve and hg_evolve_gpu built again with HG_WORKER_TEST_HOOKS, which the
+# shipped binaries do not carry (HG_DEBUG_OUTPUT_BYTES writes to stdout and stderr per job). They
+# go to the build directory, and all_tests' WorkerOutput tests run them (HG_TEST_CPU_WORKER,
+# HG_TEST_GPU_WORKER).
+if(BUILD_TESTS AND TARGET all_tests)
+    foreach(_hg_w hg_evolve hg_evolve_gpu)
+        if(NOT TARGET ${_hg_w})
+            continue()
+        endif()
+        if(_hg_w STREQUAL "hg_evolve_gpu")
+            set(_hg_t hg_evolve_gpu_test_worker)
+            set(_hg_key HG_TEST_GPU_WORKER)
+        else()
+            set(_hg_t hg_evolve_test_worker)
+            set(_hg_key HG_TEST_CPU_WORKER)
+        endif()
+        get_target_property(_hg_src ${_hg_w} SOURCES)
+        get_target_property(_hg_defs ${_hg_w} COMPILE_DEFINITIONS)
+        get_target_property(_hg_incs ${_hg_w} INCLUDE_DIRECTORIES)
+        get_target_property(_hg_libs ${_hg_w} LINK_LIBRARIES)
+        get_target_property(_hg_opts ${_hg_w} COMPILE_OPTIONS)
+        get_target_property(_hg_lopts ${_hg_w} LINK_OPTIONS)
+        add_executable(${_hg_t} ${_hg_src})
+        target_compile_definitions(${_hg_t} PRIVATE ${_hg_defs} HG_WORKER_TEST_HOOKS)
+        target_include_directories(${_hg_t} PRIVATE ${_hg_incs})
+        target_link_libraries(${_hg_t} ${_hg_libs})
+        if(_hg_opts)
+            target_compile_options(${_hg_t} PRIVATE ${_hg_opts})
+        endif()
+        if(_hg_lopts)
+            target_link_options(${_hg_t} PRIVATE ${_hg_lopts})
+        endif()
+        if(_hg_w STREQUAL "hg_evolve_gpu")
+            set_property(TARGET ${_hg_t} PROPERTY CUDA_RUNTIME_LIBRARY Static)
+        endif()
+        set_property(TARGET all_tests APPEND PROPERTY COMPILE_DEFINITIONS
+            ${_hg_key}="$<TARGET_FILE:${_hg_t}>")
+        add_dependencies(all_tests ${_hg_t})
+    endforeach()
+endif()
+
 file(MAKE_DIRECTORY "${HG_PACLET_OUTPUT_DIR}")
 
 # Custom target to create paclet archive

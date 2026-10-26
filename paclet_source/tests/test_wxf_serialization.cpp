@@ -2502,14 +2502,41 @@ void expect_output_forwarded(const std::string& exe) {
     ::close(w.err_read);
 }
 
+// The test workers carry HG_DEBUG_OUTPUT_BYTES; the shipped binaries do not.
 TEST(WorkerOutput, AJobWritingMoreThanAPipeToItsOutputCompletes) {
-    expect_output_forwarded(cpu_binary_path());
+#if defined(HG_TEST_CPU_WORKER)
+    expect_output_forwarded(HG_TEST_CPU_WORKER);
+#else
+    GTEST_SKIP() << "no hg_evolve test worker in this build";
+#endif
 }
 
 // The same on the GPU binary, whose CUDA runtime prints device printf to stdout.
 TEST(WorkerOutput, AGpuJobWritingMoreThanAPipeToItsOutputCompletes) {
-    if (::access(gpu_binary_path().c_str(), X_OK) != 0) GTEST_SKIP() << "hg_evolve_gpu is not built here";
-    expect_output_forwarded(gpu_binary_path());
+#if defined(HG_TEST_GPU_WORKER)
+    expect_output_forwarded(HG_TEST_GPU_WORKER);
+#else
+    GTEST_SKIP() << "no hg_evolve_gpu test worker in this build";
+#endif
+}
+
+// The shipped binaries ignore HG_DEBUG_OUTPUT_BYTES: a job run with it set forwards none of the
+// lines the test workers write.
+void expect_no_output_hook(const std::string& exe) {
+    WorkerPipes w;
+    static char env[] = "HG_DEBUG_OUTPUT_BYTES=1000";
+    ASSERT_TRUE(worker_start(w, exe, 0, nullptr, nullptr, env)) << w.last_error;
+    const std::vector<uint8_t> reply = worker_call(w, build_input_with_op(2, "Evolve"));
+    ASSERT_FALSE(reply.empty()) << w.last_error;
+    EXPECT_EQ(w.logs.find(std::string(99, 'o')), std::string::npos) << w.logs.substr(0, 200);
+    EXPECT_EQ(w.logs.find(std::string(99, 'x')), std::string::npos) << w.logs.substr(0, 200);
+    worker_stop(w);
+    ::close(w.err_read);
+}
+
+TEST(WorkerOutput, TheShippedWorkersHaveNoOutputHook) {
+    expect_no_output_hook(cpu_binary_path());
+    if (::access(gpu_binary_path().c_str(), X_OK) == 0) expect_no_output_hook(gpu_binary_path());
 }
 
 // A job frame over the 1 GiB cap is read through and refused with an error frame, and the worker

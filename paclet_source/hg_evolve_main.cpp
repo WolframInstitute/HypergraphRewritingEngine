@@ -162,8 +162,9 @@ bool skip_exact(uint64_t n) {
 // The worker: length-prefixed jobs on stdin until EOF, every frame written by one FrameWriter
 // (frame_writer.hpp). Engine diagnostics (hgcommon::diag_printf) and progress go to the reporting
 // thread's ring; main has pointed fd 1 and fd 2 at the capture pipe.
-// HG_DEBUG_OUTPUT_BYTES=n writes n bytes to stdout (the C runtime stream device printf reaches)
-// and n bytes to stderr at the start of every job, which tests the capture.
+// In the test workers (HG_WORKER_TEST_HOOKS, paclet_source/CMakeLists.txt) HG_DEBUG_OUTPUT_BYTES=n
+// writes n bytes to stdout (the C runtime stream device printf reaches) and n bytes to stderr at
+// the start of every job, which tests the capture.
 int run_serve(const HostBridge& host_in) {
     hgframe::FrameWriter writer(reply());
     hgcommon::set_diag_sink([](const char* text, std::size_t length) {
@@ -173,8 +174,10 @@ int run_serve(const HostBridge& host_in) {
     host.progress = [](const std::string& m) {
         hgframe::post_message(hgframe::MessageKind::Progress, m.data(), m.size());
     };
+#if defined(HG_WORKER_TEST_HOOKS)
     const char* debug_env = std::getenv("HG_DEBUG_OUTPUT_BYTES");
     const size_t debug_bytes = debug_env ? std::strtoull(debug_env, nullptr, 10) : 0;
+#endif
     std::vector<uint8_t> lenbuf, job;
     for (;;) {
         if (!read_exact(8, lenbuf)) break;  // clean EOF between frames
@@ -192,6 +195,7 @@ int run_serve(const HostBridge& host_in) {
             std::fprintf(stderr, "HGEvolve: truncated job frame\n");
             return 1;
         }
+#if defined(HG_WORKER_TEST_HOOKS)
         if (debug_bytes) {
             const std::string out(99, 'o'), err(99, 'x');
             for (size_t done = 0; done < debug_bytes; done += 100) {
@@ -199,6 +203,7 @@ int run_serve(const HostBridge& host_in) {
                 std::fprintf(stderr, "%s\n", err.c_str());
             }
         }
+#endif
         if (!g_no_device.empty()) {
             writer.write_error(g_no_device);
             continue;
