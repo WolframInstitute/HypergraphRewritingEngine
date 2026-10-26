@@ -3,6 +3,8 @@
 #include <cstring>
 #include <new>
 
+#include "hgcommon/utf8.hpp"
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -73,7 +75,11 @@ void post_message(MessageKind kind, const char* text, std::size_t length) {
         worker_rings().count_unringed();
     } else {
         do {
-            const std::size_t part = length < LogRing::kSlotBytes ? length : LogRing::kSlotBytes;
+            std::size_t part = length < LogRing::kSlotBytes ? length : LogRing::kSlotBytes;
+            if (part < length) {
+                const std::size_t whole = hgcommon::utf8_complete_prefix(text, part);
+                if (whole > 0) part = whole;
+            }
             if (!r->push(kind, text, part)) break;
             text += part;
             length -= part;
@@ -216,6 +222,25 @@ void FrameWriter::write_error(const std::string& message) {
     hand_off();
 }
 
+void forward_output(int fd) {
+    char buf[LogRing::kSlotBytes];
+    std::size_t held = 0;
+    for (;;) {
+#if defined(_WIN32)
+        const int n = _read(fd, buf + held, static_cast<unsigned>(sizeof buf - held));
+#else
+        const ssize_t n = ::read(fd, buf + held, sizeof buf - held);
+#endif
+        if (n <= 0) break;
+        const std::size_t total = held + static_cast<std::size_t>(n);
+        const std::size_t whole = hgcommon::utf8_complete_prefix(buf, total);
+        if (whole) post_message(MessageKind::Capture, buf, whole);
+        held = total - whole;
+        std::memmove(buf, buf + whole, held);
+    }
+    if (held) post_message(MessageKind::Capture, buf, held);
+}
+
 bool start_output_capture() {
     int fds[2];
 #if defined(_WIN32)
@@ -240,18 +265,7 @@ bool start_output_capture() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
     const int read_fd = fds[0];
-    std::thread([read_fd] {
-        char buf[LogRing::kSlotBytes];
-        for (;;) {
-#if defined(_WIN32)
-            const int n = _read(read_fd, buf, sizeof buf);
-#else
-            const ssize_t n = ::read(read_fd, buf, sizeof buf);
-#endif
-            if (n <= 0) return;
-            post_message(MessageKind::Capture, buf, static_cast<std::size_t>(n));
-        }
-    }).detach();
+    std::thread([read_fd] { forward_output(read_fd); }).detach();
     return true;
 }
 

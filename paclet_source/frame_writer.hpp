@@ -20,9 +20,12 @@
 // one hgcommon::ParkGate (park_gate.hpp): the producer publishes its message, passes the gate's
 // barrier and signals only when the writer has announced itself idle.
 //
+// Message text is cut into slots at UTF-8 character boundaries (hgcommon/utf8.hpp), so every log
+// frame is whole characters.
+//
 // THIRD-PARTY OUTPUT. The CUDA runtime prints device printf to fd 1, and drivers and libraries
 // write to fd 1 and fd 2. start_output_capture points both at a pipe the worker owns; its thread
-// reads the pipe continuously into its ring, so that output cannot fill a pipe
+// reads the pipe continuously into its ring (forward_output), so that output cannot fill a pipe
 // and stop the process. The writer forwards at most kCaptureBytesPerJob of it per job and reports
 // the bytes it left out.
 
@@ -141,7 +144,7 @@ WorkerRings& worker_rings();
 LogRing* this_thread_ring();
 
 // Puts a message in the calling thread's ring and wakes the writer if it is parked; never blocks.
-// Messages longer than a slot take several slots.
+// Messages longer than a slot take several slots, cut at UTF-8 character boundaries.
 void post_message(MessageKind kind, const char* text, std::size_t length);
 
 class FrameWriter {
@@ -182,8 +185,13 @@ private:
     std::size_t capture_omitted_ = 0;
 };
 
+// The capture thread's loop: reads `fd` until end of file or an error, and posts what it reads as
+// Capture messages. A character split across two reads is held back and posted whole with the
+// next read.
+void forward_output(int fd);
+
 // Points fd 1 and fd 2 (and on Windows the process's standard output and error handles) at a
-// pipe and starts a thread that reads it into its ring as Capture messages. Call after the reply stream has its
+// pipe and starts a thread that runs forward_output on it. Call after the reply stream has its
 // own descriptor (take_reply_stream). False when the pipe cannot be made.
 bool start_output_capture();
 

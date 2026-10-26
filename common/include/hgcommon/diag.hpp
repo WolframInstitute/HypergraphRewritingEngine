@@ -20,7 +20,8 @@ using DiagSink = void (*)(const char* text, std::size_t length);
 // Installs `sink` for every later message, or restores stderr with nullptr.
 void set_diag_sink(DiagSink sink);
 
-// Formats a message (at most 1023 bytes; longer text is cut) and hands it to the sink.
+// Formats a message (at most 1023 bytes; longer text is cut at a UTF-8 character boundary) and
+// hands it to the sink.
 void diag_printf(const char* format, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 1, 2)))

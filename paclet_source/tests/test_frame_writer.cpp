@@ -1,6 +1,6 @@
 // The worker's frame writer (paclet_source/frame_writer.hpp): one writer thread, per-thread
-// rings, frames that never interleave, drops that are counted, a writer that sleeps while idle,
-// and the capture of fd 1 and fd 2.
+// rings, frames that never interleave, drops that are counted, text cut at UTF-8 character
+// boundaries, a writer that sleeps while idle, and the capture of fd 1 and fd 2.
 // Runs on POSIX and on Windows (the C runtime's _pipe, _read, _dup2, and SetStdHandle).
 #include <gtest/gtest.h>
 
@@ -32,6 +32,7 @@
 #endif
 
 #include "frame_writer.hpp"
+#include "hgcommon/utf8.hpp"
 
 namespace {
 
@@ -139,6 +140,14 @@ uint64_t dropped_in(const std::string& text) {
     return std::stoull(text.substr(10, at - 10));
 }
 
+// True when `s` is whole UTF-8 characters: it neither starts with a continuation byte nor ends
+// inside a character.
+bool whole_characters(const std::string& s) {
+    if (s.empty()) return true;
+    if ((static_cast<unsigned char>(s[0]) & 0xC0) == 0x80) return false;
+    return hgcommon::utf8_complete_prefix(s.data(), s.size()) == s.size();
+}
+
 }  // namespace
 
 // 16 threads each post 2000 log messages of distinct text and lengths up to 900 bytes while the
@@ -244,6 +253,50 @@ TEST(FrameWriter, ProducersEachWriteTheirOwnRing) {
         std::printf("[frame_writer] %d producer thread(s): %.1f ns per message, %llu dropped\n",
                     threads, mean, static_cast<unsigned long long>(dropped));
     }
+}
+
+// A message of 2600 bytes whose characters (2, 3 and 4 bytes) straddle the 1000-byte slot size
+// arrives as frames of whole characters that join to the message.
+TEST(FrameWriter, LogTextIsCutAtCharacterBoundaries) {
+    std::string text(999, 'a');
+    text += "\xC3\xA9";              // bytes 999-1000: straddles the first slot's end
+    text += "\xE2\x82\xAC";          // bytes 1001-1003
+    text.append(994, 'b');
+    text += "\xF0\x9F\x98\x80";      // bytes 1998-2001: straddles the second slot's end (1999)
+    while (text.size() < 2600) text += "\xC3\xA9";
+    WriterOnPipe w;
+    std::thread([&] { hgframe::post_message(hgframe::MessageKind::Log, text.data(), text.size()); }).join();
+    std::string joined;
+    for (const Frame& f : w.finish()) {
+        if (f.kind != hgframe::kLogFrameBit) continue;
+        EXPECT_TRUE(whole_characters(f.payload)) << "a frame of " << f.payload.size() << " bytes";
+        EXPECT_LE(f.payload.size(), hgframe::LogRing::kSlotBytes);
+        joined += f.payload;
+    }
+    EXPECT_EQ(joined, text);
+}
+
+// The capture loop reads a pipe 1000 bytes at a time. Output whose characters straddle the read
+// size arrives as whole characters, all of it.
+TEST(FrameWriter, CapturedOutputKeepsCharactersWhole) {
+    std::string text(999, 'c');
+    text += "\xE2\x82\xAC";   // bytes 999-1001: the first read ends inside it
+    for (int i = 0; i < 700; ++i) text += "\xC3\xA9";
+    int fds[2];
+    ASSERT_TRUE(make_pipe(fds));
+    WriterOnPipe w;
+    std::thread capture([&] { hgframe::forward_output(fds[0]); });
+    ASSERT_EQ(write_fd(fds[1], text.data(), text.size()), static_cast<long>(text.size()));
+    close_fd(fds[1]);
+    capture.join();
+    close_fd(fds[0]);
+    std::string joined;
+    for (const Frame& f : w.finish()) {
+        if (f.kind != hgframe::kLogFrameBit) continue;
+        EXPECT_TRUE(whole_characters(f.payload)) << "a frame of " << f.payload.size() << " bytes";
+        joined += f.payload;
+    }
+    EXPECT_EQ(joined, text);
 }
 
 // start_output_capture points fd 1 and fd 2, and on Windows the standard output and error handles,

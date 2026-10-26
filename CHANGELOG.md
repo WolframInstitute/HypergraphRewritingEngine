@@ -9,6 +9,9 @@
   `hg_evolve --serve-socket` is removed. A worker that ends during an evaluation gives
   `HGEvolve::workerlost`, and the next evaluation starts a new one.
 
+- Text the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output) is cut
+  into pieces only between characters, so a multi-byte UTF-8 character is never split.
+
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`
   (each vertex's point, keyed by the vertex as the states name it). With other properties it is
