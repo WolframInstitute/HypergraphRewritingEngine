@@ -690,7 +690,8 @@ HG_HD inline void ir_refine(
                 // O(adjacent), not O(|C|): a touched vertex in the head [cs, cs + leftover)
                 // swaps with an untouched one in the tail, and the tail is then written in
                 // group order. The leftover's order inside the head is not read: the search
-                // sorts a target cell before choosing, and a leaf labels by cell start. On a
+                // takes a target cell's smallest vertex first and sorts the cell when it returns
+                // for the next, and a leaf labels by cell start. On a
                 // path of n edges the interior cell holds ~n vertices and loses ~2 per round
                 // for ~n/2 rounds, so a scan of the whole cell made refinement O(n^2).
                 const uint32_t cs = C;

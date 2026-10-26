@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "ir_pinned_states.hpp"
 #include <hypergraph/ir_canonicalization.hpp>
 #include <hypergraph/hypergraph.hpp>
 #include <vector>
@@ -501,8 +502,9 @@ TEST_F(IRCanonicalizationTest, MarkedFormsSeparateMarkingsUpToIsomorphism) {
 // A state of many isomorphic components: 40 paths a->b->c, 30 edges and one triangle, with its
 // vertices relabelled by a fixed permutation and its edges reversed in order. The search
 // individualises one component per level. Both copies hash equally, the hash does not depend on
-// what the scratch held before (all ones, or the other copy's search), and the ranks of the two
-// copies map each edge to the edge it was relabelled to.
+// what the scratch held before (all ones, or the other copy's search: ir_canonical_hash_of zeroes
+// the refinement's stamps once per search), and the ranks of the two copies map each edge to the
+// edge it was relabelled to.
 TEST_F(IRCanonicalizationTest, ManyIsomorphicComponentsHashEquallyWithReusedScratch) {
     std::vector<std::vector<VertexId>> a;
     VertexId next = 0;
@@ -563,6 +565,130 @@ TEST_F(IRCanonicalizationTest, ManyIsomorphicComponentsHashEquallyWithReusedScra
     EXPECT_EQ(ranks(rank_a, e - 3, e), ranks(rank_b, 0, 3));
     EXPECT_EQ(ranks(rank_a, 80, e - 3), ranks(rank_b, 3, e - 80));
     EXPECT_EQ(ranks(rank_a, 0, 80), ranks(rank_b, e - 80, e));
+}
+
+namespace {
+
+struct Pinned {
+    uint64_t hash, ranks, orbits;
+    uint32_t status;
+};
+
+// The values of ir_pinned::states() under the ir_core.hpp of 6969681e (before the search changes
+// of 706b1763, d70ab405 and 0cb59287), from .scratch/ir_pinned_gen.cpp.
+const Pinned kPinned[] = {
+    {0x7c26fda4e243a314ull, 0x8849bf21e9158fa2ull, 0x54b0882cd9a76e52ull, 0},
+    {0x6fe42661d334d58cull, 0x3410b74e1eb3e5f3ull, 0x902dca9c47fa0dc3ull, 0},
+    {0xea5679bafa4f07f3ull, 0x96d0dfbeb97d9594ull, 0xf8db767d19584253ull, 0},
+    {0xb534fc3bf2cd5911ull, 0xc1a35dd95b9fdf87ull, 0xc1a35dd95b9fdf87ull, 0},
+    {0x0078559d2cdf6e16ull, 0x4a19372a68e55013ull, 0x1b86965f230abc21ull, 0},
+    {0x166e8656ebe203b0ull, 0xbd8ecfbf08a20973ull, 0xaec5a85f41c46b53ull, 0},
+    {0x220c7f40df41dbceull, 0x0c2ab750d2be0ad8ull, 0xe6b811254f6f9f13ull, 0},
+    {0x456b6cece40f53eaull, 0x6437c9a572635250ull, 0xc327e8bf29be1593ull, 0},
+    {0xf95dce7448b18ac7ull, 0xd4fb63af314e117full, 0xb7a15656e975b273ull, 0},
+    {0xa8d6483b678d5947ull, 0x95352af39b5273e3ull, 0x95352af39b5273e3ull, 0},
+    {0xfd1338c3ac2607a7ull, 0x6f41d276065bf1c4ull, 0x7ae2469c5c023ac0ull, 0},
+    {0x3af4013ef3f93878ull, 0xcf610fb81343d363ull, 0x6adb52926c7d0983ull, 0},
+    {0x3441b3891837b969ull, 0x354c7b1ea4149222ull, 0x3c81572a2f70f9f3ull, 0},
+    {0x83fe5314dfb4f41cull, 0xe57c0e3576001d12ull, 0x310ea34061520363ull, 0},
+    {0xf95dce7448b18ac7ull, 0xd566f0f1539aa98full, 0xb7a15656e975b273ull, 0},
+    {0xd009140a353e106full, 0xb9a61a7569325a10ull, 0xb9a61a7569325a10ull, 0},
+    {0x51ea5dfa17115c67ull, 0xed6599b3937dac53ull, 0x05baf0b7fba1ab83ull, 0},
+    {0x166e8656ebe203b0ull, 0x92e9d2befcb7eff3ull, 0x507c569e1cf39fc3ull, 0},
+    {0x0d873aabd2f84704ull, 0xc09033714334d26full, 0x2d06d2cf3478f8a0ull, 0},
+    {0x61c965105bbae462ull, 0xfd7737618f3f9984ull, 0x5d411311ad9cd553ull, 0},
+    {0x17d2848d30ddf51bull, 0x4e7869228e217b02ull, 0x310ea34061520363ull, 0},
+    {0xb534fc3bf2cd5911ull, 0x0217fa7272cc5207ull, 0x0217fa7272cc5207ull, 0},
+    {0xc089ba8c7e860ae9ull, 0xffbee8d55901b678ull, 0x58c387cf8449fb00ull, 0},
+    {0xa74809887846ef18ull, 0x791231c4cae1ba32ull, 0x5535781896089d32ull, 0},
+    {0x382849c574110c3cull, 0x694fd61cf4aed352ull, 0x5d7fc8b3d07ff5a3ull, 0},
+    {0xdbac26dcdca4ecdcull, 0x33ae647aee879bf2ull, 0x8db5a7ab724e74e3ull, 0},
+    {0x34823e54fc8067fbull, 0x8506259e678fab23ull, 0x171bb79dc8e18503ull, 0},
+    {0x62d9570a6a1503deull, 0xc9452a8c9b417b62ull, 0xc9452a8c9b417b62ull, 0},
+    {0xbcf1682676acabadull, 0x47d21855d0f34f74ull, 0x3a530761a82900d0ull, 0},
+    {0xc3c2e67955b2debfull, 0xc39f61bb1f8822c3ull, 0x7f2e0edf0ea528d3ull, 0},
+    {0xe4d2f58d1fb0a1e9ull, 0x0c2ab750d2be0ad8ull, 0xe6b811254f6f9f13ull, 0},
+    {0x2549af7ccef2803full, 0x8f43c7fec9bc853bull, 0x0509655bf1098ab3ull, 0},
+    {0xccedfebb8d7a039full, 0x99aa537edcf3f3abull, 0x0509655bf1098ab3ull, 0},
+    {0xd009140a353e106full, 0x6437c9a572635250ull, 0x6437c9a572635250ull, 0},
+    {0xfd1338c3ac2607a7ull, 0xbc87844466deade4ull, 0xeed3167e5d293950ull, 0},
+    {0xc3c2e67955b2debfull, 0xcd112dcd7a1c9fe3ull, 0x5853098627073643ull, 0},
+    {0xb67e0994fa8b03e7ull, 0x01363b6cf6859a62ull, 0x7238772b5892cf92ull, 0},
+    {0x393ac1bbf43258eaull, 0x903c0fe5f130c9dcull, 0xd9677cba17d02bd3ull, 0},
+    {0x77f64ffb42aa55a7ull, 0xe24788ecce0f3eefull, 0x8bc0e0dcc21bff73ull, 0},
+    {0x16f3ef2f2b299a2dull, 0x05cfa2634ff722e2ull, 0x05cfa2634ff722e2ull, 0},
+    {0xb6e0450f7ebbe00cull, 0x9c3fa29e54c55763ull, 0x7ad9588d35839bc1ull, 0},
+    {0xa74809887846ef18ull, 0x1bbc1c9134932e72ull, 0xa92682dce90421a2ull, 0},
+    {0xaa972f5e214955dfull, 0x1722195b9b90e793ull, 0x235dedbf8f234b73ull, 0},
+    {0xe5692984241d4aecull, 0xec44900b2891b822ull, 0x5d7fc8b3d07ff5a3ull, 0},
+    {0x1e03a93a3ff19833ull, 0x3aea83193386fcf3ull, 0xc3b584ef67d3af43ull, 0},
+    {0xd009140a353e106full, 0x8def0d0e228463c0ull, 0x8def0d0e228463c0ull, 0},
+    {0x43afa9b31e899022ull, 0xbc105d70c359c922ull, 0x2a4cadf2c9608311ull, 0},
+    {0x30bb8840102fa7c0ull, 0x9977233f75b30982ull, 0xc06b72488d147762ull, 0},
+};
+
+struct Encoded {
+    std::vector<uint8_t> ea;
+    std::vector<uint32_t> eoff, ev;
+    uint32_t n = 0, e = 0, occ = 0;
+};
+
+Encoded encode(const ir_pinned::State& g) {
+    Encoded x;
+    x.e = static_cast<uint32_t>(g.size());
+    for (const auto& edge : g) {
+        x.ea.push_back(static_cast<uint8_t>(edge.size()));
+        x.eoff.push_back(static_cast<uint32_t>(x.ev.size()));
+        for (auto v : edge) x.ev.push_back(v);
+    }
+    x.occ = static_cast<uint32_t>(x.ev.size());
+    std::vector<uint32_t> verts(x.occ);
+    x.n = hgcommon::ir_renumber_encounter(x.ev.data(), x.occ, verts.data());
+    return x;
+}
+
+}  // namespace
+
+// THE SEARCH'S OUTPUT IS PINNED. 48 states of disjoint copies, stars, cycles, complete graphs and
+// mixed copies (ir_pinned_states.hpp): the canonical hash, the edge ranks and the edge orbits equal
+// the values the search gave before its per-node changes (stamps cleared per splitter, the
+// remainder seeded only when v's hyperedges meet it, the target cell sorted on return).
+TEST(IRPinned, HashRanksAndOrbitsAreThePinnedValues) {
+    const auto states = ir_pinned::states();
+    ASSERT_EQ(states.size(), sizeof kPinned / sizeof kPinned[0]);
+    for (size_t i = 0; i < states.size(); ++i) {
+        const Encoded x = encode(states[i]);
+        std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(x.n, x.e, x.occ, x.n + 1) + 2);
+        std::vector<uint32_t> rank(x.e), orbit(x.e);
+        const auto r = hgcommon::ir_canonical_hash(x.ea.data(), x.eoff.data(), x.ev.data(), x.e,
+                                                   x.n, x.occ, scratch.data(), x.n + 1,
+                                                   rank.data(), hgcommon::IR_HOST_GENERATORS,
+                                                   orbit.data());
+        EXPECT_EQ(static_cast<uint32_t>(r.status), kPinned[i].status) << "state " << i;
+        EXPECT_EQ(r.hash, kPinned[i].hash) << "state " << i;
+        EXPECT_EQ(ir_pinned::digest(rank), kPinned[i].ranks) << "state " << i;
+        EXPECT_EQ(ir_pinned::digest(orbit), kPinned[i].orbits) << "state " << i;
+    }
+}
+
+// THE REFINEMENT LEAVES ITS STAMPS ZERO. ir_refine clears the edge stamps and touched flags each
+// splitter set, so after a search over many isomorphic components both arrays in the scratch are
+// zero. Their place is the start of IrScratch's layout in ir_canonical_hash_of: occ_off (n + 1),
+// occ_edge, occ_pos (occ each), cursor (n), inc_edges (e), edge_epoch (e), form_order (e), touched
+// (n), on_touched (n).
+TEST(IRPinned, ASearchLeavesTheRefinementStampsZero) {
+    for (const auto& g : ir_pinned::states()) {
+        const Encoded x = encode(g);
+        std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(x.n, x.e, x.occ, x.n + 1) + 2,
+                                      0u);
+        const auto r = hgcommon::ir_canonical_hash(x.ea.data(), x.eoff.data(), x.ev.data(), x.e,
+                                                   x.n, x.occ, scratch.data(), x.n + 1);
+        ASSERT_EQ(r.status, hgcommon::IR_OK);
+        const size_t edge_epoch = (x.n + 1) + 2ull * x.occ + x.n + x.e;
+        const size_t on_touched = edge_epoch + 2ull * x.e + x.n;
+        for (uint32_t i = 0; i < x.e; ++i) ASSERT_EQ(scratch[edge_epoch + i], 0u) << "edge " << i;
+        for (uint32_t v = 0; v < x.n; ++v) ASSERT_EQ(scratch[on_touched + v], 0u) << "vertex " << v;
+    }
 }
 
 #if HG_ENGINE_STATS
