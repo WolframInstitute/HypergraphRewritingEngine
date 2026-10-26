@@ -1018,8 +1018,13 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property : (_String | {__
 HGSessionOpen[rules_List, initial : Except[_List],
               property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
               opts : OptionsPattern[{HGSessionOpen, Graph}]] :=
-  With[{edges = hgInitialEdges[initial, {opts}]},
-    If[edges === $Failed, $Failed, HGSessionOpen[rules, edges, property, opts]]]
+  With[{ic = hgInitialCondition[initial, {opts}]},
+    If[ic === $Failed, $Failed,
+      Block[{$hgSessionInitialCondition = ic}, HGSessionOpen[rules, ic["Edges"], property, opts]]]]
+
+(* The initial condition a generated-condition HGSessionOpen passes to the edge-list form, which
+   records it for the session's "InitialCondition" property; None for an edge list. *)
+$hgSessionInitialCondition = None;
 
 (* The "InitialCondition" property: `ic` (the initial condition's association, "Edges" and, for a
    generated one, "VertexCoordinates" and the generator's other keys) in place of that name, and
@@ -1636,7 +1641,7 @@ HGSessionOpen[rules_List, initialEdges_List,
   If[initialStatesData === $Failed, Return[$Failed]];
   propertyWasListLocal = ListQ[property];
   props = DeleteDuplicates[Flatten[{property}]];
-  requiredData = computeRequiredData[props];
+  requiredData = computeRequiredData[DeleteCases[props, "InitialCondition"]];
   If[requiredData === $Failed, Return[$Failed]];
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
   device = hgResolveDevice[OptionValue["TargetDevice"]];
@@ -1678,6 +1683,8 @@ HGSessionOpen[rules_List, initialEdges_List,
 
   view["Worker"] = Lookup[$hgWorkerGeneration, device, None];
   HGSessionObject[<|"Handle" -> handle, "Device" -> device, "View" -> view,
+                    "InitialCondition" -> If[AssociationQ[$hgSessionInitialCondition],
+                      $hgSessionInitialCondition, <|"Edges" -> initialEdges|>],
                     "Properties" -> props, "PropertyWasList" -> propertyWasListLocal,
                     "GraphProperties" -> graphProperties, "Options" -> options,
                     "BranchialStepSetting" -> OptionValue["BranchialStep"]|>]
@@ -1690,12 +1697,27 @@ HGSessionOpen[rules_List, initialEdges_List,
    next Delta request goes out as Full, which resets the engine's record and replaces the cache. *)
 $hgSessionDeltaUnsafe = <||>;
 
+(* "InitialCondition" is the session's recorded initial condition, and the verb runs for the other
+   properties; a Step that asks only for "InitialCondition" still steps. *)
 hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property_,
-              from_ : All, delivery_ : "Full"] := Module[
-  {props, wasList, requiredData, graphProperties, view, options, inputData, delta, result},
-
+              from_ : All, delivery_ : "Full"] := Module[{props, wasList, rest, result, ic},
   props = If[property === Automatic, d["Properties"], DeleteDuplicates[Flatten[{property}]]];
   wasList = If[property === Automatic, d["PropertyWasList"], ListQ[property]];
+  If[!MemberQ[props, "InitialCondition"],
+    Return[hgSessionVerbRun[d, op, steps, props, wasList, from, delivery]]];
+  ic = Lookup[d, "InitialCondition", <||>];
+  rest = DeleteCases[props, "InitialCondition"];
+  result = hgSessionVerbRun[d, op, steps, If[rest === {}, {"NumStates"}, rest], True, from, delivery];
+  Which[
+    !AssociationQ[result], result,
+    rest === {}, If[wasList, <|"InitialCondition" -> ic|>, ic],
+    True, Association[# -> If[# === "InitialCondition", ic, result[#]] & /@ props]]
+];
+
+hgSessionVerbRun[d_Association, op_String, steps_Integer, props_List, wasList_, from_,
+                 delivery_] := Module[
+  {requiredData, graphProperties, view, options, inputData, delta, result},
+
   requiredData = computeRequiredData[props];
   If[requiredData === $Failed, Return[$Failed]];
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];

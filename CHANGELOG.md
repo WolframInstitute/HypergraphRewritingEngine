@@ -16,6 +16,8 @@
   after a result is read by the next evaluation instead of being lost (which could stop the next
   evaluation from returning).
 
+- `HGSessionOpen`, `HGSessionStep` and `HGSessionQuery` accept the `"InitialCondition"` property.
+
 - Text the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output) is cut
   into pieces only between characters, so a multi-byte UTF-8 character is never split.
 

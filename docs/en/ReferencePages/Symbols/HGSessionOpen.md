@@ -27,6 +27,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - `"TargetDevice" -> "GPU"` opens the session on the GPU engine. Where no GPU engine is bundled or the machine has no usable NVIDIA GPU, it issues the message `HGEvolve::gpudev` naming the reason and opens on the CPU engine. `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead.
 - One session is open at a time for each device. While one is open, [HGSessionOpen]() issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; the open session is unaffected.
 - The session is held by a persistent engine worker process. Where none can be started, [HGSessionOpen]() issues the message `HGSessionOpen::noworker` and gives <code>[$Failed]()</code>; [HGEvolve]() still works.
+- `"InitialCondition"` gives the session's initial condition, as [HGEvolve]() gives it, with every step and query that asks for it.
 - A property [HGEvolve]() does not accept issues the message `HGEvolve::unknownprop` and gives <code>[$Failed]()</code>.
 
 ## Basic Examples
@@ -87,6 +88,24 @@ HGSessionQuery[s]
 ```
 
 <!-- => 1 -->
+
+```wl
+HGSessionClose[s]
+```
+
+<!-- => Null -->
+
+---
+
+The `"InitialCondition"` property gives the generated initial condition, the one [HGEvolve]() gives with the same options:
+
+```wl
+s = HGSessionOpen[{{1, 2}} -> {{1, 3}, {3, 2}}, "Grid", {"NumStates", "InitialCondition"}, "GridWidth" -> 2, "GridHeight" -> 2, "RandomSeed" -> 1];
+r = HGSessionStep[s, 1];
+{r["NumStates"], r["InitialCondition"] === HGEvolve[{{1, 2}} -> {{1, 3}, {3, 2}}, "Grid", 0, "InitialCondition", "GridWidth" -> 2, "GridHeight" -> 2, "RandomSeed" -> 1]}
+```
+
+<!-- => {5, True} -->
 
 ```wl
 HGSessionClose[s]
