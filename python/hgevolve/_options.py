@@ -239,6 +239,8 @@ def initial_states(initial):
     """The initial states as lists of edges of integers. One hypergraph is one state; a list of
     hypergraphs is several. Vertices that are not all integers are numbered from 0 by first
     appearance across the states, as HGEvolve's normalizeInitialStates numbers them."""
+    if isinstance(initial, (dict, str)):
+        raise ValueError(_GENERATED)
     initial = _as_list(initial)
     if not isinstance(initial, (list, tuple)) or not initial:
         raise ValueError(_INITIAL)
@@ -266,3 +268,6 @@ def initial_states(initial):
 
 _INITIAL = ("initial is a hypergraph (a non-empty list of edges, each a non-empty list of "
             "vertices) or a non-empty list of them")
+_GENERATED = ("generated initial conditions (\"Grid\", \"BrillLindquist\", a \"Type\" association) "
+              "are made by the Wolfram Language paclet; pass the edges they generate, for example "
+              "HGBrillLindquist[...][\"Edges\"]")

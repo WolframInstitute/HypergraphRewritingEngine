@@ -9,7 +9,7 @@
 `HGEvolve[rules, initial, steps]`. Returns a `Result`.
 
 - `rules`: one `(lhs, rhs)` pair or a list of them. A side is a list of edges, and an edge is a list of vertex labels. Labels may be integers or any hashable values. Each rule's labels are numbered from 0 in order of first appearance in the left side, then the right side, as HGEvolve numbers them.
-- `initial`: one hypergraph (a list of edges) or a list of hypergraphs, which may also be NumPy arrays. Integer labels are sent as given. Other labels are numbered from 0 in order of first appearance across the states. Generated initial conditions ("Grid", "BrillLindquist", ...) are made by the paclet's Wolfram Language code with the kernel's random generator, so the package takes their edges instead (`examples/brill_lindquist_history.py`).
+- `initial`: one hypergraph (a list of edges) or a list of hypergraphs, which may also be NumPy arrays. Integer labels are sent as given. Other labels are numbered from 0 in order of first appearance across the states. Generated initial conditions ("Grid", "BrillLindquist", ...) are made by the paclet's Wolfram Language code with the kernel's random generator, so the package takes their edges instead (`examples/brill_lindquist_history.py`). A generator name or a `"Type"` dict raises `ValueError` saying so.
 - `steps`: a non-negative integer.
 - `data`: what the reply holds, as a list of names from the data table below. The default is `hg.DEFAULT_DATA`: states, events, causal and branchial edges, and the four counts.
 - `options`: the options table below.

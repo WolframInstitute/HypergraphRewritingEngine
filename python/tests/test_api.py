@@ -33,6 +33,9 @@ def test_initial_states_forms():
     assert initial_states(np.array([[1, 2], [2, 3]])) == [[[1, 2], [2, 3]]]
     with pytest.raises(ValueError):
         initial_states([])
+    for generated in ({"Type": "Grid", "Width": 3}, "Grid"):
+        with pytest.raises(ValueError, match="Wolfram Language paclet"):
+            initial_states(generated)
 
 
 def test_symbolic_and_integer_rules_agree():
