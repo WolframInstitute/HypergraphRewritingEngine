@@ -303,3 +303,30 @@ TEST(FrameWriter, TheCaptureCarriesBothStreams) {
     }
     for (const auto& m : expected) EXPECT_NE(captured.find(m), std::string::npos) << m;
 }
+
+// The registry claims at most N rings. Claims beyond N, and claims whose allocation fails, return
+// nullptr; a ring handed on by an exited thread is claimed again.
+namespace {
+hgframe::LogRing* no_ring() { return nullptr; }
+hgframe::LogRing* new_ring() { return new hgframe::LogRing(); }
+}  // namespace
+
+TEST(FrameWriter, TheRingRegistryIsBounded) {
+    hgframe::RingRegistry<3> rings(new_ring);
+    hgframe::LogRing* a = rings.claim();
+    hgframe::LogRing* b = rings.claim();
+    hgframe::LogRing* c = rings.claim();
+    ASSERT_TRUE(a && b && c);
+    for (int i = 0; i < 10; ++i) EXPECT_EQ(rings.claim(), nullptr);
+    EXPECT_EQ(rings.size(), 3u);
+    b->owned.store(0);
+    EXPECT_EQ(rings.claim(), b);
+
+    hgframe::RingRegistry<3> failing(no_ring);
+    EXPECT_EQ(failing.claim(), nullptr);
+    EXPECT_EQ(failing.size(), 0u);
+    failing.count_unringed();
+    failing.count_unringed();
+    EXPECT_EQ(failing.take_unringed(), 2u);
+    EXPECT_EQ(failing.take_unringed(), 0u);
+}

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <new>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -30,11 +31,7 @@ bool LogRing::push(MessageKind kind, const char* text, std::size_t length) {
 
 namespace {
 
-// Every ring ever claimed, in claim order. A ring is never freed: a thread that exits hands its
-// ring on (owned = 0) to the next thread that reports, which continues its tail.
-constexpr uint32_t kMaxRings = 4096;
-std::atomic<LogRing*> g_rings[kMaxRings];
-std::atomic<uint32_t> g_ring_count{0};
+LogRing* make_ring() { return new (std::nothrow) LogRing(); }
 
 struct RingClaim {
     LogRing* ring = nullptr;
@@ -44,37 +41,31 @@ struct RingClaim {
 };
 thread_local RingClaim t_claim;
 
-LogRing* claim_ring() {
-    const uint32_t n = g_ring_count.load(std::memory_order_acquire);
-    for (uint32_t i = 0; i < n; ++i) {
-        LogRing* r = g_rings[i].load(std::memory_order_acquire);
-        uint32_t free = 0;
-        if (r && r->owned.compare_exchange_strong(free, 1, std::memory_order_acq_rel)) return r;
-    }
-    const uint32_t i = g_ring_count.fetch_add(1, std::memory_order_acq_rel);
-    if (i >= kMaxRings) return nullptr;
-    LogRing* r = new LogRing();
-    r->owned.store(1, std::memory_order_relaxed);
-    g_rings[i].store(r, std::memory_order_release);
-    return r;
-}
-
 }  // namespace
 
+WorkerRings& worker_rings() {
+    static WorkerRings* rings = new WorkerRings(make_ring);
+    return *rings;
+}
+
 LogRing* this_thread_ring() {
-    if (!t_claim.ring) t_claim.ring = claim_ring();
+    // A thread that got no ring tries again on a later message: a ring may have been handed on.
+    if (!t_claim.ring) t_claim.ring = worker_rings().claim();
     return t_claim.ring;
 }
 
 void post_message(MessageKind kind, const char* text, std::size_t length) {
     LogRing* r = this_thread_ring();
-    if (!r) return;
-    do {
-        const std::size_t part = length < LogRing::kSlotBytes ? length : LogRing::kSlotBytes;
-        if (!r->push(kind, text, part)) return;
-        text += part;
-        length -= part;
-    } while (length > 0);
+    if (!r) {
+        worker_rings().count_unringed();
+    } else {
+        do {
+            const std::size_t part = length < LogRing::kSlotBytes ? length : LogRing::kSlotBytes;
+            if (!r->push(kind, text, part)) break;
+            text += part;
+            length -= part;
+        } while (length > 0);
+    }
 }
 
 // The thread starts after every member is constructed.
@@ -98,6 +89,13 @@ void FrameWriter::write_frame(uint64_t header, const char* data, std::size_t len
     if (length) std::fwrite(data, 1, length, out_);
 }
 
+// A count report as a log frame, formatted on the stack: the writer allocates nothing.
+void FrameWriter::write_report(const char* format, unsigned long long count) {
+    char text[200];
+    const int n = std::snprintf(text, sizeof text, format, count);
+    if (n > 0) write_frame(kLogFrameBit | static_cast<uint64_t>(n), text, static_cast<std::size_t>(n));
+}
+
 bool FrameWriter::drain_rings() {
     bool any = false;
     // A new job starts its own count of forwarded process output.
@@ -106,9 +104,10 @@ bool FrameWriter::drain_rings() {
         seen_job_ = job;
         capture_forwarded_ = 0;
     }
-    const uint32_t n = g_ring_count.load(std::memory_order_acquire);
-    for (uint32_t i = 0; i < n && i < kMaxRings; ++i) {
-        LogRing* r = g_rings[i].load(std::memory_order_acquire);
+    WorkerRings& rings = worker_rings();
+    const uint32_t n = rings.size();
+    for (uint32_t i = 0; i < n; ++i) {
+        LogRing* r = rings.at(i);
         if (!r) continue;
         while (r->pop([&](MessageKind kind, const char* text, uint32_t length) {
             if (kind == MessageKind::Capture) {
@@ -122,13 +121,14 @@ bool FrameWriter::drain_rings() {
                             length, text, length);
         }))
             any = true;
-        const uint64_t lost = r->dropped.exchange(0, std::memory_order_relaxed);
-        if (lost) {
-            const std::string m = "HGEvolve: " + std::to_string(lost) +
-                                  " diagnostic messages were dropped (a full log ring)";
-            write_frame(kLogFrameBit | m.size(), m.data(), m.size());
+        if (const uint64_t lost = r->dropped.exchange(0, std::memory_order_relaxed)) {
+            write_report("HGEvolve: %llu diagnostic messages were dropped (a full log ring)", lost);
             any = true;
         }
+    }
+    if (const uint64_t lost = rings.take_unringed()) {
+        write_report("HGEvolve: %llu diagnostic messages were dropped (no log ring)", lost);
+        any = true;
     }
     if (any) std::fflush(out_);
     return any;
@@ -138,10 +138,12 @@ void FrameWriter::finish_handoff() {
     // Everything posted before the handoff is in the rings by now; it goes first.
     drain_rings();
     if (capture_omitted_) {
-        const std::string m = "HGEvolve: " + std::to_string(capture_omitted_) +
-                              " bytes of process output were left out (" +
-                              std::to_string(kCaptureBytesPerJob) + " bytes forwarded per job)";
-        write_frame(kLogFrameBit | m.size(), m.data(), m.size());
+        char text[200];
+        const int n = std::snprintf(text, sizeof text,
+                                    "HGEvolve: %zu bytes of process output were left out "
+                                    "(%zu bytes forwarded per job)",
+                                    capture_omitted_, kCaptureBytesPerJob);
+        if (n > 0) write_frame(kLogFrameBit | static_cast<uint64_t>(n), text, static_cast<std::size_t>(n));
         capture_omitted_ = 0;
     }
     if (reply_) {
@@ -211,7 +213,7 @@ bool start_output_capture() {
     std::fflush(stderr);
     if (_dup2(fds[1], 1) != 0 || _dup2(fds[1], 2) != 0) return false;
     // Libraries that write through the process's standard handles (not the C runtime's
-    // descriptors) see the pipe too.
+    // descriptors) write to the pipe too.
     SetStdHandle(STD_OUTPUT_HANDLE, reinterpret_cast<HANDLE>(_get_osfhandle(1)));
     SetStdHandle(STD_ERROR_HANDLE, reinterpret_cast<HANDLE>(_get_osfhandle(2)));
     _close(fds[1]);

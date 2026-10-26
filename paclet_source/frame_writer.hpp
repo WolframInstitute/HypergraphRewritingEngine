@@ -13,12 +13,14 @@
 // single-consumer ring; the writer is the one consumer of all of them. A full ring drops the
 // message and counts it, and the writer reports the count in a log frame. The rings are claimed
 // per thread and handed on when the thread exits, so their number is the most threads that
-// reported at once.
+// reported at once, at most kMaxRings. A thread that gets no ring (kMaxRings in use, or no memory
+// for a new one) drops its messages, and the writer reports that count too.
 //
 // THIRD-PARTY OUTPUT. The CUDA runtime prints device printf to fd 1, and drivers and libraries
-// write to fd 1 and fd 2. OutputCapture points both at a pipe the worker owns; its thread reads
-// the pipe continuously into its ring, so that output cannot fill a pipe and stop the process. The
-// writer forwards at most kCaptureBytesPerJob of it per job and reports the bytes it left out.
+// write to fd 1 and fd 2. start_output_capture points both at a pipe the worker owns; its thread
+// reads the pipe continuously into its ring, so that output cannot fill a pipe
+// and stop the process. The writer forwards at most kCaptureBytesPerJob of it per job and reports
+// the bytes it left out.
 
 #include <atomic>
 #include <condition_variable>
@@ -72,16 +74,77 @@ struct LogRing {
     }
 };
 
-// The calling thread's ring, claimed on its first message.
+// Every ring claimed, in claim order, at most N. A ring is never freed while the registry lives: a
+// thread that exits hands its ring on (owned = 0) to the next thread that claims one, which
+// continues its tail. `make` allocates a ring and returns nullptr when it cannot.
+template <uint32_t N>
+class RingRegistry {
+public:
+    using MakeRing = LogRing* (*)();
+    explicit RingRegistry(MakeRing make) : make_(make) {}
+    ~RingRegistry() {
+        for (uint32_t i = 0; i < size(); ++i) delete rings_[i].load(std::memory_order_acquire);
+    }
+    RingRegistry(const RingRegistry&) = delete;
+    RingRegistry& operator=(const RingRegistry&) = delete;
+
+    // A ring handed on by an exited thread, else a new one; nullptr when N rings are in use or a
+    // new ring cannot be allocated. The scan reads at most N entries.
+    LogRing* claim() {
+        const uint32_t n = size();
+        for (uint32_t i = 0; i < n; ++i) {
+            LogRing* r = rings_[i].load(std::memory_order_acquire);
+            uint32_t free = 0;
+            if (r && r->owned.compare_exchange_strong(free, 1, std::memory_order_acq_rel)) return r;
+        }
+        if (n >= N) return nullptr;
+        LogRing* r = make_();
+        if (!r) return nullptr;
+        r->owned.store(1, std::memory_order_relaxed);
+        uint32_t i = count_.load(std::memory_order_relaxed);
+        do {
+            if (i >= N) {
+                delete r;
+                return nullptr;
+            }
+        } while (!count_.compare_exchange_weak(i, i + 1, std::memory_order_acq_rel,
+                                               std::memory_order_relaxed));
+        rings_[i].store(r, std::memory_order_release);
+        return r;
+    }
+    // The entries claimed so far, at most N; an entry reads nullptr until its ring is published.
+    uint32_t size() const { return count_.load(std::memory_order_acquire); }
+    LogRing* at(uint32_t i) const { return rings_[i].load(std::memory_order_acquire); }
+
+    // Messages from threads that got no ring.
+    void count_unringed() { unringed_.fetch_add(1, std::memory_order_relaxed); }
+    uint64_t take_unringed() { return unringed_.exchange(0, std::memory_order_relaxed); }
+
+private:
+    MakeRing make_;
+    std::atomic<LogRing*> rings_[N] = {};
+    std::atomic<uint32_t> count_{0};
+    std::atomic<uint64_t> unringed_{0};
+};
+
+constexpr uint32_t kMaxRings = 4096;
+using WorkerRings = RingRegistry<kMaxRings>;
+
+// The process's registry, created on first use and never destroyed (the capture thread may post
+// until the process exits).
+WorkerRings& worker_rings();
+
+// The calling thread's ring, claimed on its first message; nullptr when it got none.
 LogRing* this_thread_ring();
 
-// Puts a message in the calling thread's ring; never blocks. Messages longer than a slot take
-// several slots.
+// Puts a message in the calling thread's ring; never blocks.
+// Messages longer than a slot take several slots.
 void post_message(MessageKind kind, const char* text, std::size_t length);
 
 class FrameWriter {
 public:
-    // Starts the writer thread on `out`, which only the writer writes from then on.
+    // Starts the writer thread on `out`, which only the writer writes from then on. One
+    // FrameWriter at a time per process.
     explicit FrameWriter(std::FILE* out);
     ~FrameWriter();
     FrameWriter(const FrameWriter&) = delete;
@@ -98,6 +161,7 @@ private:
     void run();
     bool drain_rings();
     void write_frame(uint64_t header, const char* data, std::size_t length);
+    void write_report(const char* format, unsigned long long count);
     void finish_handoff();
 
     std::FILE* out_;
@@ -117,8 +181,8 @@ private:
 };
 
 // Points fd 1 and fd 2 (and on Windows the process's standard output and error handles) at a
-// pipe and starts a thread that reads it into its ring as Capture messages. Call after the
-// reply stream has its own descriptor (take_reply_stream). False when the pipe cannot be made.
+// pipe and starts a thread that reads it into its ring as Capture messages. Call after the reply stream has its
+// own descriptor (take_reply_stream). False when the pipe cannot be made.
 bool start_output_capture();
 
 }  // namespace hgframe
