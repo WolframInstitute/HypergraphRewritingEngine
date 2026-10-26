@@ -9,6 +9,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#ifdef HG_BITSET_STATS
+#include "hgcommon/diag.hpp"
+#endif
 
 namespace HG_NAMESPACE {
 namespace engine {
@@ -91,7 +94,7 @@ inline void bitset_stats_report(const char* tag) {
     uint64_t first   = g.first.load(std::memory_order_relaxed)   + me.first;
     uint64_t beyond  = g.beyond.load(std::memory_order_relaxed)  + me.beyond;
     uint64_t within  = g.within64.load(std::memory_order_relaxed) + me.within64;
-    std::fprintf(stderr,
+    hgcommon::diag_printf(
         "[bitset:%s] contains_calls=%llu mean_entries=%.2f mean_search_depth=%.2f "
         "dense_frac=%.4f hit_frac=%.4f last_frac=%.4f first_frac=%.4f beyond_frac=%.4f within64_frac=%.4f\n",
         tag,

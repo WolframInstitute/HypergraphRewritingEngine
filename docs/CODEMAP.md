@@ -164,7 +164,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
   - structs `MatchRecord`, `EvolutionStats` (each counter `alignas(64)`), `MatchContext`, `ScanTaskData`, `ExpandTaskData`, `ChildInfo`; enum `EvolutionJobType`
 - **`rewriter.hpp`** -- applies a rule+match to produce a new state (declaration).
   - `RewriteResult`, `Rewriter` (`apply`), `apply_rewrite()`
-- **`debug_log.hpp`** -- debug logging routed to an FFI callback or printf (`DEBUG_LOG` macro, no-op unless enabled).
+- **`debug_log.hpp`** -- the `DEBUG_LOG` macro: a `hgcommon::diag_printf` call under `ENABLE_DEBUG_OUTPUT`, a no-op otherwise.
 
 ## `hypergraph/src/` -- core engine (out-of-line implementations)
 
@@ -178,7 +178,6 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`arena.cpp`** -- `ConcurrentHeterogeneousArena`'s bodies (construction, `allocate_raw` and the four bump/grow paths, `register_destructor`, `mark`/`release`/`reset`), `worker_scratch()`, and `scratch_alloc.hpp`'s siblings `worker_persistent_target()`/`worker_persistent()`/`PersistTarget`/`ScratchIdSet` -- the scratch and persistent per-worker arenas are one mechanism at two lifetimes. `ArenaWorkerRegistry::acquire`/`release` are NOT here: `verification/genmc/arena_worker_index_exclusive.cpp` compiles that header alone and links no library, so those two stay inline.
 - **`types.cpp`** -- the engine's value types: `VariableBinding`, `Edge`, `Event`, `State`, `GlobalCounters`, `CausalEdge`, `BranchialEdge`, `EventSignature`, and `quotient_types.hpp`'s identity records (`QcEventContent::triple_hash`, `EdgeOrbitTable`, `SlotMatch`).
 - **`bitset.cpp`** -- `SparseBitset::Chunk` and the bitset's construction, move, `count`, `find_entry_index` and `invalidate_count`. `contains` and `find_chunk` are NOT here: they are `HG_INLINE` in the header with the measurement that pins them (outlining the engine's hottest predicate cost +3.7%).
-- **`debug_log.cpp`** -- `set_debug_callback`, `clear_debug_callback` and the formatter `debug_output`, and with them `<cstdarg>`/`<sstream>`/`<thread>`: `debug_log.hpp` reaches nearly every engine translation unit through `parallel_evolution.hpp`, `rewriter.hpp` and `concurrent_map.hpp`, and this is the only unit that names libstdc++'s iostream and threading machinery for it.
 - **`rewriter.cpp`** -- `RewriteResult`'s constructor, `Rewriter`'s constructor, the free `apply_rewrite`, and `Rewriter::apply`: validate match, derive child edge set, allocate fresh vertices, create RHS edges/state/event, register causal/branchial (consumed edges in descending-producer order for correct online TR). `Rewriter::apply_generation` applies a generation's disjoint matches together: one state, one event per match, the produced edges and fresh vertices in match order. `record_event` stores an event and registers it, for both.
 
 ## `gpu/include/hg_gpu/` -- CUDA port (headers)
