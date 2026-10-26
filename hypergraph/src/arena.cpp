@@ -12,6 +12,7 @@
 #endif
 #include <cstdlib>
 #include "hypergraph/scratch_alloc.hpp"
+#include "hgcommon/memory_limit.hpp"
 #include "hgcommon/pool_core.hpp"
 
 
@@ -75,6 +76,10 @@ static void note_block_grab(std::atomic<size_t>& live, std::atomic<size_t>& high
     const size_t now = live.fetch_add(bytes, std::memory_order_relaxed) + bytes;
     hgcommon::atomic_raise(high_water, now);
 }
+// arena_memory_limit(); 0 until resolved or set.
+static std::atomic<size_t> g_arena_memory_limit{0};
+// Bytes mapped by live AddressReserves, counted against the limit beside g_arena_block_bytes.
+static std::atomic<size_t> g_reserve_bytes{0};
 
 ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
     // Call destructors in reverse allocation order
@@ -312,13 +317,27 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
         }
         give_back_short();
     }
+    // The block's bytes are counted before the map, so threads mapping at once cannot together
+    // pass the limit.
+    const size_t held = g_arena_block_bytes.fetch_add(total, std::memory_order_relaxed) + total;
+    if (held + g_reserve_bytes.load(std::memory_order_relaxed) > arena_memory_limit()) {
+        g_arena_block_bytes.fetch_sub(total, std::memory_order_relaxed);
+        throw std::bad_alloc();
+    }
 #if defined(_WIN32)
     map_base = VirtualAlloc(nullptr, map_len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!map_base) throw std::bad_alloc();
+    if (!map_base) {
+        g_arena_block_bytes.fetch_sub(total, std::memory_order_relaxed);
+        throw std::bad_alloc();
+    }
 #else
     map_base = ::mmap(nullptr, map_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (map_base == MAP_FAILED) throw std::bad_alloc();
+    if (map_base == MAP_FAILED) {
+        g_arena_block_bytes.fetch_sub(total, std::memory_order_relaxed);
+        throw std::bad_alloc();
+    }
 #endif
+    hgcommon::atomic_raise(g_arena_block_bytes_high_water, held);
     mem = map_base;
     if (huge) {
         const uintptr_t base  = reinterpret_cast<uintptr_t>(map_base);
@@ -345,7 +364,9 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
 #endif
     block->offset.store(0, std::memory_order_relaxed);
     HG_ARENA_POISON(block->data, data_capacity);
+#if defined(HG_VERIFICATION)
     note_block_grab(g_arena_block_bytes, g_arena_block_bytes_high_water, sizeof(Block) + data_capacity);
+#endif
     return block;
 }
 
@@ -425,7 +446,10 @@ AddressReserve::AddressReserve(size_t bytes) {
     void* p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     base_ = p == MAP_FAILED ? nullptr : p;
 #endif
-    if (base_) bytes_ = bytes;
+    if (base_) {
+        bytes_ = bytes;
+        g_reserve_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
 }
 
 AddressReserve::~AddressReserve() { release(); }
@@ -437,9 +461,50 @@ void AddressReserve::release() {
 #elif !defined(HG_VERIFICATION)
     ::munmap(base_, bytes_);
 #endif
+    g_reserve_bytes.fetch_sub(bytes_, std::memory_order_relaxed);
     base_ = nullptr;
     bytes_ = 0;
 }
+
+size_t arena_memory_limit() {
+    const size_t set = g_arena_memory_limit.load(std::memory_order_relaxed);
+    if (set) return set;
+#if defined(HG_VERIFICATION)
+    return ~size_t{0};
+#else
+    const uint64_t r = hgcommon::resolved_memory_limit(hgcommon::TuningOverrides{});
+    size_t expected = 0;
+    const size_t resolved = r > uint64_t(~size_t{0}) ? ~size_t{0} : static_cast<size_t>(r);
+    return g_arena_memory_limit.compare_exchange_strong(expected, resolved,
+                                                        std::memory_order_relaxed)
+               ? resolved
+               : expected;
+#endif
+}
+
+void set_arena_memory_limit(size_t bytes) {
+    g_arena_memory_limit.store(bytes ? bytes : 1, std::memory_order_relaxed);
+}
+
+size_t end_of_run_reserve_bytes() {
+    const size_t quarter = arena_memory_limit() / 4;
+    return quarter < kEndOfRunReserveBytes ? quarter : kEndOfRunReserveBytes;
+}
+
+#if !defined(HG_VERIFICATION)
+JobMemoryLimit::JobMemoryLimit(const hgcommon::TuningOverrides& job)
+    : bytes_(hgcommon::resolved_memory_limit(job)),
+      arena_before_(arena_memory_limit()),
+      os_before_(hgcommon::process_memory_limit()) {
+    set_arena_memory_limit(bytes_ > uint64_t(~size_t{0}) ? ~size_t{0} : static_cast<size_t>(bytes_));
+    if (os_before_) hgcommon::set_process_memory_limit(bytes_);
+}
+
+JobMemoryLimit::~JobMemoryLimit() {
+    set_arena_memory_limit(arena_before_);
+    if (os_before_) hgcommon::set_process_memory_limit(os_before_);
+}
+#endif
 
 size_t arena_trim_block_pool(size_t keep_bytes) {
     return ConcurrentHeterogeneousArena::trim_block_pool(keep_bytes);

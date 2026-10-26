@@ -16,6 +16,7 @@
 //   GPUBacklog         HG_TUNE_GPU_BACKLOG           records   lane_backlog_of
 //   GPUMemoryLimit     HG_TUNE_GPU_MEMORY_LIMIT      bytes     resolved_memory_cap
 //   GPUL2Persist       HG_TUNE_GPU_L2_PERSIST        bytes     l2_persist_bytes (0: no window)
+//   MemoryLimit        HG_TUNE_MEMORY_LIMIT          bytes     resolved_memory_limit (memory_limit.hpp)
 //
 // HG_GPU_PERSISTENT_BLOCKS is read as HG_TUNE_GPU_BLOCKS when the latter is unset.
 
@@ -38,6 +39,7 @@ enum class Tune : uint8_t {
     GpuBacklog,
     GpuMemoryLimit,
     GpuL2Persist,
+    MemoryLimit,
     kCount
 };
 
@@ -55,6 +57,7 @@ inline constexpr std::array<TuneInfo, static_cast<size_t>(Tune::kCount)> kTuneIn
     {"GPUBacklog", "HG_TUNE_GPU_BACKLOG", 1},
     {"GPUMemoryLimit", "HG_TUNE_GPU_MEMORY_LIMIT", 1},
     {"GPUL2Persist", "HG_TUNE_GPU_L2_PERSIST", 0},
+    {"MemoryLimit", "HG_TUNE_MEMORY_LIMIT", int64_t{1} << 20},
 }};
 
 inline const TuneInfo& tune_info(Tune t) { return kTuneInfo[static_cast<size_t>(t)]; }

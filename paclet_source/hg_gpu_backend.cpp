@@ -5,6 +5,7 @@
 
 #include "hg_gpu/device_probe.hpp"
 #include "hgcommon/affinity.hpp"   // default_worker_count
+#include "hgcommon/memory_limit.hpp"   // process_memory_limit
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
@@ -1061,6 +1062,11 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         device.push_back({wxf::WXFValue("Threads"),
                           wxf::WXFValue(static_cast<int64_t>(
                               job.threads ? job.threads : hgcommon::default_worker_count()))});
+        device.push_back({wxf::WXFValue("MemoryLimit"),
+                          wxf::WXFValue(hgmarshal::memory_limit_value(job.memory_limit))});
+        device.push_back({wxf::WXFValue("OSMemoryLimit"),
+                          wxf::WXFValue(hgmarshal::memory_limit_value(
+                              hgcommon::process_memory_limit()))});
         full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
     }
 

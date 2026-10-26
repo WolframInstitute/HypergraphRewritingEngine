@@ -5,6 +5,7 @@ add_library(job_system STATIC
     src/affinity.cpp
     src/park.cpp
     src/capacity.cpp
+    src/memory_limit.cpp
 )
 target_include_directories(job_system PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

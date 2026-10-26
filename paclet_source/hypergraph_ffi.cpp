@@ -36,6 +36,7 @@
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
+#include "hgcommon/memory_limit.hpp"  // process_memory_limit, for "Device"
 #include "hgcommon/quotient_multiplicity_core.hpp"  // qm_sat_add
 #include "hgcommon/quotient_route.hpp"
 #include "hgcommon/explore_depth_core.hpp"  // kExploreNoDepth
@@ -807,6 +808,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
             static_cast<uint32_t>(req.tuning.get(hgcommon::Tune::GpuBacklog).value_or(0));
         if (const auto l2 = req.tuning.get(hgcommon::Tune::GpuL2Persist))
             job.l2_persist_limit = static_cast<uint64_t>(*l2);
+        job.memory_limit = req.memory_limit;
         job.step_statistics_branchial = branchial;
         job.step_statistics_matrix_limit = req.step_statistics_matrix_limit;
         job.include_vertex_curvature = req.include_vertex_curvature;
@@ -1050,9 +1052,13 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
     // when the reply runs out of memory as well. It outlives the engine, which the unwinding
     // frees first.
     std::vector<uint8_t> reduced;
+    uint64_t job_memory_limit = 0;
     try {
         hgffi::ParsedJob req;
         parse_job(wxf_bytes, host, req);
+        // Held until the reply is built, which allocates as well.
+        const hypergraph::JobMemoryLimit memory_limit(req.tuning);
+        req.memory_limit = job_memory_limit = memory_limit.bytes();
 
         // A Step from an empty "From" list names no frontier state: it expands nothing and
         // answers as a Query, on either device.
@@ -2343,6 +2349,11 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                               wxf::WXFValue(static_cast<int64_t>(engine.num_threads()))});
             device.push_back({wxf::WXFValue("CausalSetCapacity"),
                               wxf::WXFValue(static_cast<int64_t>(engine.causal_set_capacity()))});
+            device.push_back({wxf::WXFValue("MemoryLimit"),
+                              wxf::WXFValue(hgmarshal::memory_limit_value(req.memory_limit))});
+            device.push_back({wxf::WXFValue("OSMemoryLimit"),
+                              wxf::WXFValue(hgmarshal::memory_limit_value(
+                                  hgcommon::process_memory_limit()))});
             full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
         }
 
@@ -2419,7 +2430,12 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         throw std::runtime_error(hgmarshal::valid_utf8(std::string("WXF TypeError: ") + e.what()));
     } catch (const std::bad_alloc&) {
         if (!reduced.empty()) return wxf::Pieces::of(std::move(reduced));
-        throw;
+        throw std::runtime_error(
+            "memory exhausted: an allocation failed outside the evolution, and the host memory "
+            "limit is " +
+            std::to_string((job_memory_limit ? job_memory_limit
+                                             : uint64_t{hypergraph::arena_memory_limit()}) >> 20) +
+            " MB (\"MemoryLimit\" in \"Tuning\")");
     } catch (const std::exception& e) {
         // Error messages quote names from the request; the caller decodes them as UTF-8.
         throw std::runtime_error(hgmarshal::valid_utf8(e.what()));

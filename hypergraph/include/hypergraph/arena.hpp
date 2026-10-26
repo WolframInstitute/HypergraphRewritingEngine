@@ -1,6 +1,7 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 #include "hgcommon/cache_line.hpp"
+#include "hgcommon/tuning.hpp"
 #include "hypergraph/zero_value_init.hpp"
 #include "hypergraph/atomic_compat.hpp"
 
@@ -570,8 +571,9 @@ inline constexpr size_t kPooledBytesKeptBetweenJobs = size_t{64} << 20;
 // ADDRESS SPACE HELD BACK FOR THE END OF A RUN. A run that exhausts memory stops and returns what
 // it built (ParallelEvolutionEngine::raise_worker_error), and writing that result needs memory of
 // its own. The engine maps `bytes` it never touches when a run starts and unmaps them when an
-// allocation fails, so the mapping counts against the limit that failed (RLIMIT_AS, or the
-// Windows commit charge) and is free again for the result. Untouched, it is never resident.
+// allocation fails, so the mapping counts against the limit that failed (the arenas' check of
+// arena_memory_limit, RLIMIT_DATA, RLIMIT_AS, or the Windows commit charge) and is free again for
+// the result. Untouched, it is never resident.
 class AddressReserve {
 public:
     explicit AddressReserve(size_t bytes);
@@ -586,6 +588,34 @@ private:
 };
 // 256 MB.
 inline constexpr size_t kEndOfRunReserveBytes = size_t{256} << 20;
+// The reserve a run takes: kEndOfRunReserveBytes, at most a quarter of arena_memory_limit().
+size_t end_of_run_reserve_bytes();
+
+// THE ARENAS' CHECK OF THE HOST MEMORY LIMIT (hgcommon/memory_limit.hpp). Block::create throws
+// std::bad_alloc instead of mapping a block that would take the bytes held by arena blocks plus
+// the bytes held by AddressReserve above arena_memory_limit(). A pooled block is reused without
+// the check, since its bytes are mapped already. Until set, the limit is resolved_memory_limit
+// without job overrides. The limit and the bytes are process-wide, so jobs that run at the same
+// time in one process share one limit.
+size_t arena_memory_limit();
+void set_arena_memory_limit(size_t bytes);
+
+// The host memory limit of one job: resolved_memory_limit(job) for the arenas' check and, where
+// hg_evolve installed an operating-system limit, for that limit too. The destructor restores
+// both.
+class JobMemoryLimit {
+public:
+    explicit JobMemoryLimit(const hgcommon::TuningOverrides& job);
+    ~JobMemoryLimit();
+    JobMemoryLimit(const JobMemoryLimit&) = delete;
+    JobMemoryLimit& operator=(const JobMemoryLimit&) = delete;
+    uint64_t bytes() const { return bytes_; }
+
+private:
+    uint64_t bytes_;
+    size_t arena_before_;
+    uint64_t os_before_;
+};
 #if HG_ENGINE_STATS
 // Stats builds: bytes and calls per allocation site (the engine function that asked), the
 // largest first. Addresses are symbolised with addr2line against the binary.

@@ -108,6 +108,8 @@ struct ParsedJob {
     // "Threads" and "Tuning": the expert overrides of the derived tuning values
     // (hgcommon/tuning.hpp). Unset names take HG_TUNE_* or the derived value.
     hgcommon::TuningOverrides tuning;
+    // The host memory limit the job runs under (hypergraph::JobMemoryLimit), in bytes.
+    uint64_t memory_limit = 0;
     // With matches_per_step, N transitions of each step at positions drawn from the seed and the
     // step ("MatchesPerStep" replaces "MaxStatesPerStep"); without it matches_per_step has no
     // effect.

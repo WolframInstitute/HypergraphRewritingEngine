@@ -153,6 +153,8 @@ struct GpuJob {
     uint32_t lane_backlog = 0;
     // "Tuning" -> GPUL2Persist; ~0 is the derived value. Set after the job is built.
     uint64_t l2_persist_limit = ~uint64_t{0};
+    // The job's host memory limit in bytes (hypergraph::JobMemoryLimit), for "Device".
+    uint64_t memory_limit = 0;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same

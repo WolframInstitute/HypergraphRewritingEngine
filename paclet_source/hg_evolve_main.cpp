@@ -24,6 +24,7 @@
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
 #include "hgcommon/tuning.hpp"
+#include "hgcommon/memory_limit.hpp"
 #include "hypergraph/arena.hpp"
 #include "hypergraph/parallel_evolution.hpp"   // derived_causal_set_capacity
 #include "job_system/job_pool.hpp"
@@ -431,6 +432,18 @@ void print_tuning() {
                     "state at the default workers\n",
                     HG_NAMESPACE::engine::ParallelEvolutionEngine::derived_expand_chunk(
                         64, hgcommon::default_worker_count(HG_NAMESPACE::engine::MAX_ARENA_WORKERS)));
+    {
+        hgcommon::TuneSource src;
+        const uint64_t limit = hgcommon::resolved_memory_limit(hgcommon::TuningOverrides{}, &src);
+        std::printf("memory_limit            %s  (%s)\n",
+                    limit == hgcommon::kNoMemoryLimit ? "none" : mib(limit).c_str(),
+                    src == hgcommon::TuneSource::Environment
+                        ? "HG_TUNE_MEMORY_LIMIT"
+                        : "half of memory_total; \"Tuning\" -> MemoryLimit per job, at most "
+                          "memory_total");
+        std::printf("memory_limit.os         %s  (the arenas' check applies as well)\n",
+                    hgcommon::memory_limit_backend_name(hgcommon::memory_limit_backend()));
+    }
     const std::vector<unsigned> placed = hgcommon::default_worker_cpus();
     if (placed.empty()) {
         std::printf("worker_placement        operating system  (default_worker_cpus: %s)\n",
@@ -561,6 +574,17 @@ int main(int argc, char** argv) {
     }
 
     take_reply_stream();
+
+    // THE HOST MEMORY LIMIT (hgcommon/memory_limit.hpp), installed before any job, so an
+    // allocation beyond it fails in this process and the run returns a partial result. Each job
+    // sets it to its own "MemoryLimit" while it runs (hypergraph::JobMemoryLimit).
+    if (hgcommon::memory_limit_backend() != hgcommon::MemoryLimitBackend::None &&
+        !hgcommon::install_process_memory_limit(
+            hgcommon::resolved_memory_limit(hgcommon::TuningOverrides{}))) {
+        std::fprintf(stderr, "HGEvolve: the %s memory limit was not installed; the engine's "
+                     "arenas apply the limit alone\n",
+                     hgcommon::memory_limit_backend_name(hgcommon::memory_limit_backend()));
+    }
 
 #ifdef HG_GPU_BACKEND
     // Checked before any job, so a machine without a usable device gets one message naming the

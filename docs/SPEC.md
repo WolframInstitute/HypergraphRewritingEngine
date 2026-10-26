@@ -335,9 +335,20 @@ exact configuration. Sampling and capping options refine this as follows:
   the task that failed ends, the queued tasks are dropped unrun, and the states, events and
   relations already published are the result, with a warning association that holds
   `<|"Partial" -> 1|>` (`HGEvolve::overflow`). The host engine holds 256 MB of untouched address
-  space during a run and gives it back when an allocation fails (`AddressReserve`), for the
-  reply. A reply that does not fit the memory left carries the counts, the warnings and
-  `<|"Reduced" -> 1|>`, and `HGEvolve` gives empty lists for the rest.
+  space during a run, at most a quarter of the memory limit, and gives it back when an allocation
+  fails (`AddressReserve`), for the reply. A reply that does not fit the memory left carries the
+  counts, the warnings and `<|"Reduced" -> 1|>`, and `HGEvolve` gives empty lists for the rest.
+- **The host memory limit.** A job runs under a limit in bytes (`hgcommon::resolved_memory_limit`):
+  `"Tuning" -> <|"MemoryLimit" -> n|>`, else `HG_TUNE_MEMORY_LIMIT`, else half of physical memory,
+  and at most physical memory. Half leaves the rest of memory for the process that decodes the
+  reply. The engine's arenas refuse a block that would take the bytes they hold, with the
+  `AddressReserve`, above the limit (`hypergraph::JobMemoryLimit`), in every process. `hg_evolve`
+  also installs an operating-system limit at start and sets it to each job's limit while the job
+  runs: a Job Object with `JOB_OBJECT_LIMIT_PROCESS_MEMORY` and `JOB_OBJECT_LIMIT_JOB_MEMORY` on
+  Windows, and `RLIMIT_DATA` on Linux. macOS enforces no process memory limit, so there the arenas'
+  check is the only one. An allocation over either limit fails, and the run is a truncated run
+  with the warning "memory exhausted", which names the limit. `"Device"` reports the limit as
+  `"MemoryLimit"` and the operating-system limit, 0 where none is installed, as `"OSMemoryLimit"`.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*

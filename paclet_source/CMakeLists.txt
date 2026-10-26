@@ -188,7 +188,7 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
         # job_system IS NAMED HERE and the other two are not enough. hypergraph links it PUBLIC,
         # so on every other configuration its objects arrive transitively; on this one the
         # generated link line carries wxf.lib and hypergraph.lib and nothing else, and the DLL
-        # fails with eight undefined symbols that are exactly job_system's four sources --
+        # fails with undefined symbols from job_system's sources --
         # park.cpp (park_if_equal, unpark_all, unpark_one), job_pool.cpp (JobSlotPool::allocate,
         # ::deallocate), affinity.cpp (cache_domains_of, pin_this_thread_to_cpu) and
         # capacity.cpp (CapacityExhausted). The archive is present and correct (coff-arm64, the

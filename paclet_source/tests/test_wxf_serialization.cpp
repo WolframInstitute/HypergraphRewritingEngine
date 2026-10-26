@@ -2281,9 +2281,10 @@ struct WorkerPipes {
 // forked while the first is live would otherwise inherit the first's write end, and the first
 // would never see end of input when the test closes it. A nonzero `address_space` caps the
 // worker's RLIMIT_AS in bytes. A non-null `cuda_visible_devices` sets CUDA_VISIBLE_DEVICES for the
-// worker.
+// worker, and a non-null `memory_limit` sets HG_TUNE_MEMORY_LIMIT.
 bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0,
-                  const char* cuda_visible_devices = nullptr) {
+                  const char* cuda_visible_devices = nullptr,
+                  const char* memory_limit = nullptr) {
     static int next_worker = 0;
     w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo." + std::to_string(::getpid()) + "." +
             std::to_string(next_worker++);
@@ -2315,6 +2316,7 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
             ::setrlimit(RLIMIT_AS, &lim);
         }
         if (cuda_visible_devices) ::setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices, 1);
+        if (memory_limit) ::setenv("HG_TUNE_MEMORY_LIMIT", memory_limit, 1);
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
         const int err = errno;
         [[maybe_unused]] const ssize_t written = ::write(exec_pipe[1], &err, sizeof(err));
@@ -7243,5 +7245,135 @@ TEST(PartialResults, AReplyThatDoesNotFitEitherCarriesTheCounts) {
         GTEST_SKIP() << "ASan and TSan do not throw bad_alloc under a lowered RLIMIT_AS";
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_EXIT(evolve_past_the_memory_cap("States", true), ::testing::ExitedWithCode(0), "");
+}
+
+namespace {
+// A field of /proc/self/status in kB, such as "VmHWM:".
+long status_kb(const char* field) {
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    const size_t n = std::strlen(field);
+    while (std::getline(f, line))
+        if (line.compare(0, n, field) == 0) return std::atol(line.c_str() + n);
+    return 0;
+}
+
+// "Device" -> `field` of a reply ("MemoryLimit" or "OSMemoryLimit"), or -1.
+int64_t device_memory_limit(const std::vector<uint8_t>& out,
+                            const char* field = "MemoryLimit") {
+    int64_t limit = -1;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "Device") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string& f, wxf::Parser& fp) {
+            if (f == field) limit = fp.read<int64_t>();
+            else fp.skip_value();
+        });
+    });
+    return limit;
+}
+
+// The growth job of evolve_past_the_memory_cap under "Tuning" -> <|"MemoryLimit" -> 64 MB|>, run
+// in the calling process. The child caps its address space 1 GB above its size, so a run the
+// limit does not stop ends there. Exit 0 is a reply with more than 100 states, the "memory
+// exhausted" warning, "Device" -> "MemoryLimit" -> 64 MB and "OSMemoryLimit" -> 0 (no operating-
+// system limit in this process), from a run whose resident set grew by less than 128 MB; 5 is
+// any other reply, 7 an exception.
+void evolve_under_a_job_memory_limit() {
+    constexpr int64_t kLimit = int64_t{64} << 20;
+    auto opts = [&](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents", "Device"});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Threads"));
+        ww.write(int64_t{2});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Tuning"));
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        ww.write_varint(1);
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("MemoryLimit"));
+        ww.write(kLimit);
+    };
+    const auto job = build_input(kSeed, kLhs, kRhs, 12, opts, 3);
+    const rlim_t cap = static_cast<rlim_t>(vm_size_kb_now() + 1024 * 1024) * 1024;
+    rlimit r{cap, cap};
+    if (setrlimit(RLIMIT_AS, &r) != 0) std::_Exit(3);
+    {
+        std::ofstream clear("/proc/self/clear_refs");
+        clear << "5";   // VmHWM := VmRSS
+    }
+    const long rss_before = status_kb("VmRSS:");
+    HostBridge host;
+    try {
+        const auto out = run_rewriting_core(job, host);
+        const long grown_kb = status_kb("VmHWM:") - rss_before;
+        const int64_t states = read_int_key(out, "NumStates");
+        const bool ok = states > 100 && reply_mentions(out, "memory exhausted") &&
+                        reply_mentions(out, "TRUNCATED") && device_memory_limit(out) == kLimit &&
+                        device_memory_limit(out, "OSMemoryLimit") == 0 && grown_kb < 128 * 1024;
+        std::fprintf(stderr, "states %lld, resident set grew %ld kB, Device MemoryLimit %lld\n",
+                     static_cast<long long>(states), grown_kb,
+                     static_cast<long long>(device_memory_limit(out)));
+        std::_Exit(ok ? 0 : 5);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        std::_Exit(7);
+    }
+}
+}  // namespace
+
+// "MemoryLimit" in "Tuning" stops the run in the calling process through the arenas' check (the
+// paclet's library and the Python module run the engine this way), with a partial result.
+TEST(PartialResults, AJobOverItsMemoryLimitReturnsWhatItBuilt) {
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1')
+        GTEST_SKIP() << "ASan and TSan do not throw bad_alloc under a lowered RLIMIT_AS";
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(evolve_under_a_job_memory_limit(), ::testing::ExitedWithCode(0), "");
+}
+
+// hg_evolve started with HG_TUNE_MEMORY_LIMIT = 64 MB sets its RLIMIT_DATA to 64 MB, and the
+// growth job of evolve_past_the_memory_cap on two workers returns a partial result with the
+// warning, from a process whose resident set stays below 160 MB. A small job after it gives its
+// whole result.
+TEST(PartialResults, HgEvolveUnderItsMemoryLimitReturnsWhatItBuilt) {
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    constexpr int64_t kLimit = int64_t{64} << 20;
+    WorkerPipes w;
+    ASSERT_TRUE(worker_start(w, cpu_binary_path(), 0, nullptr, "67108864")) << w.last_error;
+    const std::string proc = "/proc/" + std::to_string(w.pid);
+    auto proc_line = [&](const char* file, const char* prefix) {
+        std::ifstream f(proc + file);
+        std::string line;
+        while (std::getline(f, line))
+            if (line.rfind(prefix, 0) == 0) return line.substr(std::strlen(prefix));
+        return std::string();
+    };
+    auto opts = [&](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents", "Device"});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Threads"));
+        ww.write(int64_t{2});
+    };
+    const auto grown = worker_call(w, build_input(kSeed, kLhs, kRhs, 12, opts, 2));
+    // Read while the worker is alive: the soft limit, then the resident set's peak.
+    const std::string data_limit = proc_line("/limits", "Max data size");
+    const long hwm_kb = std::atol(proc_line("/status", "VmHWM:").c_str());
+    const auto small = worker_call(w, build_input(kSeed, kLhs, kRhs, 3, opts, 2));
+    worker_stop(w);
+    EXPECT_EQ(std::atoll(data_limit.c_str()), kLimit) << data_limit;
+    ASSERT_FALSE(grown.empty()) << w.last_error;
+    EXPECT_GT(read_int_key(grown, "NumStates"), 100);
+    EXPECT_TRUE(reply_mentions(grown, "memory exhausted"));
+    EXPECT_TRUE(reply_mentions(grown, "TRUNCATED"));
+    EXPECT_EQ(device_memory_limit(grown), kLimit);
+    EXPECT_EQ(device_memory_limit(grown, "OSMemoryLimit"), kLimit);
+    EXPECT_LT(hwm_kb, 160 * 1024);
+    ASSERT_FALSE(small.empty()) << w.last_error;
+    EXPECT_FALSE(reply_mentions(small, "TRUNCATED"));
+    HostBridge host;
+    EXPECT_EQ(read_int_key(small, "NumStates"),
+              read_int_key(run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3, opts, 2), host),
+                           "NumStates"));
 }
 #endif

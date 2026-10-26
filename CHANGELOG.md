@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The engine has a host memory limit, `"Tuning" -> <|"MemoryLimit" -> bytes|>` or the
+  environment variable `HG_TUNE_MEMORY_LIMIT`. The default is half of physical memory, and a value
+  above physical memory is lowered to it. An evolution that reaches the limit stops and gives a
+  partial result with `HGEvolve::overflow`. `hg_evolve` puts itself under an operating-system
+  limit at start: a Job Object on Windows, `RLIMIT_DATA` on Linux. In every process, including the
+  paclet's library and on macOS, the engine's own allocators stop at the limit as well. The
+  `"Device"` property gives the limit as `"MemoryLimit"` and the operating-system limit as
+  `"OSMemoryLimit"`.
 - `"UndirectedEdges" -> True` reads every hyperedge of two vertices as an unordered pair. A
   left-hand edge `{x, y}` matches a hyperedge in either order, two bindings that consume the same
   hyperedges and differ by a symmetry of the rule are one match, and the canonical hash does not

@@ -140,6 +140,12 @@ constexpr int64_t kGenesisIdBase = int64_t{1} << 32;
 constexpr int64_t kGenesisStateId = kGenesisIdBase;
 inline int64_t genesis_event_id(size_t i) { return kGenesisIdBase + static_cast<int64_t>(i); }
 
+// The "MemoryLimit" and "OSMemoryLimit" entries of "Device": a limit in bytes, at most 2^63 - 1
+// (the value of "MemoryLimit" when physical memory is unknown).
+inline int64_t memory_limit_value(uint64_t bytes) {
+    return bytes > uint64_t(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(bytes);
+}
+
 // Resolve branchial_step into an absolute target step (0 means "no filter").
 uint32_t branchial_target_step(int branchial_step, int steps, bool& filter_by_step);
 
