@@ -362,9 +362,13 @@ hgReportWorkerLog[log_List] := If[log =!= {},
     If[Length[log] > $hgWorkerLogMax,
       " (" <> ToString[Length[log] - $hgWorkerLogMax] <> " more pieces left out)", ""]]];
 
-(* Run one job on the device's worker, starting one when none is running. Returns the reply bytes,
-   hgEngineError[message] when the engine refused the job, hgWorkerLost[] when the worker ended
-   during the job, or $Failed when no worker could be started. *)
+(* Run one job on the device's worker, starting one when none is running. A start that fails adds
+   one to $hgWorkerStartFailures[device], and a start that succeeds removes the device's count;
+   with $hgWorkerStartTries failures counted, no start is tried (an HGSessionOpen clears the count,
+   hgSendJob). The worker's log frames of the call, its start included, are issued as
+   HGEvolve::enginelog (hgReportWorkerLog). Returns the reply bytes, hgEngineError[message] when
+   the engine refused the job, hgWorkerLost[] when the worker ended during the job, or $Failed when
+   no worker was started. *)
 hgWorkerTry[device_, wxfBytes_ByteArray] := Module[
   {proc, payload = $Failed, written = False, done = False, started = True, log},
   If[Lookup[$hgWorkerStartFailures, device, 0] >= $hgWorkerStartTries, Return[$Failed]];

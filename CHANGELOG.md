@@ -9,8 +9,10 @@
   `hg_evolve --serve-socket` is removed. A worker that ends during an evaluation gives
   `HGEvolve::workerlost`, and the next evaluation starts a new one.
 
-- A worker that does not answer the start-up handshake is retried by the next evaluation, up to
-  three evaluations in a row; until then each evaluation runs in a one-shot `hg_evolve`. Warnings
+- An evaluation whose engine worker does not start or does not answer the start-up handshake runs
+  in a one-shot `hg_evolve`, and the next evaluation tries to start a worker again. After three
+  such evaluations in a row, the device's evaluations run in one-shot `hg_evolve` processes without
+  trying, until `HGSessionOpen` on that device clears the count. Warnings
   the worker writes as it starts are issued with the first evaluation's `HGEvolve::enginelog`. An
   abort during a worker's start no longer leaves the worker running, and output the worker writes
   after a result is read by the next evaluation instead of being lost (which could stop the next
