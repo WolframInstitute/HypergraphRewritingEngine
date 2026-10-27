@@ -101,8 +101,8 @@ TEST(StateTopology, DetMathTrigonometryWithinOneUlpScale) {
         double s = 0.0, c = 0.0;
         hgcommon::dm_sincos_pi(t, s, c);
         worst = std::fmax(worst, std::fabs(hgcommon::dm_acos01(t) - std::acos(t)));
-        worst = std::fmax(worst, std::fabs(s - std::sin(M_PI * t)));
-        worst = std::fmax(worst, std::fabs(c - std::cos(M_PI * t)));
+        worst = std::fmax(worst, std::fabs(s - std::sin(hgcommon::kDmPi * t)));
+        worst = std::fmax(worst, std::fabs(c - std::cos(hgcommon::kDmPi * t)));
     }
     EXPECT_LE(worst, 1e-15);
     EXPECT_EQ(hgcommon::dm_acos01(1.0), 0.0);
@@ -147,7 +147,7 @@ TEST(StateTopology, MetricTensorGapOfTheGrid) {
         const double t = (i + 0.5) / N;
         double F = 0.0;
         for (double x : values) F += x <= t ? 1.0 : 0.0;
-        acc += std::fabs(F / values.size() - (1.0 - std::acos(t) / M_PI));
+        acc += std::fabs(F / values.size() - (1.0 - std::acos(t) / hgcommon::kDmPi));
     }
     EXPECT_NEAR(g.metric_tensor_gap, acc / N, 1e-9);
     // R' < 2: undefined.

@@ -2664,6 +2664,9 @@ TEST(GpuBinaryGate, AWorkerJobSequenceMatchesTheCpuJobByJob) {
     worker_stop(w);
 }
 
+#endif  // _WIN32
+
+// The state-matrix readers below are used by tests outside the POSIX-only blocks.
 namespace {
 
 // A state matrix read back: a packed array of reals, or a SparseArray (Writer::write_sparse_reals)
@@ -2762,6 +2765,8 @@ std::vector<std::vector<std::pair<std::string, std::vector<uint8_t>>>> keys_but_
 }
 
 }  // namespace
+
+#ifndef _WIN32
 
 // The StepStatisticsBranchial metrics are admitted by one rule on both devices, so the two
 // StepStatistics payloads are byte-equal across Graph/Overlap x None/Automatic/Full states x
