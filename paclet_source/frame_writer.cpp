@@ -144,8 +144,11 @@ bool FrameWriter::drain_rings() {
         LogRing* r = rings.at(i);
         if (!r) continue;
         while (r->pop([&](MessageKind kind, uint32_t parts, auto part) {
-            std::size_t length = 0;
-            for (uint32_t p = 0; p < parts; ++p) length += part(p).length;
+            std::size_t length = 0, escaped = 0;
+            for (uint32_t p = 0; p < parts; ++p) {
+                length += part(p).length;
+                escaped += hgcommon::utf8_escaped_length(part(p).text, part(p).length);
+            }
             if (kind == MessageKind::Capture) {
                 if (capture_forwarded_ + length > kCaptureBytesPerJob) {
                     capture_omitted_ += length;
@@ -153,11 +156,13 @@ bool FrameWriter::drain_rings() {
                 }
                 capture_forwarded_ += length;
             }
-            // One frame for the whole message.
+            // One frame for the whole message; each slot ends at a character boundary, so the
+            // slots are escaped one at a time.
             write_header((kind == MessageKind::Progress ? kProgressFrameBit : kLogFrameBit) |
-                         length);
+                         escaped);
             for (uint32_t p = 0; p < parts; ++p)
-                std::fwrite(part(p).text, 1, part(p).length, out_);
+                hgcommon::utf8_escaped(part(p).text, part(p).length,
+                                       [&](const char* s, std::size_t k) { std::fwrite(s, 1, k, out_); });
         }))
             any = true;
         if (const uint64_t lost = r->dropped.exchange(0, std::memory_order_relaxed)) {
@@ -190,7 +195,10 @@ void FrameWriter::finish_handoff() {
         for (const auto& part : reply_->parts)
             if (!part.empty()) std::fwrite(part.data(), 1, part.size(), out_);
     } else if (error_) {
-        write_frame(kErrorFrameBit | error_->size(), error_->data(), error_->size());
+        write_header(kErrorFrameBit |
+                     hgcommon::utf8_escaped_length(error_->data(), error_->size()));
+        hgcommon::utf8_escaped(error_->data(), error_->size(),
+                               [&](const char* s, std::size_t k) { std::fwrite(s, 1, k, out_); });
     }
     std::fflush(out_);
     reply_ = nullptr;

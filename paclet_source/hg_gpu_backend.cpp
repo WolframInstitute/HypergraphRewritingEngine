@@ -6,6 +6,7 @@
 #include "hg_gpu/device_probe.hpp"
 #include "hgcommon/affinity.hpp"   // default_worker_count
 #include "hgcommon/memory_limit.hpp"   // process_memory_limit
+#include "hgcommon/utf8.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
@@ -1042,7 +1043,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         const hg_gpu::DeviceProbe& probe = hg_gpu::probe_device();
         wxf::WXFValueAssociation device;
         device.push_back({wxf::WXFValue("Type"), wxf::WXFValue("GPU")});
-        device.push_back({wxf::WXFValue("Name"), wxf::WXFValue(hgmarshal::valid_utf8(probe.name))});
+        device.push_back({wxf::WXFValue("Name"), wxf::WXFValue(hgcommon::utf8_escaped(probe.name))});
         device.push_back({wxf::WXFValue("ComputeCapability"),
                           wxf::WXFValue(std::to_string(probe.major) + "." +
                                         std::to_string(probe.minor))});

@@ -19,7 +19,8 @@
 - `HGSessionOpen`, `HGSessionStep` and `HGSessionQuery` accept the `"InitialCondition"` property.
 
 - Each message the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output)
-  arrives whole: a progress message is one line however long.
+  arrives whole: a progress message is one line however long. A byte of library output that is
+  not part of a UTF-8 character appears as `\xHH`.
 
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`

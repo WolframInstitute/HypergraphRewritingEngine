@@ -21,7 +21,9 @@
 // barrier and signals only when the writer has announced itself idle.
 //
 // A message takes as many slots as its length needs, cut at UTF-8 character boundaries
-// (hgcommon/utf8.hpp), and is published whole or dropped whole. The writer sends it as one frame.
+// (hgcommon/utf8.hpp), and is published whole or dropped whole. The writer sends it as one frame,
+// with each byte that is not part of a UTF-8 character written as the four characters \xHH, so
+// every frame decodes as UTF-8 (library output in a Windows code page included).
 //
 // THIRD-PARTY OUTPUT. The CUDA runtime prints device printf to fd 1, and drivers and libraries
 // write to fd 1 and fd 2. start_output_capture points both at a pipe the worker owns; its thread

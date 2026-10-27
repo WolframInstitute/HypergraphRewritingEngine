@@ -139,12 +139,9 @@ uint64_t dropped_in(const std::string& text) {
     return std::stoull(text.substr(10, at - 10));
 }
 
-// True when `s` is whole UTF-8 characters: it neither starts with a continuation byte nor ends
-// inside a character.
+// True when every byte of `s` is part of a UTF-8 character (hgcommon/utf8.hpp's rule).
 bool whole_characters(const std::string& s) {
-    if (s.empty()) return true;
-    if ((static_cast<unsigned char>(s[0]) & 0xC0) == 0x80) return false;
-    return hgcommon::utf8_complete_prefix(s.data(), s.size()) == s.size();
+    return hgcommon::utf8_escaped_length(s.data(), s.size()) == s.size();
 }
 
 }  // namespace
@@ -305,6 +302,22 @@ TEST(FrameWriter, AMessageIsDeliveredWholeOrDroppedWhole) {
     }
     EXPECT_EQ(whole, 21);
     EXPECT_EQ(dropped, 9u);
+}
+
+// Bytes that are not part of a UTF-8 character (a Windows code-page library's output) arrive as
+// \xHH, so the frame decodes as UTF-8; whole characters arrive as they were.
+TEST(FrameWriter, BytesThatAreNotUtf8ArriveEscaped) {
+    const std::string text = "caf\xE9 \xC3\xA9 \xFF\xE2\x82";
+    WriterOnPipe w;
+    std::thread([&] {
+        hgframe::post_message(hgframe::MessageKind::Capture, text.data(), text.size());
+    }).join();
+    std::vector<std::string> payloads;
+    for (const Frame& f : w.finish())
+        if (f.kind == hgframe::kLogFrameBit) payloads.push_back(f.payload);
+    ASSERT_EQ(payloads.size(), 1u);
+    EXPECT_EQ(payloads[0], "caf\\xE9 \xC3\xA9 \\xFF\\xE2\\x82");
+    EXPECT_TRUE(whole_characters(payloads[0]));
 }
 
 // The capture loop reads a pipe 1000 bytes at a time. Output whose characters straddle the read

@@ -38,6 +38,7 @@
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
 #include "hgcommon/memory_limit.hpp"  // process_memory_limit, for "Device"
+#include "hgcommon/utf8.hpp"  // utf8_escaped, for error messages
 #include "hgcommon/quotient_multiplicity_core.hpp"  // qm_sat_add
 #include "hgcommon/quotient_route.hpp"
 #include "hgcommon/explore_depth_core.hpp"  // kExploreNoDepth
@@ -2393,7 +2394,7 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
         undelivered_open.handle = 0;
 
     } catch (const wxf::TypeError& e) {
-        throw std::runtime_error(hgmarshal::valid_utf8(std::string("WXF TypeError: ") + e.what()));
+        throw std::runtime_error(hgcommon::utf8_escaped(std::string("WXF TypeError: ") + e.what()));
     } catch (const std::bad_alloc&) {
         if (reply.has_reduced()) {
             reply.use_reduced();
@@ -2407,7 +2408,7 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
             " MB (\"MemoryLimit\" in \"Tuning\")");
     } catch (const std::exception& e) {
         // Error messages quote names from the request; the caller decodes them as UTF-8.
-        throw std::runtime_error(hgmarshal::valid_utf8(e.what()));
+        throw std::runtime_error(hgcommon::utf8_escaped(e.what()));
     }
 }
 

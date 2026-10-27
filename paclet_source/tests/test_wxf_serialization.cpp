@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "hgcommon/utf8.hpp"
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/reply_out.hpp"
@@ -6614,9 +6615,9 @@ TEST(FfiInput, AWarningQuotesACorruptOptionKeyAsValidUtf8) {
     const auto ctx = warning_contexts(out);
     ASSERT_EQ(ctx.size(), 1u);
     EXPECT_NE(ctx[0].find("option 'Re\\xFEues\\xB3edData'"), std::string::npos) << ctx[0];
-    EXPECT_EQ(hgmarshal::valid_utf8("caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80"),
+    EXPECT_EQ(hgcommon::utf8_escaped(std::string("caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80")),
               "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80");
-    EXPECT_EQ(hgmarshal::valid_utf8("\xC0\x80\xED\xA0\x80\xF4\x90\x80\x80\xE2\x82"),
+    EXPECT_EQ(hgcommon::utf8_escaped(std::string("\xC0\x80\xED\xA0\x80\xF4\x90\x80\x80\xE2\x82")),
               "\\xC0\\x80\\xED\\xA0\\x80\\xF4\\x90\\x80\\x80\\xE2\\x82");
 }
 
