@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -344,22 +345,21 @@ TEST(FrameWriter, CapturedOutputKeepsCharactersWhole) {
 }
 
 // start_output_capture points fd 1 and fd 2, and on Windows the standard output and error handles,
-// at the capture pipe. Text written each way arrives as log frames. The test restores the
-// descriptors and handles afterwards, which closes the pipe and ends the capture thread.
-TEST(FrameWriter, TheCaptureCarriesBothStreams) {
+// at the capture pipe. Text written each way arrives as log frames. The capture changes the
+// process's descriptors and stdio buffering for good, so it runs in a child process (a gtest death
+// test, "threadsafe" style: the child re-executes the binary), which exits 0 when every marker
+// arrived within 10 s and otherwise writes the missing ones to its original stderr and exits 1.
+namespace {
+void capture_child() {
     std::fflush(stdout);
     std::fflush(stderr);
 #if defined(_WIN32)
-    const int saved_out = _dup(1), saved_err = _dup(2);
-    const HANDLE saved_out_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    const HANDLE saved_err_handle = GetStdHandle(STD_ERROR_HANDLE);
+    const int saved_err = _dup(2);
 #else
-    const int saved_out = ::dup(1), saved_err = ::dup(2);
+    const int saved_err = ::dup(2);
 #endif
-    ASSERT_GE(saved_out, 0);
-    ASSERT_GE(saved_err, 0);
     WriterOnPipe w;
-    ASSERT_TRUE(hgframe::start_output_capture());
+    if (!hgframe::start_output_capture()) std::_Exit(2);
     std::fprintf(stdout, "capture-marker-stdout\n");
     std::fprintf(stderr, "capture-marker-stderr\n");
     std::vector<std::string> expected = {"capture-marker-stdout", "capture-marker-stderr"};
@@ -371,39 +371,34 @@ TEST(FrameWriter, TheCaptureCarriesBothStreams) {
     WriteFile(GetStdHandle(STD_ERROR_HANDLE), err_text, sizeof err_text - 1, &written, nullptr);
     expected.push_back("capture-marker-out-handle");
     expected.push_back("capture-marker-err-handle");
-    _dup2(saved_out, 1);
-    _dup2(saved_err, 2);
-    SetStdHandle(STD_OUTPUT_HANDLE, saved_out_handle);
-    SetStdHandle(STD_ERROR_HANDLE, saved_err_handle);
-    _close(saved_out);
-    _close(saved_err);
-#else
-    ::dup2(saved_out, 1);
-    ::dup2(saved_err, 2);
-    ::close(saved_out);
-    ::close(saved_err);
 #endif
-    // The capture thread posts what it reads as it reads it; the replies below collect the frames
-    // until every marker has arrived, for at most 10 s.
+    // The capture thread posts what it reads as it reads it; each writer below collects the
+    // frames written until it stops.
     std::string captured;
-    HG_NAMESPACE::wxf::Pieces reply;
-    reply.parts.push_back({7});
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    auto all_found = [&] {
-        for (const auto& m : expected)
-            if (captured.find(m) == std::string::npos) return false;
-        return true;
+    auto missing = [&] {
+        std::string m;
+        for (const auto& e : expected)
+            if (captured.find(e) == std::string::npos) m += e + "\n";
+        return m;
     };
-    std::vector<Frame> frames = w.finish();
-    for (const Frame& f : frames)
+    for (const Frame& f : w.finish())
         if (f.kind == hgframe::kLogFrameBit) captured += f.payload;
-    while (!all_found() && std::chrono::steady_clock::now() < deadline) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!missing().empty() && std::chrono::steady_clock::now() < deadline) {
         WriterOnPipe again;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         for (const Frame& f : again.finish())
             if (f.kind == hgframe::kLogFrameBit) captured += f.payload;
     }
-    for (const auto& m : expected) EXPECT_NE(captured.find(m), std::string::npos) << m;
+    const std::string m = missing();
+    if (!m.empty()) write_fd(saved_err, m.data(), m.size());
+    std::_Exit(m.empty() ? 0 : 1);
+}
+}  // namespace
+
+TEST(FrameWriter, TheCaptureCarriesBothStreams) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(capture_child(), ::testing::ExitedWithCode(0), "");
 }
 
 #if defined(__linux__)
