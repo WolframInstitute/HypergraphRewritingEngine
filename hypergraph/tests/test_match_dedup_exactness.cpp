@@ -15,6 +15,7 @@
 // key-only set answers the second one wrongly by construction, no matter how good the hash is.
 
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -37,8 +38,8 @@ MatchCore make_core(uint16_t rule, std::initializer_list<EdgeId> edges) {
 // The defect, driven directly. Two matches that differ in their matched edges are handed the
 // same hash. Both are new work; both must be claimed.
 TEST(MatchDedupExactness, DistinctMatchesSharingAHashAreBothClaimed) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
 
     const MatchCore a = make_core(0, {7});
     const MatchCore b = make_core(0, {9});     // a different match, not a duplicate
@@ -59,8 +60,8 @@ TEST(MatchDedupExactness, DistinctMatchesSharingAHashAreBothClaimed) {
 // The other half of the contract: real duplicates must still be rejected, or the dedup has
 // simply been disabled and every match would be rewritten repeatedly.
 TEST(MatchDedupExactness, TrueDuplicatesAreStillRejected) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
 
     const MatchCore a = make_core(0, {7});
     const MatchRecord ra{&a, 3};
@@ -76,8 +77,8 @@ TEST(MatchDedupExactness, TrueDuplicatesAreStillRejected) {
 // MatchCore. A comparison that only looked at the core would conflate the same core reached from
 // two different raw states -- which is precisely the case the hash comment warns about.
 TEST(MatchDedupExactness, SameCoreFromDifferentSourceStatesAreDistinct) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
 
     const MatchCore a = make_core(0, {7});
     const MatchRecord in_s3{&a, 3};
@@ -92,8 +93,8 @@ TEST(MatchDedupExactness, SameCoreFromDifferentSourceStatesAreDistinct) {
 // Several distinct matches on one key, to confirm the probe walk resolves rather than giving up
 // after the first step.
 TEST(MatchDedupExactness, ManyDistinctMatchesOnOneKeyAllResolve) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
 
     constexpr int kN = 6;
     std::vector<MatchRecord> cores_rec;

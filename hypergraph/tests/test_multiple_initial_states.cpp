@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/parallel_evolution.hpp"
 #include <set>
 #include <iostream>
@@ -20,8 +21,8 @@ protected:
 // === BASIC FUNCTIONALITY TESTS ===
 
 TEST_F(MultipleInitialStates, TwoInitialStates) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_test_rule());
 
     // Two different initial states
@@ -37,8 +38,8 @@ TEST_F(MultipleInitialStates, TwoInitialStates) {
 }
 
 TEST_F(MultipleInitialStates, ThreeInitialStates) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_test_rule());
 
     // Three different initial states
@@ -55,8 +56,8 @@ TEST_F(MultipleInitialStates, ThreeInitialStates) {
 }
 
 TEST_F(MultipleInitialStates, SingleStateViaMultiStateAPI) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_test_rule());
 
     // Single state wrapped in vector
@@ -73,8 +74,8 @@ TEST_F(MultipleInitialStates, SingleStateViaMultiStateAPI) {
 // === EDGE CASE TESTS ===
 
 TEST_F(MultipleInitialStates, EmptyStatesList) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_test_rule());
 
     std::vector<std::vector<std::vector<VertexId>>> initial_states = {};
@@ -87,8 +88,8 @@ TEST_F(MultipleInitialStates, EmptyStatesList) {
 }
 
 TEST_F(MultipleInitialStates, StateWithNoMatches) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_test_rule());  // Rule matches binary edges
 
     // State with ternary edge (won't match binary edge rule)
@@ -106,8 +107,8 @@ TEST_F(MultipleInitialStates, StateWithNoMatches) {
 // === EVOLUTION BEHAVIOR TESTS ===
 
 TEST_F(MultipleInitialStates, MultiStepEvolution) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_test_rule());
 
     std::vector<std::vector<std::vector<VertexId>>> initial_states = {
@@ -136,8 +137,8 @@ TEST_F(MultipleInitialStates, DeterministicBehavior) {
     std::set<size_t> state_counts, event_counts;
 
     for (int run = 0; run < 3; ++run) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(create_test_rule());
         engine.evolve(initial_states, 2);
 
@@ -168,8 +169,8 @@ TEST_F(MultipleInitialStates, MultiEdgeRuleWithMultipleInitialStates) {
 
     // Test 2 steps
     {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(rule);
         engine.evolve(initial_states, 2);
 
@@ -182,8 +183,8 @@ TEST_F(MultipleInitialStates, MultiEdgeRuleWithMultipleInitialStates) {
 
     // Test 3 steps
     {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(rule);
         engine.evolve(initial_states, 3);
 

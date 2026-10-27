@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 
 #include <algorithm>
 #include <atomic>
@@ -5933,8 +5934,8 @@ std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
     bool recurrent = false, bool record_in_run = true,
     std::vector<std::pair<uint32_t, uint32_t>>* over_limit = nullptr,
     uint64_t matrix_limit = 0) {
-    hypergraph::Hypergraph hg;
-    hypergraph::ParallelEvolutionEngine engine(&hg, threads);
+    auto hg_heap = std::make_unique<hypergraph::Hypergraph>(); hypergraph::Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<hypergraph::ParallelEvolutionEngine>(&hg, threads); hypergraph::ParallelEvolutionEngine& engine = *engine_heap;
     hgcommon::RecordSet rs;
     rs.causal = false;
     rs.branchial = (which & hg::stats::kBranchialGraph) != 0;
@@ -6255,8 +6256,8 @@ TEST(StateStatistics, VertexInvariantsPoolTheVerticesOfAStep) {
 // 0.0076 (reference/verify_state_statistics.wls, CorpusLoops). The exact kurtosis is 5/2;
 // from double power sums the engine gave 2.4999999967.
 TEST(StateStatistics, VertexInvariantMomentsOfANarrowDistribution) {
-    hypergraph::Hypergraph hg;
-    hypergraph::ParallelEvolutionEngine engine(&hg, 4);
+    auto hg_heap = std::make_unique<hypergraph::Hypergraph>(); hypergraph::Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<hypergraph::ParallelEvolutionEngine>(&hg, 4); hypergraph::ParallelEvolutionEngine& engine = *engine_heap;
     hgcommon::RecordSet rs;
     rs.causal = false;
     rs.branchial = false;

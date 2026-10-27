@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -59,11 +60,11 @@ struct Obs {
 };
 
 Obs run(const Case& c, bool quotient, bool positional, int threads) {
-    Hypergraph g;
+    auto g_heap = std::make_unique<Hypergraph>(); Hypergraph& g = *g_heap;
     g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     g.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
     g.set_positional_event_identity(positional);
-    ParallelEvolutionEngine e(&g, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&g, threads); ParallelEvolutionEngine& e = *e_heap;
     e.set_transitive_reduction(true);
     e.set_explore_from_canonical_states_only(quotient);
     for (const auto& r : c.rules) e.add_rule(r);

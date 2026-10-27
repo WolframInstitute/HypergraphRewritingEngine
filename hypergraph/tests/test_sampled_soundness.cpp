@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -66,10 +67,10 @@ struct Sets {
 };
 
 Sets run(const Workload& w, double q, int threads) {
-    Hypergraph g;
+    auto g_heap = std::make_unique<Hypergraph>(); Hypergraph& g = *g_heap;
     g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     g.set_event_signature_keys(hgcommon::EVENT_SIG_FULL);
-    ParallelEvolutionEngine e(&g, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&g, threads); ParallelEvolutionEngine& e = *e_heap;
     e.set_transitive_reduction(false);
     e.set_transition_rate(q);
     e.set_random_seed(0xABCDEF);

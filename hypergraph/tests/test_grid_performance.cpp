@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/hypergraph.hpp"
 #include <chrono>
@@ -86,8 +87,8 @@ TEST(GridPerformanceTest, ProfiledEvolution) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
 
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg);  // Use all cores
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg); ParallelEvolutionEngine& engine = *engine_heap;  // Use all cores
 
     RewriteRule blackhole_rule = make_rule(0)
         .lhs({0, 1})  // {x, y}

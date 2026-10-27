@@ -70,7 +70,7 @@ protected:
         auto hg = std::make_unique<hg::engine::Hypergraph>();
         hg->set_event_signature_keys(event_keys);
 
-        hg::engine::ParallelEvolutionEngine engine(hg.get(), 0);  // Use all threads
+        auto engine_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(hg.get(), 0); hg::engine::ParallelEvolutionEngine& engine = *engine_heap;  // Use all threads
         for (const auto& rule : rules) {
             engine.add_rule(rule);
         }

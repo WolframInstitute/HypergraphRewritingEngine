@@ -19,6 +19,7 @@
 // shows only that one interleaving was clean.
 
 #include <gtest/gtest.h>
+#include <memory>
 
 #include <array>
 #include <cstdio>
@@ -40,9 +41,9 @@ struct Outcome {
 };
 
 Outcome run_validated(const oracle::Case& c, unsigned threads, bool batched, bool task_based) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine engine(&hg, threads);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
     engine.set_match_forwarding(true);
     engine.set_validate_match_forwarding(true);
     engine.set_batched_matching(batched);
@@ -100,9 +101,9 @@ TEST(MatchCompleteness, EveryStateHoldsEveryMatchAtItsDrain) {
 // Every corpus case, full and quotient exploration, one and four workers.
 TEST(MatchCompleteness, ForwardedRunContinuedStepwiseMatchesOneRun) {
     auto run = [](const oracle::Case& c, unsigned threads, bool quotient, bool stepped) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_match_forwarding(true);
         e.set_explore_from_canonical_states_only(quotient);
         for (const auto& r : c.rules) e.add_rule(r);
@@ -142,17 +143,17 @@ TEST(MatchCompleteness, AStoppedRunContinuedMatchesOneRunUnderRepetition) {
     const std::vector<std::vector<VertexId>> init = {{0, 1}, {1, 2}};
     const size_t depth = 4;
     for (bool quotient : {false, true}) {
-        Hypergraph whole_hg;
+        auto whole_hg_heap = std::make_unique<Hypergraph>(); Hypergraph& whole_hg = *whole_hg_heap;
         whole_hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine whole(&whole_hg, 4);
+        auto whole_heap = std::make_unique<ParallelEvolutionEngine>(&whole_hg, 4); ParallelEvolutionEngine& whole = *whole_heap;
         whole.set_explore_from_canonical_states_only(quotient);
         whole.add_rule(rule);
         whole.evolve(init, depth + 1);
         size_t bad = 0;
         for (int rep = 0; rep < 200; ++rep) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine e(&hg, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(quotient);
             e.add_rule(rule);
             e.set_continuable(true);

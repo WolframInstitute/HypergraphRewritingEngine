@@ -3,6 +3,7 @@
 // (ParallelEvolutionEngine::set_event_ordering). The engine is checked against SetReplace's
 // WolframModel on the recorded corpus reference/setreplace_order_cases.hpp.
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "hgcommon/sampling_core.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -33,9 +34,9 @@ struct EngineRun {
 // The case's rules from its initial state, one history: under "EventOrderingFunction" with its
 // order and `steps` steps, or under "Generational".
 EngineRun run_engine(const SetReplaceCase& k, size_t threads, bool generational, size_t steps) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-    ParallelEvolutionEngine e(&hg, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
     for (size_t r = 0; r < k.rules.size(); ++r) {
         RuleBuilder b(static_cast<uint16_t>(r));
         for (const auto& edge : k.rules[r].first) b.lhs(edge);

@@ -4,6 +4,7 @@
 // ones that historically risked leaving a canonical state unexpanded. This gates that
 // property, which was previously checked only by an un-wired standalone probe.
 #include <gtest/gtest.h>
+#include <memory>
 #include <hypergraph/parallel_evolution.hpp>
 #include <vector>
 
@@ -15,9 +16,9 @@ using Init  = std::vector<std::vector<VertexId>>;
 
 size_t canonical_count(const Rules& rules, Init init, int steps, bool quotient,
                        unsigned threads) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
     e.set_explore_from_canonical_states_only(quotient);
     for (const auto& r : rules) e.add_rule(r);
     e.evolve(init, steps);

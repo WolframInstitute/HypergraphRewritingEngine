@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/parallel_evolution.hpp"
 #include <algorithm>
 #include <map>
@@ -19,8 +20,8 @@ static RewriteRule create_growth_rule() {
 
 // Test 1: Max Successors Per Parent - Hard Limit
 TEST(EvolutionLimits, MaxSuccessorsPerParentHardLimit) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_growth_rule());
     engine.set_max_successor_states_per_parent(1);  // HARD LIMIT
 
@@ -36,8 +37,8 @@ TEST(EvolutionLimits, MaxSuccessorsPerParentHardLimit) {
 
 // Test 2: Max States Per Step - Hard Limit
 TEST(EvolutionLimits, MaxStatesPerStepHardLimit) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_growth_rule());
     engine.set_max_states_per_step(3);  // HARD LIMIT: max 3 states at any step
 
@@ -61,8 +62,8 @@ TEST(EvolutionLimits, MaxStatesPerStepHardLimit) {
 // asserted. The determinism contract is stated over uncapped runs for this reason.
 TEST(EvolutionLimits, MaxStatesPerStepIsRespectedAtEveryThreadCount) {
     auto states_at = [](unsigned threads) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(create_growth_rule());
         engine.set_max_states_per_step(3);
         std::vector<std::vector<VertexId>> initial = {{0, 1}, {1, 2}};
@@ -90,8 +91,8 @@ TEST(EvolutionLimits, RandomExplorationProbability) {
     // Run with p=0.5 for 2+ steps - the effect is seen in subsequent steps
     std::vector<size_t> event_counts;
     for (int trial = 0; trial < 20; ++trial) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 1);  // Single thread for determinism
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;  // Single thread for determinism
         engine.add_rule(create_growth_rule());
         engine.set_exploration_probability(0.5);  // 50% chance
 
@@ -110,8 +111,8 @@ TEST(EvolutionLimits, RandomExplorationProbability) {
 
 // Test 4: Combined Limits
 TEST(EvolutionLimits, CombinedLimitsInteraction) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_growth_rule());
     engine.set_max_successor_states_per_parent(2);  // Max 2 successors per parent
     engine.set_max_states_per_step(5);              // Max 5 states per step
@@ -126,8 +127,8 @@ TEST(EvolutionLimits, CombinedLimitsInteraction) {
 
 // Test 5: Edge Cases - Unlimited (defaults)
 TEST(EvolutionLimits, UnlimitedDefaults) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_growth_rule());
     // Default values: 0 = unlimited, 1.0 = always explore
 
@@ -141,8 +142,8 @@ TEST(EvolutionLimits, UnlimitedDefaults) {
 // Note: With p=0, step 1 events ARE created (initial state is always explored),
 // but the resulting states won't be explored further (step 2+ skipped)
 TEST(EvolutionLimits, ExplorationProbabilityZero) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_growth_rule());
     engine.set_exploration_probability(0.0);  // Reject all exploration
 
@@ -153,8 +154,8 @@ TEST(EvolutionLimits, ExplorationProbabilityZero) {
     size_t events_step1 = hg.num_events();
 
     // Now compare with p=1.0 to verify the difference
-    Hypergraph hg2;
-    ParallelEvolutionEngine engine2(&hg2, 1);
+    auto hg2_heap = std::make_unique<Hypergraph>(); Hypergraph& hg2 = *hg2_heap;
+    auto engine2_heap = std::make_unique<ParallelEvolutionEngine>(&hg2, 1); ParallelEvolutionEngine& engine2 = *engine2_heap;
     engine2.add_rule(create_growth_rule());
     engine2.set_exploration_probability(1.0);  // Always explore
 
@@ -167,8 +168,8 @@ TEST(EvolutionLimits, ExplorationProbabilityZero) {
 
 // Test 7: Limit = 1 (degenerate case)
 TEST(EvolutionLimits, LimitOfOne) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(create_growth_rule());
     engine.set_max_successor_states_per_parent(1);  // Only 1 successor allowed
     engine.set_max_states_per_step(1);              // Only 1 state per step
@@ -188,8 +189,8 @@ TEST(EvolutionLimits, EarlyTerminationWithLimits) {
         .rhs({1, 0})
         .build();
 
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(rule);
     engine.set_max_successor_states_per_parent(2);
     engine.set_max_states_per_step(3);
@@ -206,9 +207,9 @@ TEST(EvolutionLimits, EarlyTerminationWithLimits) {
 // budget rejects the very first match task instead of running unbounded).
 TEST(EvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
     for (int threads : {1, 4}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(true);
         engine.add_rule(create_growth_rule());
 
@@ -229,9 +230,9 @@ TEST(EvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
 // matches is not padded.
 TEST(EvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
     auto run = [](size_t k, unsigned threads) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(create_growth_rule());
         engine.set_random_seed(12345);
         if (k) engine.set_matches_per_state_rule(k);
@@ -279,12 +280,12 @@ TEST(EvolutionLimits, MatchesPerStateRuleBoundsEveryStatesRewritesPerRule) {
         size_t states, events, most;
     };
     auto run = [](size_t k, size_t threads, bool stepped) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         // None states: every match has its own key, so the cap keeps exactly k. Under Full the
         // key reads edge orbits, and automorphic matches tie and are kept together (SPEC §5).
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
         hg.set_event_signature_keys(hgcommon::EVENT_SIG_NONE);   // one event per rewrite
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         // {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}}
         e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
                        .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
@@ -343,9 +344,9 @@ TEST(EvolutionLimits, MatchesPerStateRuleBoundsEveryStatesRewritesPerRule) {
 // The productive rule sits at index 70 here, past a 64-rule horizon.
 TEST(EvolutionLimits, MatchesPerStateRuleConsidersRulesPastAMachineWord) {
     auto events_with_productive_rule_at = [](size_t slot) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         // Filler rules that cannot match the initial state: their left-hand side is a 3-ary
         // edge and the state holds only binary ones.
         for (size_t i = 0; i < slot; ++i) {
@@ -373,12 +374,12 @@ TEST(EvolutionLimits, MatchesPerStateRuleConsidersRulesPastAMachineWord) {
 // either is refused, and one that repeats them is accepted.
 TEST(EvolutionLimits, ContinuationRefusesAnotherStatisticsGraphOrMeasures) {
     auto attempt = [](uint32_t graph, uint32_t measures) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         RecordSet rs;
         rs.state_invariants = true;
         hg.set_record_set(rs);
-        ParallelEvolutionEngine e(&hg, 1);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(create_growth_rule());
         e.set_continuable(true);
         e.evolve({{0, 1}}, 1);

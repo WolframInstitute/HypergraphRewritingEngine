@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -74,10 +75,10 @@ inline size_t engine_full_count(
     int steps, unsigned threads = 4,
     ParallelEvolutionEngine::ExecutionMode mode = ParallelEvolutionEngine::ExecutionMode::Parallel,
     uint64_t canonical_key_mask = ~uint64_t{0}) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_canonical_key_mask(canonical_key_mask);
-    ParallelEvolutionEngine engine(&hg, threads, mode);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads, mode); ParallelEvolutionEngine& engine = *engine_heap;
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
     return engine.num_canonical_states();
@@ -119,8 +120,8 @@ struct LatticeCounts {
 inline LatticeCounts brute_force_lattice(const std::vector<RewriteRule>& rules,
                                          const std::vector<std::vector<VertexId>>& initial,
                                          int steps) {
-    Hypergraph hg;  // None mode: no dedup -> the full raw state set
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;  // None mode: no dedup -> the full raw state set
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
 
@@ -146,10 +147,10 @@ inline size_t brute_force_iso_count(
     const std::vector<std::vector<VertexId>>& initial,
     int steps, bool* all_small,
     ParallelEvolutionEngine::ExecutionMode mode = ParallelEvolutionEngine::ExecutionMode::Parallel) {
-    Hypergraph hg;  // None mode: no dedup -> full raw state set
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;  // None mode: no dedup -> full raw state set
     // One thread -> no wasted states. The MODE is separate: a target without threads must be
     // able to run the oracle too, and a threaded engine there fails in its constructor.
-    ParallelEvolutionEngine engine(&hg, 1, mode);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1, mode); ParallelEvolutionEngine& engine = *engine_heap;
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
 
@@ -183,10 +184,10 @@ inline QuotientCounts engine_quotient_counts(const std::vector<RewriteRule>& rul
                                              const std::vector<std::vector<VertexId>>& initial,
                                              int steps, unsigned threads,
                                              uint64_t canonical_key_mask = ~uint64_t{0}) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_canonical_key_mask(canonical_key_mask);
-    ParallelEvolutionEngine engine(&hg, threads);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
     engine.set_explore_from_canonical_states_only(true);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
@@ -220,10 +221,10 @@ inline Counts engine_counts(const std::vector<RewriteRule>& rules,
                             StateCanonicalizationMode mode = StateCanonicalizationMode::Full,
                             bool transitive_reduction = true,
                             uint64_t canonical_key_mask = ~uint64_t{0}) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(mode);
     hg.set_canonical_key_mask(canonical_key_mask);
-    ParallelEvolutionEngine engine(&hg, threads);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
     engine.set_transitive_reduction(transitive_reduction);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);

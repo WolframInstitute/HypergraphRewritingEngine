@@ -24,6 +24,7 @@
 // stays visible instead of being implied by the tests passing.
 
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "reference/golden_matrix.hpp"
 #include "reference/oracle_corpus.hpp"
@@ -94,10 +95,10 @@ TEST(GoldenMatrix, EveryIdentityCellMatchesItsCachedExpectation) {
         const oracle::Case* c = find_case(corpus, r.case_name);
         ASSERT_NE(c, nullptr) << "golden names a case the corpus no longer has: " << r.case_name;
 
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(r.state_mode);
         hg.set_event_signature_keys(r.event_keys);
-        ParallelEvolutionEngine e(&hg, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
         e.set_explore_from_canonical_states_only(r.quotient);
         for (const auto& rule : c->rules) e.add_rule(rule);
         e.evolve(c->init, r.steps);
@@ -166,10 +167,10 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
             uint64_t branchial_edges;
         };
         auto run = [&](unsigned threads) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(r.state_mode);
             hg.set_event_signature_keys(r.event_keys);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(r.quotient);
             for (const auto& rule : c->rules) e.add_rule(rule);
             e.evolve(c->init, r.steps);

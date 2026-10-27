@@ -4,6 +4,7 @@
 // only on manually-constructed micro-DAGs; this closes that gap (audit R7). The
 // offline reduction here is the same reference the standalone probe uses.
 #include <gtest/gtest.h>
+#include <memory>
 #include <hypergraph/parallel_evolution.hpp>
 #include <hgcommon/transitive_reduction.hpp>
 
@@ -64,9 +65,9 @@ PairSet offline_tr(const PairSet& pairs) {
 
 PairSet run(RewriteRule rule, std::vector<std::vector<VertexId>> init, int steps,
             bool tr, unsigned threads) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
     e.set_transitive_reduction(tr);
     e.set_explore_from_canonical_states_only(false);
     e.add_rule(rule);
@@ -212,9 +213,9 @@ TEST(CausalTrExactnessTest, ReplayReductionIsTheReductionOfItsRelation) {
     for (const auto& c : cases) {
         for (unsigned th : {1u, 4u, hw, hw * 2}) {
             for (int rep = 0; rep < 3; ++rep) {
-                Hypergraph hg;
+                auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
                 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-                ParallelEvolutionEngine e(&hg, th);
+                auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, th); ParallelEvolutionEngine& e = *e_heap;
                 e.set_transitive_reduction(true);
                 e.set_explore_from_canonical_states_only(true);
                 e.add_rule(c.rule());

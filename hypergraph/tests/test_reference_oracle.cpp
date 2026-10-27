@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/parallel_evolution.hpp"
 
 #include <algorithm>
@@ -83,9 +84,9 @@ std::vector<std::vector<uint32_t>> state_edges(const Hypergraph& hg, StateId sid
 
 size_t engine_full_count(const std::vector<RewriteRule>& rules,
                          const std::vector<std::vector<VertexId>>& initial, int steps) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
     return engine.num_canonical_states();
@@ -95,8 +96,8 @@ size_t engine_full_count(const std::vector<RewriteRule>& rules,
 size_t brute_force_iso_count(const std::vector<RewriteRule>& rules,
                              const std::vector<std::vector<VertexId>>& initial, int steps,
                              bool* all_small) {
-    Hypergraph hg;  // None mode (default): no dedup -> full raw state set
-    ParallelEvolutionEngine engine(&hg, 1);  // single thread -> no wasted states
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;  // None mode (default): no dedup -> full raw state set
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;  // single thread -> no wasted states
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
 

@@ -6,6 +6,7 @@
 // duplicate matches are removed, a duplicate being a match on the same edges whose binding
 // differs by a symmetry of the rule (computed here by brute force, independently of the engine).
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "hgcommon/undirected_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
@@ -258,9 +259,9 @@ Agreement compare_with_emulation(const std::vector<RuleSpec>& rules, const EdgeL
                                  size_t steps, size_t threads) {
     Agreement a;
     {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_undirected(true);
         for (size_t r = 0; r < rules.size(); ++r)
             e.add_rule(build_rule(rules[r].lhs, rules[r].rhs, static_cast<uint16_t>(r)));
@@ -275,9 +276,9 @@ Agreement compare_with_emulation(const std::vector<RuleSpec>& rules, const EdgeL
         }
     }
     {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         std::vector<size_t> user;
         for (size_t r = 0; r < rules.size(); ++r)
             for (const Pattern& v : orientation_variants(rules[r].lhs)) {
@@ -476,9 +477,9 @@ struct Trace {
 
 Trace trace(const EdgeList& init, size_t steps, size_t threads, size_t per_step,
             StateCanonicalizationMode mode) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(mode);
-    ParallelEvolutionEngine e(&hg, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
     e.set_undirected(true);
     e.add_rule(build_rule(kGorard.lhs, kGorard.rhs, 0));
     if (per_step) {
@@ -536,9 +537,9 @@ TEST(UndirectedEngine, FullStatesAreTheUndirectedClasses) {
         std::set<uint64_t> none_hashes, full_hashes;
         size_t full_states = 0;
         for (const auto mode : {StateCanonicalizationMode::None, StateCanonicalizationMode::Full}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(mode);
-            ParallelEvolutionEngine e(&hg, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
             e.set_undirected(true);
             e.set_explore_from_canonical_states_only(mode == StateCanonicalizationMode::Full);
             for (size_t r = 0; r < rules.size(); ++r)
@@ -563,7 +564,7 @@ TEST(UndirectedEngine, FullStatesAreTheUndirectedClasses) {
 // of a full scan and of a seeded scan from every edge is one of the brute-force bindings, and a
 // full scan finds each of them once.
 TEST(UndirectedMatcher, EmitsEachBindingOnceUnderItsVariant) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     const EdgeList g = {{0, 1}, {2, 1}, {2, 3}, {3, 3}, {3, 0}, {1, 0}, {4, 2}};
     std::vector<EdgeId> ids;
     for (const auto& e : g) ids.push_back(hg.create_edge({e[0], e[1]}));
@@ -644,8 +645,8 @@ TEST(UndirectedMatcher, EmitsEachBindingOnceUnderItsVariant) {
 
 // Edges of three vertices are refused.
 TEST(UndirectedEngine, RefusesEdgesOfThreeVertices) {
-    Hypergraph hg;
-    ParallelEvolutionEngine e(&hg, 1);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
     e.set_undirected(true);
     e.add_rule(build_rule({{0, 1, 2}}, {{0, 1}}, 0));
     EXPECT_THROW(e.evolve(EdgeList{{0, 1, 2}}, 1), std::invalid_argument);

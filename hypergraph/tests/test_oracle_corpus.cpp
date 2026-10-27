@@ -109,10 +109,10 @@ TEST(OracleCorpus, CanonicalKeyCollisionsKeepStateIdentityExact) {
             EXPECT_EQ(q.branchial, qref.branchial) << c.name << " quotient @" << t;
         }
 #if HG_ENGINE_STATS
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_canonical_key_mask(kMask);
-        ParallelEvolutionEngine engine(&hg, 1);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
         for (const auto& r : c.rules) engine.add_rule(r);
         engine.evolve(c.init, c.measure_steps);
         collisions += hg.canonical_key_collisions();
@@ -141,13 +141,13 @@ TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
     auto run = [](const oracle::Case& c, StateCanonicalizationMode mode,
                   hgcommon::EventSignatureKeys keys, bool quotient, unsigned threads,
                   uint64_t mask) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(mode);
         hg.set_event_signature_keys(keys);
         hg.set_canonical_key_mask(mask);
         hg.set_event_key_mask(mask);
         hg.set_quotient_key_mask(mask);
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(quotient);
         for (const auto& r : c.rules) engine.add_rule(r);
         engine.evolve(c.init, c.oracle_steps + 1);
@@ -208,10 +208,10 @@ TEST(OracleCorpus, CustomEventKeySetsAgreeAcrossRoutesAndThreads) {
             for (bool quotient : {false, true}) {
                 for (unsigned t : {1u, 4u, 8u}) {
                     for (int rep = 0; rep < 2; ++rep) {
-                        Hypergraph hg;
+                        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
                         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
                         hg.set_event_signature_keys(k.keys);
-                        ParallelEvolutionEngine engine(&hg, t);
+                        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, t); ParallelEvolutionEngine& engine = *engine_heap;
                         engine.set_explore_from_canonical_states_only(quotient);
                         for (const auto& r : c.rules) engine.add_rule(r);
                         engine.evolve(c.init, c.measure_steps);
@@ -236,7 +236,7 @@ TEST(OracleCorpus, ReplayIdLimitTruncatesAndReports) {
             auto hg = std::make_unique<Hypergraph>();
             hg->set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             if (limit) hg->set_replay_id_limit(limit);
-            ParallelEvolutionEngine engine(hg.get(), 4);
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(hg.get(), 4); ParallelEvolutionEngine& engine = *engine_heap;
             engine.set_explore_from_canonical_states_only(true);
             for (const auto& r : c.rules) engine.add_rule(r);
             engine.evolve(c.init, c.measure_steps);
@@ -270,13 +270,13 @@ TEST(OracleCorpus, KeyedRewritesChangeNoCount) {
     auto run = [&](const oracle::Case& c, StateCanonicalizationMode mode,
                    hgcommon::EventSignatureKeys keys, bool quotient, unsigned threads, bool keyed,
                    uint32_t claim_limit = 1024, uint64_t mask = ~uint64_t{0}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(mode);
         hg.set_event_signature_keys(keys);
         hg.set_keyed_rewrites(keyed);
         hg.set_keyed_claim_limit(claim_limit);
         hg.set_twin_key_mask(mask);
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(quotient);
         for (const auto& r : c.rules) engine.add_rule(r);
         engine.evolve(c.init, c.oracle_steps + 1);
@@ -327,10 +327,10 @@ TEST(OracleCorpus, RankTupleRunsTakeNoTwins) {
         make_rule(2).lhs({0, 1}).rhs({0, 2}).rhs({2, 1}).build()};
     const std::vector<std::vector<VertexId>> init = {{0, 1}, {0, 2}};
     auto twins = [&](hgcommon::EventSignatureKeys keys, bool quotient) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_event_signature_keys(keys);
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(quotient);
         for (const auto& r : rules) engine.add_rule(r);
         engine.evolve(init, 4);
@@ -427,10 +427,10 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
     };
 
     auto run = [](const oracle::Case& c, RecordSet rs) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_record_set(rs);
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_transitive_reduction(true);
         for (const auto& r : c.rules) engine.add_rule(r);
         engine.evolve(c.init, c.measure_steps);
@@ -540,9 +540,9 @@ TEST(OracleCorpus, SerialExecutionMatchesTheThreadedEngine) {
         std::multiset<uint64_t> state_hashes, causal_pairs;
     };
     auto run = [](const oracle::Case& c, Mode mode, size_t threads) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads, mode);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads, mode); ParallelEvolutionEngine& e = *e_heap;
         e.set_transitive_reduction(true);
         for (const auto& r : c.rules) e.add_rule(r);
         e.evolve(c.init, c.measure_steps);
@@ -577,9 +577,10 @@ TEST(OracleCorpus, SerialExecutionMatchesTheThreadedEngine) {
 // worker is a different thing and the two must not be conflated.
 TEST(OracleCorpus, SerialSpawnsNoWorkerAndOneWorkerIsNotSerial) {
     using Mode = ParallelEvolutionEngine::ExecutionMode;
-    Hypergraph hs, hp;
-    ParallelEvolutionEngine serial(&hs, 0, Mode::Serial);
-    ParallelEvolutionEngine one_worker(&hp, 1, Mode::Parallel);
+    auto hs_heap = std::make_unique<Hypergraph>(); Hypergraph& hs = *hs_heap;
+    auto hp_heap = std::make_unique<Hypergraph>(); Hypergraph& hp = *hp_heap;
+    auto serial_heap = std::make_unique<ParallelEvolutionEngine>(&hs, 0, Mode::Serial); ParallelEvolutionEngine& serial = *serial_heap;
+    auto one_worker_heap = std::make_unique<ParallelEvolutionEngine>(&hp, 1, Mode::Parallel); ParallelEvolutionEngine& one_worker = *one_worker_heap;
 
     EXPECT_TRUE(serial.is_serial());
     EXPECT_EQ(serial.num_threads(), 1u) << "serial runs on the caller's thread, so it reports one";
@@ -642,22 +643,22 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
           // A session Open evolves 0 steps, so 0 is a split point as well as measure_steps - 1.
           for (const size_t first : {size_t(0), size_t(c.measure_steps - 1)}) {
 
-            Hypergraph whole;
+            auto whole_heap = std::make_unique<Hypergraph>(); Hypergraph& whole = *whole_heap;
             whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             if (reconstruct) whole.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
             {
-                ParallelEvolutionEngine e(&whole, 4);
+                auto e_heap = std::make_unique<ParallelEvolutionEngine>(&whole, 4); ParallelEvolutionEngine& e = *e_heap;
                 e.set_transitive_reduction(true);
                 e.set_explore_from_canonical_states_only(quotient_explore);
                 for (const auto& r : c.rules) e.add_rule(r);
                 e.evolve(c.init, c.measure_steps);
             }
 
-            Hypergraph split;
+            auto split_heap = std::make_unique<Hypergraph>(); Hypergraph& split = *split_heap;
             split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             if (reconstruct) split.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
             {
-                ParallelEvolutionEngine e(&split, 4);
+                auto e_heap = std::make_unique<ParallelEvolutionEngine>(&split, 4); ParallelEvolutionEngine& e = *e_heap;
                 e.set_transitive_reduction(true);
                 e.set_explore_from_canonical_states_only(quotient_explore);
                 for (const auto& r : c.rules) e.add_rule(r);
@@ -737,17 +738,17 @@ TEST(OracleCorpus, ContinuingASampledRunMatchesRunningItInOneCall) {
             e.set_random_seed(3);
             for (const auto& rule : r.rules) e.add_rule(rule);
         };
-        Hypergraph whole;
+        auto whole_heap = std::make_unique<Hypergraph>(); Hypergraph& whole = *whole_heap;
         whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         {
-            ParallelEvolutionEngine e(&whole, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&whole, 4); ParallelEvolutionEngine& e = *e_heap;
             configure(e);
             e.evolve(r.init, r.steps);
         }
-        Hypergraph split;
+        auto split_heap = std::make_unique<Hypergraph>(); Hypergraph& split = *split_heap;
         split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         {
-            ParallelEvolutionEngine e(&split, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&split, 4); ParallelEvolutionEngine& e = *e_heap;
             configure(e);
             e.set_continuable(true);
             e.evolve(r.init, r.first);
@@ -783,14 +784,14 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
     struct Counts { uint64_t states, events, branchial, enumerated; size_t instances;
                     bool multiplicity; };
     auto run = [](const oracle::Case& c, const Leg& leg, bool counts_only) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_event_signature_keys(leg.keys);
         RecordSet rs{false, true, false};
         rs.raw_events = true;
         rs.raw_counts_only = counts_only;
         hg.set_record_set(rs);
-        ParallelEvolutionEngine e(&hg, leg.threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, leg.threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_explore_from_canonical_states_only(leg.qexpl);
         if (leg.rate > 0) { e.set_transition_rate(leg.rate); e.set_random_seed(3); }
         for (const auto& r : c.rules) e.add_rule(r);
@@ -838,7 +839,7 @@ TEST(OracleCorpus, CountsOnlyReplayKeepsNoApplicationsOrContent) {
                     applied_lists, contents, pairs_listed; };
     auto run = [](const oracle::Case& c, hgcommon::EventSignatureKeys keys, unsigned threads,
                   bool lists) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_event_signature_keys(keys);
         RecordSet rs{true, true, false};
@@ -847,7 +848,7 @@ TEST(OracleCorpus, CountsOnlyReplayKeepsNoApplicationsOrContent) {
         rs.relation_lists = lists;
         rs.event_lists = lists;
         hg.set_record_set(rs);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_explore_from_canonical_states_only(true);
         for (const auto& r : c.rules) e.add_rule(r);
         e.evolve(c.init, c.measure_steps);
@@ -898,7 +899,7 @@ TEST(OracleCorpus, CountsOnlyReplayKeepsNoApplicationsOrContent) {
 // Automatic events in full capture, at 1 and 8 threads.
 TEST(OracleCorpus, QuotientRouteRecordsExploredBranchialOnlyWhenAsked) {
     auto run = [](const oracle::Case& c, bool explore, unsigned threads, bool explored) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_event_signature_keys(explore ? hgcommon::EVENT_SIG_NONE
                                             : hgcommon::EVENT_SIG_AUTOMATIC);
@@ -906,7 +907,7 @@ TEST(OracleCorpus, QuotientRouteRecordsExploredBranchialOnlyWhenAsked) {
         rs.raw_events = true;
         rs.explored_branchial = explored;
         hg.set_record_set(rs);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_explore_from_canonical_states_only(explore);
         for (const auto& r : c.rules) e.add_rule(r);
         e.evolve(c.init, c.measure_steps);
@@ -947,9 +948,9 @@ TEST(OracleCorpus, ClassMultiplicitiesCountTheRawStates) {
     for (const auto& c : oracle::corpus()) {
         std::map<std::pair<uint32_t, uint64_t>, uint64_t> raw;
         {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-            ParallelEvolutionEngine e(&hg, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
             for (const auto& r : c.rules) e.add_rule(r);
             e.evolve(c.init, c.measure_steps);
             for (uint32_t s = 0; s < hg.num_published_states(); ++s)
@@ -958,14 +959,14 @@ TEST(OracleCorpus, ClassMultiplicitiesCountTheRawStates) {
         }
         for (bool replay : {false, true}) {
           for (uint64_t mask : {~uint64_t{0}, uint64_t{0}}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             hg.set_quotient_key_mask(mask);
             RecordSet rs{replay, replay, false};
             rs.raw_events = replay;
             rs.multiplicities = true;
             hg.set_record_set(rs);
-            ParallelEvolutionEngine e(&hg, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(true);
             for (const auto& r : c.rules) e.add_rule(r);
             e.evolve(c.init, c.measure_steps);
@@ -996,7 +997,7 @@ TEST(OracleCorpus, MultiplicityCountsWithoutRawStates) {
         rs.raw_events = true;
         rs.raw_counts_only = true;
         hg->set_record_set(rs);
-        ParallelEvolutionEngine e(hg.get(), 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(hg.get(), 4); ParallelEvolutionEngine& e = *e_heap;
         e.set_explore_from_canonical_states_only(true);
         e.add_rule(make_rule(0).lhs({0,0}).lhs({0,0}).rhs({0,0}).rhs({0,0}).rhs({0,0}).build());
         e.evolve({{0,0},{0,0}}, depth);
@@ -1027,9 +1028,9 @@ TEST(OracleCorpus, ContinuingARunThatWasNotMadeContinuableIsAnError) {
     // not extend its lifetime, and the dangling case read as an engine with no rules.
     const auto corpus = oracle::corpus();
     const auto& c = corpus.front();
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 2);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& e = *e_heap;
     for (const auto& r : c.rules) e.add_rule(r);
     EXPECT_FALSE(e.continuable()) << "recording the frontier must be opt-in";
     e.evolve(c.init, 2);
@@ -1045,9 +1046,9 @@ TEST(OracleCorpus, ContinuingARunThatWasNotMadeContinuableIsAnError) {
 // other matches keep waiting -- the state stays on the frontier -- so choosing again performs
 // them. Steering by the state alone performs every match on it, which is a different choice.
 TEST(OracleCorpus, SteeringOneMatchPerformsThatRewriteAlone) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     // {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}}, which matches {{1,2},{1,3}} twice.
     e.add_rule(hypergraph::make_rule(0)
                    .lhs({0, 1}).lhs({0, 2})
@@ -1140,9 +1141,9 @@ TEST(OracleCorpus, SteeredContinuationsUnderQuotientExplorationLoseNoState) {
     const size_t first = 2;
     for (size_t threads : {size_t{1}, size_t{4}}) {
         for (const Case& c : cases) {
-            Hypergraph steered;
+            auto steered_heap = std::make_unique<Hypergraph>(); Hypergraph& steered = *steered_heap;
             steered.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine e(&steered, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&steered, threads); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(true);
             e.add_rule(c.rule);
             e.set_continuable(true);
@@ -1155,9 +1156,9 @@ TEST(OracleCorpus, SteeredContinuationsUnderQuotientExplorationLoseNoState) {
             }
             e.evolve_more(1);
 
-            Hypergraph whole;
+            auto whole_heap = std::make_unique<Hypergraph>(); Hypergraph& whole = *whole_heap;
             whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine w(&whole, threads);
+            auto w_heap = std::make_unique<ParallelEvolutionEngine>(&whole, threads); ParallelEvolutionEngine& w = *w_heap;
             w.set_explore_from_canonical_states_only(true);
             w.add_rule(c.rule);
             w.evolve(c.init, first + 3);
@@ -1181,9 +1182,9 @@ TEST(OracleCorpus, MatchingTheFrontierChangesNoStateOrEventCount) {
     };
     auto run = [](const RewriteRule& rule, const std::vector<std::vector<VertexId>>& init,
                   size_t steps, bool match_frontier) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
         e.set_continuable(true);
         e.set_match_frontier(match_frontier);
         e.add_rule(rule);
@@ -1267,13 +1268,13 @@ TEST(OracleCorpus, ContinuingAfterAStopMatchesRunningItInOneCall) {
                             e.set_matches_per_state_rule(k);
                             e.add_rule(c.rule);
                         };
-                        Hypergraph whole;
-                        ParallelEvolutionEngine w(&whole, threads);
+                        auto whole_heap = std::make_unique<Hypergraph>(); Hypergraph& whole = *whole_heap;
+                        auto w_heap = std::make_unique<ParallelEvolutionEngine>(&whole, threads); ParallelEvolutionEngine& w = *w_heap;
                         setup(whole, w);
                         w.evolve(c.init, c.depth + 1);
 
-                        Hypergraph split;
-                        ParallelEvolutionEngine e(&split, threads);
+                        auto split_heap = std::make_unique<Hypergraph>(); Hypergraph& split = *split_heap;
+                        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&split, threads); ParallelEvolutionEngine& e = *e_heap;
                         setup(split, e);
                         e.set_continuable(true);
                         std::atomic<int> drained{0};
@@ -1315,10 +1316,10 @@ TEST(OracleCorpus, ContinuingAfterAStopMatchesRunningItInOneCall) {
 // rewrite and the frontier matched, a step naming every frontier state performs exactly the
 // rewrites that waited and none of the rewrites they produce.
 TEST(OracleCorpus, ASteeredStepAdvancesEveryNamedEntryOneStepFromWhereItWaits) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_event_signature_keys(hgcommon::EVENT_SIG_NONE);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.add_rule(hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
                    .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
     e.set_continuable(true);
@@ -1372,9 +1373,9 @@ TEST(OracleCorpus, ASteeredStepAdvancesEveryNamedEntryOneStepFromWhereItWaits) {
 TEST(OracleCorpus, RuleShapeWarningsFireOnTheShapeAndNotOnTheRest) {
     auto warnings_for = [](const std::vector<RewriteRule>& rules,
                            const std::vector<std::vector<VertexId>>& init) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, 1);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
         for (const auto& r : rules) e.add_rule(r);
         e.evolve(init, 1);
         return e.warnings();
@@ -1402,10 +1403,10 @@ TEST(OracleCorpus, StaticAnalysisNeverPredictsAwayRealBranching) {
     size_t proved_none = 0, not_ruled_out = 0, over_approximated = 0;
 
     for (const auto& c : oracle::corpus()) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         {
-            ParallelEvolutionEngine e(&hg, 4);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
             e.set_transitive_reduction(true);
             for (const auto& r : c.rules) e.add_rule(r);
             e.evolve(c.init, c.measure_steps);
@@ -1508,13 +1509,13 @@ TEST(OracleCorpus, AContinuationThatChangesTheRecordSetIsRefused) {
     for (const auto& c : cases)
         if (std::string(c.name) == "multi-rule") mr = &c;
     ASSERT_NE(mr, nullptr);
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
     RecordSet opening;
     opening.branchial = false;
     hg.set_record_set(opening);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.set_transitive_reduction(true);
     e.set_explore_from_canonical_states_only(true);
     for (const auto& r : mr->rules) e.add_rule(r);
@@ -1546,10 +1547,10 @@ TEST(OracleCorpus, AStopDuringADeltaScanLosesNoMatch) {
             if (hg.get_state(s).id != INVALID_ID) h.insert(hg.get_or_compute_canonical_hash(s));
         return std::make_pair(hg.num_events(), h);
     };
-    Hypergraph whole;
+    auto whole_heap = std::make_unique<Hypergraph>(); Hypergraph& whole = *whole_heap;
     whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     {
-        ParallelEvolutionEngine w(&whole, 4);
+        auto w_heap = std::make_unique<ParallelEvolutionEngine>(&whole, 4); ParallelEvolutionEngine& w = *w_heap;
         w.set_match_forwarding(true);
         w.add_rule(rule);
         w.evolve(init, 5);
@@ -1557,9 +1558,9 @@ TEST(OracleCorpus, AStopDuringADeltaScanLosesNoMatch) {
     const auto ref = fingerprint(whole);
     int differing = 0, stopped = 0;
     for (int it = 0; it < 400; ++it) {
-        Hypergraph split;
+        auto split_heap = std::make_unique<Hypergraph>(); Hypergraph& split = *split_heap;
         split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&split, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&split, 4); ParallelEvolutionEngine& e = *e_heap;
         e.set_match_forwarding(true);
         e.add_rule(rule);
         e.set_continuable(true);
@@ -1584,8 +1585,8 @@ TEST(OracleCorpus, AStopDuringADeltaScanLosesNoMatch) {
 // reports it as a worker error, and the process does not terminate. The drain runs from the
 // match task's guard destructor, so the throw stands for a bad_alloc during the drain's submits.
 TEST(OracleCorpus, AThrowAtADrainIsReportedAsAWorkerError) {
-    Hypergraph hg;
-    ParallelEvolutionEngine e(&hg, 4);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 2}).rhs({2, 1}).build());
     std::atomic<int> drained{0};
     e.set_on_state_matches_complete([&](StateId, uint32_t) {
@@ -1596,9 +1597,9 @@ TEST(OracleCorpus, AThrowAtADrainIsReportedAsAWorkerError) {
 }
 
 TEST(OracleCorpus, CountsHoldPastTheArenaWorkerCeiling) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, MAX_ARENA_WORKERS + 44);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, MAX_ARENA_WORKERS + 44); ParallelEvolutionEngine& e = *e_heap;
     e.add_rule(hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
                    .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
     e.evolve({{0, 1}, {0, 2}}, 5);
@@ -1619,9 +1620,9 @@ TEST(OracleCorpus, APerParentCapIsReproducibleAcrossWorkerCounts) {
         for (size_t mpsr : {size_t(0), size_t(2)}) {
             std::set<std::pair<size_t, std::multiset<uint64_t>>> seen;
             for (size_t threads : {size_t(1), size_t(8), size_t(4), size_t(8)}) {
-                Hypergraph hg;
+                auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
                 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-                ParallelEvolutionEngine e(&hg, threads);
+                auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
                 e.set_max_successor_states_per_parent(1);
                 e.set_matches_per_state_rule(mpsr);
                 e.set_random_seed(12345);
@@ -1649,9 +1650,9 @@ TEST(OracleCorpus, APerStepCapIsReproducibleAcrossWorkerCounts) {
             std::set<std::pair<size_t, std::multiset<uint64_t>>> seen;
             size_t states = 0;
             for (size_t threads : {size_t(1), size_t(8), size_t(4), size_t(8)}) {
-                Hypergraph hg;
+                auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
                 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-                ParallelEvolutionEngine e(&hg, threads);
+                auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
                 e.set_max_states_per_step(2);
                 if (variant == 1) e.set_explore_from_canonical_states_only(true);
                 if (variant == 2) {
@@ -1684,9 +1685,9 @@ TEST(OracleCorpus, DepthLoweringIsBoundedByTheStepBudget) {
     uint32_t corpus_max = 0;
     for (const auto& c : oracle::corpus()) {
         for (unsigned threads : {1u, 32u}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(true);
             for (const auto& r : c.rules) e.add_rule(r);
             e.evolve(c.init, c.measure_steps);

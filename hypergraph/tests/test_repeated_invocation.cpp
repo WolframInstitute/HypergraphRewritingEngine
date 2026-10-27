@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -108,12 +109,12 @@ GridResult run_grid_evolution(int steps, size_t max_per_parent, size_t max_per_s
     GridResult result{};
     {
     // Create hypergraph (local, destroyed at end)
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     // CanonicalizeEvents -> False means no event canonicalization
     hg.set_event_signature_keys(EVENT_SIG_NONE);
 
     // Create parallel evolution engine
-    ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, std::thread::hardware_concurrency()); ParallelEvolutionEngine& engine = *engine_heap;
     engine.set_max_steps(steps);
     engine.set_transitive_reduction(true);
     engine.set_max_successor_states_per_parent(max_per_parent);

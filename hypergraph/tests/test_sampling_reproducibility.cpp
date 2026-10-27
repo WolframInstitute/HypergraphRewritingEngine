@@ -56,8 +56,8 @@ struct RunMetrics {
 // Run the default dataflow evolve() with an ExplorationProbability draw.
 RunMetrics run_exploration(uint64_t seed, double probability, size_t steps,
                            size_t num_threads) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, num_threads);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, num_threads); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(make_growth_rule());
     engine.set_random_seed(seed);
     engine.set_exploration_probability(probability);
@@ -99,9 +99,9 @@ TEST(SamplingReproducibility, ExplorationProbabilityReproducible) {
 TEST(SamplingReproducibility, ExplorationProbabilityKeepsTheSameStatesAtEveryWorkerCount) {
     for (bool quotient : {false, true}) {
         auto run = [&](size_t threads) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(quotient);
             e.set_exploration_probability(0.5);
             e.set_random_seed(2024);
@@ -134,9 +134,9 @@ TEST(SamplingReproducibility, ExplorationProbabilityKeepsTheSameStatesAtEveryWor
 // states drain in is NOT sorted by depth. Under a step-synchronised scheduler it necessarily
 // would be, which is what makes this discriminating rather than merely descriptive.
 TEST(SamplingReproducibility, DepthsOverlapBecauseNothingWaitsForAStep) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.add_rule(make_growth_rule());
 
     std::mutex m;
@@ -166,9 +166,9 @@ TEST(SamplingReproducibility, TransitionRateThinsAtDepth) {
 
     struct Kept { size_t matches; size_t events; size_t draws; size_t survived; size_t forced; };
     auto run = [&](double q, uint64_t seed) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
         e.set_random_seed(seed);
         e.set_transition_rate(q);
         e.add_rule(rule);
@@ -226,9 +226,9 @@ TEST(SamplingReproducibility, SampledSubgraphIsTheSameAtEveryWorkerCount) {
     // Compare the CANONICAL content, not the counts: two runs could agree on how many states
     // they kept while keeping different ones.
     auto run = [&](size_t threads) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_random_seed(20260729);
         e.set_transition_rate(0.4);
         e.add_rule(rule);
@@ -263,9 +263,9 @@ TEST(SamplingReproducibility, TransitionRateIsReproducibleForAGivenSeed) {
         init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
 
     auto run = [&]() {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, 1);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
         e.set_random_seed(777);
         e.set_transition_rate(0.35);
         e.add_rule(rule);
@@ -290,9 +290,9 @@ TEST(SamplingReproducibility, TransitionRateIsReproducibleForAGivenSeed) {
 // left to the engine, which would leave it off for the rule's one-edge left-hand side.
 TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
     auto run = [](size_t threads) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_random_seed(2024);
         e.set_match_forwarding(true);
         e.set_matches_per_state_rule(2);
@@ -314,9 +314,9 @@ TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
             << "the drain cap kept a different set of states at " << t << " workers than at one";
     }
 
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 2);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& e = *e_heap;
     e.set_match_forwarding(true);
     e.set_matches_per_state_rule(2);
     e.add_rule(make_growth_rule());
@@ -340,9 +340,9 @@ TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
 // Run multi-threaded: with one worker every task drains in submission order and the ordering
 // invariants are never tested.
 TEST(SamplingReproducibility, StateMatchJoinDrainsOncePerStateAfterTheLastMatch) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.add_rule(make_growth_rule());
 
     std::mutex m;
@@ -387,9 +387,9 @@ TEST(SamplingReproducibility, ExplorationProbabilityIsPerCanonicalState) {
     for (double p : {0.25, 0.5}) {
         int explored = 0;
         for (int seed = 1; seed <= R; ++seed) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine e(&hg, 1);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
             e.set_explore_from_canonical_states_only(true);
             e.set_exploration_probability(p);
             e.set_random_seed(static_cast<uint64_t>(seed));
@@ -420,9 +420,9 @@ TEST(SamplingReproducibility, ExplorationProbabilityIsPerCanonicalState) {
 // with one worker every task drains in submission order and none of it is tested.
 TEST(SamplingReproducibility, DepthCompletesOnceAfterEveryStateAtItHasDrained) {
     for (unsigned threads : {1u, 4u, 16u}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_growth_rule());
 
         std::mutex m;
@@ -481,9 +481,9 @@ TEST(SamplingReproducibility, DepthCompletesOnceAfterEveryStateAtItHasDrained) {
 // submitted at its parent's LIVE MINIMUM depth plus one, so a relaxation can put an arrival at
 // a shallow depth from a task running at a deep one, after that depth's predecessor settled.
 TEST(SamplingReproducibility, DepthSignalIsRefusedUnderQuotientExploration) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.set_explore_from_canonical_states_only(true);
     e.add_rule(make_growth_rule());
 
@@ -508,9 +508,9 @@ namespace {
 
 // Two rules that both apply to the seed, so weighting one is observable in the state set.
 size_t run_weighted(const std::vector<double>& weights, uint64_t seed, size_t steps) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg, 1);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
     e.set_random_seed(seed);
     e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
     e.add_rule(make_rule(1).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).rhs({2, 3}).build());
@@ -555,9 +555,9 @@ TEST(RuleWeights, AWeightOfOneEverywhereChangesNothing) {
 // it reached are reported, under the caller's hook and under MaxStatesPerStep.
 TEST(SamplingReproducibility, DepthJoinFollowsTheDepthReached) {
     for (const bool per_step_cap : {false, true}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).rhs({1}).build());
         if (per_step_cap) e.set_max_states_per_step(1);
         std::atomic<uint32_t> fires{0};
@@ -575,10 +575,10 @@ TEST(SamplingReproducibility, DepthJoinFollowsTheDepthReached) {
 // {{x,y}} -> {{y}} stops after one step; the budget is 1,000,000,000 steps.
 TEST(SamplingReproducibility, QuotientReplayFollowsTheDepthReached) {
     for (const bool quotient : {false, true}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
-        ParallelEvolutionEngine e(&hg, 2);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& e = *e_heap;
         e.set_explore_from_canonical_states_only(quotient);
         e.add_rule(make_rule(0).lhs({0, 1}).rhs({1}).build());
         const auto t0 = std::chrono::steady_clock::now();
@@ -633,8 +633,8 @@ std::vector<uint64_t> causal_fingerprint(Hypergraph& hg) {
 TEST(SamplingReproducibility, StepCapTiesDoNotDependOnTheSchedule) {
     std::set<std::vector<uint64_t>> seen;
     for (int rep = 0; rep < 25; ++rep) {
-        Hypergraph hg;
-        ParallelEvolutionEngine e(&hg, 16);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 16); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0}).rhs({1}).build());
         e.add_rule(make_rule(1).lhs({0}).build());
         e.set_max_states_per_step(12);
@@ -650,8 +650,8 @@ TEST(SamplingReproducibility, StepCapTiesDoNotDependOnTheSchedule) {
 // tie: cap 2 offers 2 candidates and keeps 2 transitions, at 1 and 16 threads.
 TEST(SamplingReproducibility, StepCapOffersOnlyTheStatesLowestRankedTransitions) {
     for (unsigned threads : {1u, 16u}) {
-        Hypergraph hg;
-        ParallelEvolutionEngine e(&hg, threads);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({1, 2}).rhs({2, 3}).build());
         e.set_max_states_per_step(2);
         e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {1u, 5u}}, 1);
@@ -674,7 +674,8 @@ TEST(SamplingReproducibility, StepCapMatchStorageIsReleasedStepByStep) {
         return e;
     };
     for (unsigned threads : {1u, 16u}) {
-        Hypergraph hg_kept, hg_released;
+        auto hg_kept_heap = std::make_unique<Hypergraph>(); Hypergraph& hg_kept = *hg_kept_heap;
+        auto hg_released_heap = std::make_unique<Hypergraph>(); Hypergraph& hg_released = *hg_released_heap;
         auto kept = run(threads, true, hg_kept);
         auto released = run(threads, false, hg_released);
         EXPECT_EQ(kept->match_epochs_created(), 0u) << threads << " threads";
@@ -698,10 +699,10 @@ TEST(SamplingReproducibility, CapTiesUnderTheReconstructionDoNotDependOnTheSched
     for (Cap cap : {PER_RULE, PER_PARENT, PER_STEP}) {
         std::set<std::array<uint64_t, 3>> seen;
         for (unsigned threads : {1u, 16u, 16u, 16u, 16u, 16u, 16u, 16u, 16u, 16u, 16u}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.add_rule(make_rule(0).lhs({0, 1}).rhs({2, 3}).rhs({0, 1}).build());
             if (cap == PER_RULE) e.set_matches_per_state_rule(2);
             if (cap == PER_PARENT) e.set_max_successor_states_per_parent(2);
@@ -723,10 +724,10 @@ TEST(SamplingReproducibility, CapTiesUnderTheReconstructionDoNotDependOnTheSched
 // minimum rank, and automorphic transitions share it; full capture gives 2400 causal edges.
 TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) {
     auto run = [](size_t threads, bool quotient) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_event_signature_keys(hgcommon::EventKey_Step);
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_max_steps(5);
         e.set_transitive_reduction(true);
         e.set_transition_rate(0.317);
@@ -796,9 +797,9 @@ TEST(SamplingReproducibility, CapsAndDrawsUnderQuotientExplorationMatchFullCaptu
             settings.push_back({kn, 0, seed});
 
     auto run = [](const Case& c, const Setting& s, size_t threads, bool quotient) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.set_max_steps(c.steps);
         e.set_explore_from_canonical_states_only(quotient);
         for (const auto& r : c.rules) e.add_rule(r);
@@ -845,9 +846,9 @@ SuccessorCapRun run_successor_cap(StateCanonicalizationMode mode,
                                   const std::vector<std::vector<VertexId>>& init, size_t steps,
                                   size_t per_parent, size_t per_step, size_t threads,
                                   uint64_t seed) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(mode);
-    ParallelEvolutionEngine e(&hg, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
     for (const auto& r : rules) e.add_rule(r);
     if (per_parent) e.set_max_successor_states_per_parent(per_parent);
     if (per_step) e.set_max_states_per_step(per_step);
@@ -937,9 +938,9 @@ TEST(SamplingReproducibility, SuccessorCapsCountDistinctSuccessorStates) {
     EXPECT_EQ(a.states, 3u);
     // MatchesPerStep counts transitions: 2 of the path's 3 under Full, whichever states they make.
     for (uint64_t seed = 0; seed < 8; ++seed) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(M::Full);
-        ParallelEvolutionEngine e(&hg, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(del2[0]);
         e.set_matches_per_step(2);
         e.set_random_seed(seed);
@@ -1007,10 +1008,10 @@ TEST(SamplingReproducibility, StepCapReconstructionMatchesTheRawRewrites) {
     for (const auto& c : cases) {
         for (size_t k : {size_t(1), size_t(2), size_t(3), size_t(5)}) {
             auto run = [&](hgcommon::EventSignatureKeys keys, size_t threads) {
-                Hypergraph hg;
+                auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
                 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
                 hg.set_event_signature_keys(keys);
-                ParallelEvolutionEngine e(&hg, threads);
+                auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
                 e.set_transitive_reduction(false);
                 for (const auto& r : c.rules) e.add_rule(r);
                 e.set_max_states_per_step(k);
@@ -1054,8 +1055,8 @@ TEST(SamplingReproducibility, EverySamplingOptionChoosesTheSameTransitionsAt1And
     };
     for (const Option& o : options) {
         auto run = [&](size_t threads) {
-            Hypergraph hg;
-            ParallelEvolutionEngine e(&hg, threads);
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
                            .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
             o.set(e);
@@ -1225,14 +1226,14 @@ struct CostRun {
 CostRun run_cost_beam(StateCanonicalizationMode mode, const std::vector<RewriteRule>& rules,
                       const std::vector<std::vector<VertexId>>& init, size_t steps, size_t n,
                       bool matches, size_t threads, uint64_t seed, bool records) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(mode);
     if (records) {
         RecordSet rs;
         rs.state_invariants = true;
         hg.set_record_set(rs);
     }
-    ParallelEvolutionEngine e(&hg, threads);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
     for (const auto& r : rules) e.add_rule(r);
     if (matches) e.set_matches_per_step(n);
     else e.set_max_states_per_step(n);
@@ -1266,9 +1267,9 @@ std::vector<std::vector<std::vector<VertexId>>> all_successors(
     std::vector<std::vector<std::vector<VertexId>>> out;
     std::set<uint64_t> classes;
     for (const auto& p : parents) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, 1);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
         for (const auto& r : rules) e.add_rule(r);
         e.evolve(p, 1);
         for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
@@ -1357,13 +1358,13 @@ TEST(SamplingReproducibility, StepCapByCostDoesNotDependOnTheRecordedMeasures) {
     const RewriteRule rule = make_rule(0).lhs({0, 1}).lhs({0, 2})
                                  .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build();
     auto run = [&](size_t threads, bool records, bool costed = true) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         RecordSet rs;
         rs.state_invariants = records;
         rs.statistics_measures = records ? SG_MEASURES_ALL : cost.measures;
         hg.set_record_set(rs);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(rule);
         e.set_max_states_per_step(2);
         if (costed) e.set_state_cost(cost);
@@ -1448,9 +1449,9 @@ TEST(SamplingReproducibility, KeyOrderIndexSelectsInKeyOrder) {
 // consumed edge's canonical rank in the class.
 TEST(SamplingReproducibility, AHistoryThatReturnsToAClassDrawsAgainThere) {
     for (size_t threads : {size_t(1), size_t(4)}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 0}).build());
         e.set_matches_per_step(1);
         e.set_random_seed(1);
@@ -1479,9 +1480,9 @@ TEST(SamplingReproducibility, ASingleHistoryWithoutAStepCapDrawsAgainAtAReturnin
     enum class Mode { kSuccessors, kPerRule, kSpine };
     for (Mode mode : {Mode::kSuccessors, Mode::kPerRule, Mode::kSpine})
         for (size_t threads : {size_t(1), size_t(4)}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 0}).build());
             if (mode == Mode::kSuccessors) e.set_max_successor_states_per_parent(1);
             if (mode == Mode::kPerRule) e.set_matches_per_state_rule(1);
@@ -1511,9 +1512,9 @@ TEST(SamplingReproducibility, ASingleHistoryWithoutAStepCapDrawsAgainAtAReturnin
 TEST(SamplingReproducibility, MatchesPerStepUnderNoneStatesIsTheSameAtEveryWorkerCount) {
     for (size_t n : {size_t(1), size_t(3)}) {
         auto run = [&](size_t threads) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
                            .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
             e.set_matches_per_step(n);
@@ -1541,9 +1542,9 @@ TEST(SamplingReproducibility, AHandedOnMatchSetGivesTheEventsOfAFullMatch) {
             torus.push_back({r * 4 + c, ((r + 1) % 4) * 4 + c});
         }
     auto run = [&](size_t n, size_t threads, bool handed) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).lhs({2, 3}).lhs({3, 4})
                        .rhs({1, 5}).rhs({5, 4}).rhs({3, 0}).rhs({0, 5}).build());
         e.set_matches_per_step(n);
@@ -1578,9 +1579,9 @@ TEST(SamplingReproducibility, AHandedOnMatchSetGivesTheEventsOfAFullMatch) {
 TEST(SamplingReproducibility, NoneStatesRunOneIrPassPerStateWhoseKeyIsRead) {
     enum class Mode { kPlain, kPerStep, kPerRule };
     for (Mode mode : {Mode::kPlain, Mode::kPerStep, Mode::kPerRule}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, 1);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({0, 2}).build());
         if (mode == Mode::kPerStep) e.set_matches_per_step(1);
         if (mode == Mode::kPerRule) e.set_matches_per_state_rule(1);
@@ -1608,9 +1609,9 @@ TEST(SamplingReproducibility, NoneStatesRunOneIrPassPerStateWhoseKeyIsRead) {
 TEST(SamplingReproducibility, ASingleHistoryWithMatchesPerStepLabelsItsRoot) {
     for (int mode : {1, 2})
         for (size_t threads : {size_t(1), size_t(4)}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({2, 3}).build());
             e.set_matches_per_step(1);
             e.set_random_seed(1);
@@ -1627,9 +1628,9 @@ TEST(SamplingReproducibility, ASingleHistoryWithMatchesPerStepLabelsItsRoot) {
 TEST(SamplingReproducibility, MatchesPerStepLabelsARootOnlyWhenItHasATransition) {
     for (bool matched : {false, true})
         for (size_t threads : {size_t(1), size_t(4)}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-            ParallelEvolutionEngine e(&hg, threads);
+            auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
             e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
             e.set_matches_per_step(1);
             e.set_random_seed(1);
@@ -1666,9 +1667,9 @@ TEST(SamplingReproducibility, TransitionKeysAreReadByDrawsCapsAndTheCoin) {
 // {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}} from {{0,0},{0,0}}, 4 steps.
 TEST(SamplingReproducibility, FullStatesBuildOrbitTablesOnlyWhenAKeyReadsThem) {
     for (bool generational : {true, false}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine e(&hg, 1);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
                        .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
         if (generational) e.set_generational(true);
@@ -1693,9 +1694,9 @@ TEST(SamplingReproducibility, FullStatesBuildOrbitTablesOnlyWhenAKeyReadsThem) {
 // states, three events, at 1 and 8 workers.
 TEST(Generational, AGenerationAppliesTheDisjointMatchesInStandardOrder) {
     for (size_t threads : {size_t(1), size_t(8)}) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-        ParallelEvolutionEngine e(&hg, threads);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
         e.set_generational(true);
         e.evolve(std::vector<std::vector<VertexId>>{{1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}}, 5);
@@ -1725,10 +1726,10 @@ TEST(Generational, EveryStateModeAndEventIdentityGivesTheCausalEdges) {
         {StateCanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE},
         {StateCanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC}};
     for (const auto& [states, keys] : modes) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(states);
         hg.set_event_signature_keys(keys);
-        ParallelEvolutionEngine e(&hg, 4);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
         e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
         e.set_generational(true);
         e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}}, 5);
@@ -1741,9 +1742,9 @@ TEST(Generational, EveryStateModeAndEventIdentityGivesTheCausalEdges) {
 // Rule {{x,y}} -> {{x,y},{y,z}} from one edge: every edge is rewritten each generation, so
 // generation g has 2^g edges and 2^(g-1) events.
 TEST(Generational, EveryDisjointMatchIsApplied) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
-    ParallelEvolutionEngine e(&hg, 4);
+    auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& e = *e_heap;
     e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
     e.set_generational(true);
     e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}}, 6);

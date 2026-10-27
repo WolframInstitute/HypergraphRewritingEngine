@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hgcommon/park_gate.hpp"
@@ -43,8 +44,8 @@ static RewriteRule par_branching_rule() {
 // =============================================================================
 
 TEST(ParallelEvolution, BasicConstruction) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);  // 2 threads
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;  // 2 threads
 
     EXPECT_EQ(engine.num_threads(), 2);
     EXPECT_EQ(engine.num_states(), 0);
@@ -52,8 +53,8 @@ TEST(ParallelEvolution, BasicConstruction) {
 }
 
 TEST(ParallelEvolution, SimpleRule_OneStep) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 2);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 2); ParallelEvolutionEngine& engine = *engine_heap;
 
     engine.add_rule(par_simple_rule());
 
@@ -69,8 +70,8 @@ TEST(ParallelEvolution, SimpleRule_OneStep) {
 }
 
 TEST(ParallelEvolution, SimpleRule_TwoSteps) {
-    Hypergraph hg;
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
 
     engine.add_rule(par_simple_rule());
 
@@ -92,8 +93,8 @@ TEST(ParallelEvolution, Determinism_SimpleRule) {
     std::set<size_t> event_counts;
 
     for (int run = 0; run < 10; ++run) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
 
         engine.add_rule(par_simple_rule());
 
@@ -114,8 +115,8 @@ TEST(ParallelEvolution, Determinism_TwoEdgeRule) {
     std::set<size_t> event_counts;
 
     for (int run = 0; run < 10; ++run) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
 
         engine.add_rule(par_two_edge_rule());
 
@@ -136,8 +137,8 @@ TEST(ParallelEvolution, Determinism_BranchingRule) {
     std::set<size_t> event_counts;
 
     for (int run = 0; run < 10; ++run) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
 
         engine.add_rule(par_branching_rule());
 
@@ -163,8 +164,8 @@ TEST(ParallelEvolution, DifferentThreadCounts) {
     size_t reference_events = 0;
 
     for (size_t threads : {1, 2, 4, 8}) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(par_simple_rule());
         engine.evolve(initial, 3);
 
@@ -198,7 +199,7 @@ TEST(ParallelEvolution, DifferentThreadCounts) {
 // rewriter must degrade gracefully so callers can discard the match.
 
 TEST(Rewriter, StaleStateId_ReturnsEmptyResult) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     Rewriter rewriter(&hg);
 
     std::vector<VertexId> verts = {0, 1};
@@ -226,20 +227,20 @@ TEST(Rewriter, StaleStateId_ReturnsEmptyResult) {
 // Over-size input must raise std::length_error rather than silently truncate.
 
 TEST(EvolutionBounds, CreateEdge_Pointer_OverMaxArity_Throws) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     VertexId over[MAX_ARITY + 1] = {};
     EXPECT_THROW(hg.create_edge(over, MAX_ARITY + 1), std::length_error);
 }
 
 TEST(EvolutionBounds, CreateEdge_InitList_OverMaxArity_Throws) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     EXPECT_THROW(
         hg.create_edge({0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}),
         std::length_error);
 }
 
 TEST(EvolutionBounds, CreateEdge_AtMaxArity_Succeeds) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     VertexId at_max[MAX_ARITY] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
     EXPECT_NO_THROW(hg.create_edge(at_max, MAX_ARITY));
 }
@@ -248,7 +249,7 @@ TEST(EvolutionBounds, CreateEdge_AtMaxArity_Succeeds) {
 // of 256 is the case a byte-wide parameter cannot represent: 256 presents as 0 and 260 as 4,
 // both of which are at or under MAX_ARITY and would be accepted.
 TEST(EvolutionBounds, CreateEdge_ArityMultipleOf256_Throws) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     std::vector<VertexId> v(260, 0);
     EXPECT_THROW(hg.create_edge(v.data(), v.size()), std::length_error);
     std::vector<VertexId> exactly_256(256, 0);
@@ -259,7 +260,7 @@ TEST(EvolutionBounds, CreateEdge_ArityMultipleOf256_Throws) {
 // past that bound is refused. Truncating the count instead registers a producer for none of
 // the edges and reports no error, which reads downstream as a run with fewer causal edges.
 TEST(EvolutionBounds, CreateGenesisEvent_PastEventWidth_Throws) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     std::vector<EdgeId> edges;
     for (size_t i = 0; i < Hypergraph::MAX_GENESIS_EDGES + 1; ++i) {
         VertexId pair[2] = {static_cast<VertexId>(2 * i), static_cast<VertexId>(2 * i + 1)};
@@ -308,8 +309,8 @@ TEST(ParallelEvolution, CausalSetCapacityChangesNoRelation) {
     bool first = true;
     for (size_t capacity : {size_t{0}, size_t{1}, size_t{1024}, size_t{65536}}) {
         for (size_t threads : {1, 4, 32}) {
-            Hypergraph hg;
-            ParallelEvolutionEngine engine(&hg, threads);
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
             hgcommon::TuningOverrides t;
             if (capacity) t.set(hgcommon::Tune::CausalSetCapacity, static_cast<int64_t>(capacity));
             engine.set_tuning(t);
@@ -348,9 +349,9 @@ TEST(ParallelEvolution, ExpandChunkChangesNoResult) {
     bool first = true;
     for (size_t chunk : {size_t{0}, size_t{1}, size_t{16}, size_t{64}}) {
         for (size_t threads : {1, 4, 32}) {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine engine(&hg, threads);
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
             hgcommon::TuningOverrides t;
             if (chunk) t.set(hgcommon::Tune::ExpandChunk, static_cast<int64_t>(chunk));
             engine.set_tuning(t);

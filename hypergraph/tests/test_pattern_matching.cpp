@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
 #include "hypergraph/bitset.hpp"
@@ -21,7 +22,8 @@ using namespace hypergraph;
 // ancestry candidate source for the matcher.
 class TestHypergraph {
 public:
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
     std::vector<EdgeId> ids;
 
     EdgeId add_edge(std::initializer_list<VertexId> verts) {
@@ -338,7 +340,8 @@ TEST(PatternMatching, TernaryEdges) {
 // The candidate source is the state's ancestry: a root state's own edges through its vertex
 // index, and every derived state's edges through its chain of parent events (ancestry.hpp).
 TEST(AncestryCandidates, RootEdgesBySignature) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
     EdgeId e0 = hg.create_edge({0, 1});   // [0,1]
     EdgeId e1 = hg.create_edge({2, 2});   // [0,0]
     EdgeId e2 = hg.create_edge({3, 4});   // [0,1]
@@ -363,7 +366,8 @@ TEST(AncestryCandidates, RootEdgesBySignature) {
 }
 
 TEST(AncestryCandidates, RootEdgesByVertex) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
     EdgeId e0 = hg.create_edge({0, 1});
     EdgeId e1 = hg.create_edge({1, 2});
     EdgeId e2 = hg.create_edge({2, 0});
@@ -390,7 +394,8 @@ TEST(AncestryCandidates, RootEdgesByVertex) {
 // A derived state reaches its parent's surviving edges and its own produced edges through
 // the chain, and an edge its event consumed is not yielded.
 TEST(AncestryCandidates, DerivedStateWalksItsChain) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
     EdgeId e0 = hg.create_edge({0, 1});
     EdgeId e1 = hg.create_edge({1, 2});
     StateId s0 = hg.create_state({e0, e1});
@@ -425,7 +430,8 @@ TEST(AncestryCandidates, DerivedStateWalksItsChain) {
 // =============================================================================
 
 TEST(HypergraphCore, CreateEdgesAndState) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Create edges
     EdgeId e0 = hg.create_edge({0, 1});
@@ -458,7 +464,8 @@ TEST(HypergraphCore, CreateEdgesAndState) {
 }
 
 TEST(HypergraphCore, VertexAllocation) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Allocate vertices
     VertexId v0 = hg.alloc_vertex();
@@ -476,7 +483,8 @@ TEST(HypergraphCore, VertexAllocation) {
 }
 
 TEST(HypergraphCore, PatternMatchingOnHypergraph) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Create triangle: {0,1}, {1,2}, {2,0}
     EdgeId e0 = hg.create_edge({0, 1});
@@ -512,7 +520,8 @@ TEST(HypergraphCore, PatternMatchingOnHypergraph) {
 // =============================================================================
 
 TEST(Rewriter, SimpleRewrite) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Create initial state: {0, 1}, {1, 2}
     EdgeId e0 = hg.create_edge({0, 1});
@@ -557,7 +566,8 @@ TEST(Rewriter, SimpleRewrite) {
 }
 
 TEST(Rewriter, RewriteWithFreshVertex) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Reserve vertices 0, 1, 2
     hg.reserve_vertices(2);
@@ -600,7 +610,8 @@ TEST(Rewriter, RewriteWithFreshVertex) {
 }
 
 TEST(Rewriter, EventCreation) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Create initial state
     EdgeId e0 = hg.create_edge({0, 1});
@@ -639,7 +650,8 @@ TEST(Rewriter, EventCreation) {
 // =============================================================================
 
 TEST(EngineIntegration, SingleStepEvolution) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
     // Enable canonicalization for this test
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_event_signature_keys(EVENT_SIG_FULL);
@@ -716,7 +728,8 @@ TEST(EngineIntegration, SingleStepEvolution) {
 }
 
 TEST(EngineIntegration, MultiStepEvolution) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Initial state: single edge {0, 1}
     EdgeId e0 = hg.create_edge({0, 1});
@@ -785,7 +798,8 @@ TEST(EngineIntegration, MultiStepEvolution) {
 }
 
 TEST(EngineIntegration, SelfLoopEvolution) {
-    Hypergraph hg;
+    std::unique_ptr<Hypergraph> hg_heap = std::make_unique<Hypergraph>();
+    Hypergraph& hg = *hg_heap;
 
     // Initial state with self-loop and regular edge: {0,0}, {0,1}
     EdgeId e0 = hg.create_edge({0, 0});  // Self-loop

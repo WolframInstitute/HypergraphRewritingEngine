@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "ir_pinned_states.hpp"
 #include <hypergraph/ir_canonicalization.hpp>
 #include <hypergraph/hypergraph.hpp>
@@ -715,7 +716,7 @@ TEST(IRPinned, ASearchLeavesTheRefinementStampsZero) {
 // core, not by the unbounded fallback. Run on a fresh thread so no earlier test's hint applies.
 TEST(IRDepthHint, DeepStateDoesNotSendLaterStatesToTheFallback) {
     std::thread t([] {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         SparseBitset star, triangle;
         const VertexId hub = hg.alloc_vertex();
         for (int i = 0; i < 100; ++i)
@@ -743,7 +744,7 @@ TEST(IRDepthHint, DeepStateDoesNotSendLaterStatesToTheFallback) {
 // the hash with orbits does: no fallback, and one hash from all three.
 TEST(IRDepthHint, AStarIsCanonicalisedWithoutTheFallbackOnEveryPath) {
     std::thread t([] {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         SparseBitset star, owned;
         const VertexId hub = hg.alloc_vertex();
         for (int i = 0; i < 100; ++i) {

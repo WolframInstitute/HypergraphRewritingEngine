@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
@@ -255,9 +256,9 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
 Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
                 const std::vector<std::vector<hg::engine::VertexId>>& init,
                 bool quotient, int threads, uint64_t seed, int steps) {
-    hg::engine::Hypergraph g;
+    auto g_heap = std::make_unique<hg::engine::Hypergraph>(); hg::engine::Hypergraph& g = *g_heap;
     g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
-    hg::engine::ParallelEvolutionEngine e(&g, threads);
+    auto e_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(&g, threads); hg::engine::ParallelEvolutionEngine& e = *e_heap;
     e.set_transitive_reduction(true);
     e.set_explore_from_canonical_states_only(quotient);
     e.set_random_seed(seed);
@@ -730,9 +731,9 @@ TEST(CausalDeterminism, QuotientBranchialCountedExactlyOnce) {
     for (const auto& c : cases) {
         size_t expected = 0;
         {   // full capture, single-threaded: the reference the reconstruction must match
-            hg::engine::Hypergraph hg;
+            auto hg_heap = std::make_unique<hg::engine::Hypergraph>(); hg::engine::Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
-            hg::engine::ParallelEvolutionEngine e(&hg, 1);
+            auto e_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(&hg, 1); hg::engine::ParallelEvolutionEngine& e = *e_heap;
             e.set_transitive_reduction(false);
             e.set_explore_from_canonical_states_only(false);
             for (const auto& r : c.rules) e.add_rule(r);
@@ -742,9 +743,9 @@ TEST(CausalDeterminism, QuotientBranchialCountedExactlyOnce) {
         ASSERT_GT(expected, 0u) << c.name << ": no branchial edges to compare";
 
         for (int iter = 0; iter < c.iters; ++iter) {
-            hg::engine::Hypergraph hg;
+            auto hg_heap = std::make_unique<hg::engine::Hypergraph>(); hg::engine::Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
-            hg::engine::ParallelEvolutionEngine e(&hg, 8);
+            auto e_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(&hg, 8); hg::engine::ParallelEvolutionEngine& e = *e_heap;
             e.set_transitive_reduction(false);
             e.set_explore_from_canonical_states_only(true);
             hg.set_quotient_reconstruction(true);

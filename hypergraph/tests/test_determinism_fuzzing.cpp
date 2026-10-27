@@ -75,7 +75,7 @@ protected:
         auto hg = std::make_unique<hg::engine::Hypergraph>();
 
         // Test with multiple threads (or default to hardware_concurrency)
-        hg::engine::ParallelEvolutionEngine engine(hg.get(), num_threads);
+        auto engine_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(hg.get(), num_threads); hg::engine::ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_match_forwarding(true);
         //engine.set_validate_match_forwarding(true);
 
@@ -506,7 +506,7 @@ TEST_F(DeterminismFuzzing, MatchForwarding_SimpleRule) {
 
     for (int i = 0; i < 20; ++i) {
         auto hg = std::make_unique<hg::engine::Hypergraph>();
-        hg::engine::ParallelEvolutionEngine engine(hg.get(), 4);
+        auto engine_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(hg.get(), 4); hg::engine::ParallelEvolutionEngine& engine = *engine_heap;
         engine.add_rule(rule);
         engine.evolve(initial, 3);
 
@@ -620,7 +620,7 @@ std::vector<hg::engine::RewriteRule> two_rules() {
 TEST_F(DeterminismFuzzing, DefaultRunIsReproducibleAndWarnsAboutNothing) {
     const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
     auto hg = std::make_unique<hg::engine::Hypergraph>();
-    hg::engine::ParallelEvolutionEngine e(hg.get(), 4);
+    auto e_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(hg.get(), 4); hg::engine::ParallelEvolutionEngine& e = *e_heap;
     for (uint16_t r = 0; r < 16; ++r)
         e.add_rule(hg::engine::make_rule(r).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
     e.set_max_states_per_step(3);
@@ -638,7 +638,7 @@ TEST_F(DeterminismFuzzing, CappedRunWithASeedIsReproducible) {
     std::set<size_t> states;
     for (int i = 0; i < 5; ++i) {
         auto hg = std::make_unique<hg::engine::Hypergraph>();
-        hg::engine::ParallelEvolutionEngine e(hg.get(), 1);
+        auto e_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(hg.get(), 1); hg::engine::ParallelEvolutionEngine& e = *e_heap;
         e.set_max_states(40);
         e.set_random_seed(0x5eed);
         for (const auto& r : rules) e.add_rule(r);
@@ -655,7 +655,7 @@ TEST_F(DeterminismFuzzing, ALimitedRunWithSeveralWorkersWarnsThatItIsNotReproduc
     const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
 
     auto hg = std::make_unique<hg::engine::Hypergraph>();
-    hg::engine::ParallelEvolutionEngine e(hg.get(), 4);
+    auto e_heap = std::make_unique<hg::engine::ParallelEvolutionEngine>(hg.get(), 4); hg::engine::ParallelEvolutionEngine& e = *e_heap;
     e.set_max_states(40);
     e.set_random_seed(0x5eed);
     for (const auto& r : rules) e.add_rule(r);

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
 #include "hypergraph/bitset.hpp"
@@ -176,7 +177,7 @@ TEST(CausalGraphTracking, BranchialEdgeManual) {
 // =============================================================================
 
 TEST(Rewriter, SingleRewrite_CausalTracking) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // Create initial state with edge {0, 1}
     VertexId v0 = hg.alloc_vertex();
@@ -223,7 +224,7 @@ TEST(Rewriter, SingleRewrite_CausalTracking) {
 }
 
 TEST(Rewriter, ChainedRewrites_CausalChain) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // Create initial edge {0, 1}
     VertexId v0 = hg.alloc_vertex();
@@ -277,7 +278,7 @@ TEST(Rewriter, ChainedRewrites_CausalChain) {
 }
 
 TEST(Rewriter, ParallelRewrites_BranchialEdges) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // Create initial state with two edges: {0, 1}, {1, 2}
     VertexId v0 = hg.alloc_vertex();
@@ -317,7 +318,7 @@ TEST(Rewriter, ParallelRewrites_BranchialEdges) {
 }
 
 TEST(Rewriter, OverlappingRewrites_BranchialEdges) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // Create initial state with one edge: {0, 1}
     VertexId v0 = hg.alloc_vertex();
@@ -365,7 +366,7 @@ TEST(Rewriter, OverlappingRewrites_BranchialEdges) {
 }
 
 TEST(Rewriter, TwoEdgeRule_CausalTracking) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // Create initial state with edges forming a path: {0, 1}, {1, 2}
     VertexId v0 = hg.alloc_vertex();
@@ -464,7 +465,7 @@ TEST(CausalGraphTracking, MultipleProducersMultipleConsumers) {
 // carried by 0: "canonical hash not computed" (State::canonical_hash) and ConcurrentMap's
 // EMPTY_KEY, which no storable key may equal.
 TEST(CanonicalHash, CanonicalHash_EmptyState) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     SparseBitset empty_edges;
 
     uint64_t hash = hg.compute_canonical_hash(empty_edges);
@@ -499,11 +500,11 @@ TEST(CanonicalHash, EmptyingRuleEvolvesWithoutError) {
             const std::string where =
                 std::string(m.name) + (quotient ? " quotient" : " full-capture");
 
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             hg.set_event_signature_keys(m.keys);
 
-            ParallelEvolutionEngine engine(&hg, 4);
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
             engine.set_explore_from_canonical_states_only(quotient);
             engine.add_rule(make_rule(0).lhs({0, 1}).build());   // {{x,y}} -> {}
 
@@ -516,7 +517,7 @@ TEST(CanonicalHash, EmptyingRuleEvolvesWithoutError) {
 }
 
 TEST(CanonicalHash, CanonicalHash_SingleEdge) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     VertexId v0 = hg.alloc_vertex();
     VertexId v1 = hg.alloc_vertex();
@@ -530,7 +531,7 @@ TEST(CanonicalHash, CanonicalHash_SingleEdge) {
 }
 
 TEST(CanonicalHash, CanonicalHash_IsomorphicStates) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // State 1: Triangle with vertices 0, 1, 2
     VertexId v0 = hg.alloc_vertex();
@@ -569,7 +570,7 @@ TEST(CanonicalHash, CanonicalHash_IsomorphicStates) {
 }
 
 TEST(CanonicalHash, CanonicalHash_NonIsomorphicStates) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // State 1: Triangle with vertices 0, 1, 2
     VertexId v0 = hg.alloc_vertex();
@@ -609,7 +610,7 @@ TEST(CanonicalHash, CanonicalHash_NonIsomorphicStates) {
 }
 
 TEST(CanonicalHash, CanonicalHash_SelfLoop) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // State 1: Self-loop at vertex 0
     VertexId v0 = hg.alloc_vertex();
@@ -633,7 +634,7 @@ TEST(CanonicalHash, CanonicalHash_SelfLoop) {
 }
 
 TEST(CanonicalHash, CanonicalInfo_VertexClasses) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
 
     // Create a star graph: center vertex 0 connected to 1, 2, 3
     VertexId v0 = hg.alloc_vertex();  // Center
@@ -684,7 +685,7 @@ TEST(CanonicalHash, CanonicalInfo_VertexClasses) {
 TEST(EventCanonicalizationModes, CorrespondingEdges_SameCanonicalEvent) {
     // Test that events from isomorphic states consuming corresponding edges
     // are identified as the same canonical event.
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);  // Enable state canonicalization
     hg.set_event_signature_keys(EVENT_SIG_FULL);  // Enable full event canonicalization
 
@@ -760,7 +761,7 @@ TEST(EventCanonicalizationModes, CorrespondingEdges_SameCanonicalEvent) {
 
 TEST(EventCanonicalizationModes, DifferentEdges_DifferentCanonicalEvent) {
     // Test that events consuming non-corresponding edges have different canonical events.
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_event_signature_keys(EVENT_SIG_FULL);
 
     // Create state with two edges
@@ -812,7 +813,7 @@ TEST(EventCanonicalizationModes, DifferentEdges_DifferentCanonicalEvent) {
 
 TEST(EventCanonicalizationModes, DifferentRules_DifferentCanonicalEvent) {
     // Test that events with different rules have different canonical events.
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     // Include Rule in signature so different rules produce different canonical events
     hg.set_event_signature_keys(EVENT_SIG_FULL | EventKey_Rule);
 
@@ -848,7 +849,7 @@ TEST(EventCanonicalizationModes, DifferentRules_DifferentCanonicalEvent) {
 
 TEST(EventCanonicalizationModes, NoSignatureKeys_AllCanonical) {
     // Test that with EVENT_SIG_NONE, all events are canonical.
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_event_signature_keys(EVENT_SIG_NONE);  // No canonicalization
 
     VertexId v0 = hg.alloc_vertex();
@@ -1125,9 +1126,9 @@ TEST(CausalGraphTracking, BranchialPairSharingTwoEdgesIsRecordedOnce) {
 TEST(EmptyRuleSet, EvolveKeepsTheInitialStates) {
     for (bool quotient : {false, true}) {
         {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine engine(&hg, 4);
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
             engine.set_explore_from_canonical_states_only(quotient);
             engine.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}}, 3);
             EXPECT_EQ(engine.last_error(), job_system::ErrorType::None);
@@ -1135,9 +1136,9 @@ TEST(EmptyRuleSet, EvolveKeepsTheInitialStates) {
             EXPECT_EQ(hg.num_events(), 0u) << "quotient=" << quotient;
         }
         {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine engine(&hg, 4);
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
             engine.set_explore_from_canonical_states_only(quotient);
             engine.evolve(std::vector<std::vector<std::vector<VertexId>>>{{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}}, 3);
             EXPECT_EQ(engine.last_error(), job_system::ErrorType::None);
@@ -1150,9 +1151,9 @@ TEST(EmptyRuleSet, EvolveKeepsTheInitialStates) {
 // An edge has at least one vertex: the hypergraph refuses to create an arity-0 edge, and the
 // engine refuses a rule with an arity-0 edge on either side.
 TEST(EmptyEdge, IsRefused) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     EXPECT_THROW(hg.create_edge(nullptr, 0), std::invalid_argument);
-    ParallelEvolutionEngine engine(&hg, 1);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
     RewriteRule rhs_empty = make_rule(0).lhs({0}).rhs({0}).build();
     rhs_empty.rhs[rhs_empty.num_rhs_edges++].arity = 0;
     EXPECT_THROW(engine.add_rule(rhs_empty), std::invalid_argument);
@@ -1166,9 +1167,9 @@ TEST(EmptyEdge, IsRefused) {
 // worker thread. Every access is atomic (counter_add / counter_read, raise_own /
 // published_mark), so this is not a data race; the ThreadSanitizer build checks it.
 TEST(CausalGraphTracking, CountsAreReadableWhileWorkersRun) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine engine(&hg, 4);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
     engine.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 2}).rhs({2, 0}).build());
     std::atomic<size_t> seen{0};
     engine.set_on_state_matches_complete([&](StateId, uint32_t) {
@@ -1186,9 +1187,9 @@ TEST(CausalGraphTracking, CountsAreReadableWhileWorkersRun) {
 // {{1,2}} -> {{2,1},{2,1},{1,1,1,1}} from {{1,1},{2,2},{2,2}}, 3 steps.
 TEST(QuotientNeedsFull, ExploreFromCanonicalStatesOnlyIsNotAppliedWithoutFullStates) {
     auto run = [](StateCanonicalizationMode mode, bool ecso, unsigned threads) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(mode);
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(ecso);
         engine.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 0}).rhs({1, 0}).rhs({0, 0, 0, 0}).build());
         engine.evolve(std::vector<std::vector<VertexId>>{{0u, 0u}, {1u, 1u}, {1u, 1u}}, 3);
@@ -1207,8 +1208,8 @@ TEST(QuotientNeedsFull, ExploreFromCanonicalStatesOnlyIsNotAppliedWithoutFullSta
 // ExploreFromCanonicalStatesOnly. Rule {{2,1}} -> {{1,2}} from {{1,1}}, 2 steps, p = 0.645.
 TEST(QuotientNeedsFull, ExplorationCoinIsUnchangedWithoutFullStates) {
     auto run = [](bool ecso) {
-        Hypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 1);
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(ecso);
         engine.set_exploration_probability(0.645);
         engine.set_random_seed(1718414059u);
@@ -1224,9 +1225,9 @@ TEST(QuotientNeedsFull, ExplorationCoinIsUnchangedWithoutFullStates) {
 // 2 steps, p = 0.645, seeds 1 to 8.
 TEST(ExplorationProbability, FullCaptureAndQuotientSampleTheSameClasses) {
     auto run = [](bool quotient, uint64_t seed) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        ParallelEvolutionEngine engine(&hg, 4);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 4); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(quotient);
         engine.set_exploration_probability(0.645);
         engine.set_random_seed(seed);
@@ -1245,10 +1246,10 @@ TEST(ExplorationProbability, FullCaptureAndQuotientSampleTheSameClasses) {
 // several depths, 4 steps.
 TEST(QuotientEventStep, StepKeysAgreeWithFullCaptureAtEveryThreadCount) {
     auto run = [](bool quotient, unsigned threads, hgcommon::EventSignatureKeys keys) {
-        Hypergraph hg;
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         hg.set_event_signature_keys(keys);
-        ParallelEvolutionEngine engine(&hg, threads);
+        auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
         engine.set_explore_from_canonical_states_only(quotient);
         engine.add_rule(make_rule(0).lhs({4, 3}).lhs({1, 2}).rhs({5, 5}).rhs({2, 3}).build());
         engine.add_rule(make_rule(1).lhs({3, 2, 3}).lhs({2, 2}).rhs({3, 2, 2}).rhs({2, 2, 3})

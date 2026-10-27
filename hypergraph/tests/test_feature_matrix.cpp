@@ -25,6 +25,7 @@
 // independent anchor exists (Full + event-off), counts are additionally pinned to the
 // brute-force isomorphism oracle.
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "reference/oracle_corpus.hpp"
 
@@ -47,10 +48,10 @@ struct Config {
 oracle::Counts run_counts(const std::vector<RewriteRule>& rules,
                           const std::vector<std::vector<VertexId>>& initial,
                           int steps, unsigned threads, const Config& cfg) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(cfg.state_mode);
     hg.set_event_signature_keys(cfg.event_keys);
-    ParallelEvolutionEngine engine(&hg, threads);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
     engine.set_explore_from_canonical_states_only(cfg.quotient);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
@@ -79,10 +80,10 @@ oracle::Counts run_counts(const std::vector<RewriteRule>& rules,
 oracle::Counts run_counts_multi(const std::vector<RewriteRule>& rules,
                                 const std::vector<std::vector<std::vector<VertexId>>>& inits,
                                 int steps, unsigned threads, const Config& cfg) {
-    Hypergraph hg;
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
     hg.set_state_canonicalization_mode(cfg.state_mode);
     hg.set_event_signature_keys(cfg.event_keys);
-    ParallelEvolutionEngine engine(&hg, threads);
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, threads); ParallelEvolutionEngine& engine = *engine_heap;
     engine.set_explore_from_canonical_states_only(cfg.quotient);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(inits, steps);
@@ -113,8 +114,8 @@ oracle::Counts run_counts_multi(const std::vector<RewriteRule>& rules,
 size_t brute_iso_multi(const std::vector<RewriteRule>& rules,
                        const std::vector<std::vector<std::vector<VertexId>>>& inits,
                        int steps, bool* all_small) {
-    Hypergraph hg;                          // None mode: no dedup
-    ParallelEvolutionEngine engine(&hg, 1); // single thread: no wasted states
+    auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;                          // None mode: no dedup
+    auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap; // single thread: no wasted states
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(inits, steps);
 
@@ -433,9 +434,9 @@ TEST(FeatureMatrix, MultipleInitialStatesOracleAndDeterministic) {
 TEST(FeatureMatrix, SampledEvolutionReproducibleSameSeed) {
     for (const auto& c : oracle::corpus()) {
         auto run = [&]() {
-            Hypergraph hg;
+            auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-            ParallelEvolutionEngine engine(&hg, 1);
+            auto engine_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 1); ParallelEvolutionEngine& engine = *engine_heap;
             engine.set_random_seed(0xC0FFEEu);
             engine.set_transition_rate(0.5);
             for (const auto& r : c.rules) engine.add_rule(r);
