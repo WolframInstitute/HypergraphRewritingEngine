@@ -78,8 +78,7 @@ struct Frame {
     std::string payload;
 };
 
-// Reads frames from `fd` until the first REPLY frame (no kind bit), which is included, or the end
-// of the stream.
+// Reads every frame from `fd` until the end of the stream.
 std::vector<Frame> read_frames(int fd) {
     std::vector<Frame> frames;
     auto read_n = [&](std::size_t n, std::string& out) {
@@ -101,12 +100,12 @@ std::vector<Frame> read_frames(int fd) {
         Frame f{kind, {}};
         if (!read_n(static_cast<std::size_t>(len & ~(7ull << 61)), f.payload)) return frames;
         frames.push_back(std::move(f));
-        if (kind == 0) return frames;
     }
 }
 
-// A FrameWriter on a pipe and a thread reading its frames. finish() writes a reply and returns
-// every frame up to and including it.
+// A FrameWriter on a pipe and a thread reading its frames. finish() writes a reply, stops the
+// writer and returns every frame it wrote: those before the reply, the reply, and those it wrote
+// after the reply before it stopped (a message posted while the reply was written).
 struct WriterOnPipe {
     int fds[2] = {-1, -1};
     std::FILE* out = nullptr;
