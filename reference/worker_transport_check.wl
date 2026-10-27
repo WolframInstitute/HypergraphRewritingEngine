@@ -9,6 +9,7 @@
      silent     a worker that never answers the handshake is killed and the call returns $Failed
      retry      the call after a missed handshake starts a worker again
      cap        after $hgWorkerStartTries missed handshakes in a row a call starts no worker
+     files      the byte files written for the fake workers are deleted at the end
    Usage, from wolframscript on Windows:
      hgTestPacletDir = "<paclet dir>"; Get["<this file>"]
    Prints TRANSPORT_OK, or TRANSPORT_FAIL and the failed checks, TRANSPORT_LOAD_FAIL when the
@@ -29,13 +30,16 @@ tcFrame[kind_Integer, payload_ByteArray] :=
 tcText[s_String] := StringToByteArray[s];
 tcReply[i_Integer] := ByteArray[Join[{82}, IntegerDigits[i, 256, 4]]];
 
-(* A command that writes `bytes` to standard output and sleeps for 600 s. *)
+(* A command that writes `bytes` to standard output and sleeps for 600 s. Its byte file is in
+   tcFiles, which the check deletes at the end. *)
+tcFiles = {};
 tcWriter[bytes_ByteArray] := Module[{file, str},
   file = FileNameJoin[{$TemporaryDirectory,
     "hg_fake_worker_" <> ToString[$ProcessID] <> "_" <> ToString[RandomInteger[10^9]] <> ".bin"}];
   str = OpenWrite[file, BinaryFormat -> True];
   BinaryWrite[str, bytes];
   Close[str];
+  AppendTo[tcFiles, file];
   {tcPowerShell, "-NoProfile", "-NonInteractive", "-Command",
    "$b=[IO.File]::ReadAllBytes('" <> file <> "'); $o=[Console]::OpenStandardOutput(); " <>
    "$o.Write($b,0,$b.Length); $o.Flush(); Start-Sleep -Seconds 600"}];
@@ -105,6 +109,8 @@ tcCheck["cap", tcCapResults === Table[$Failed, {$hgWorkerStartTries}] && tcCapLa
 tcReset[];
 
 Scan[Quiet[KillProcess[#]] &, tcRunning[]];
+Quiet[DeleteFile[tcFiles]];
+tcCheck["files", NoneTrue[tcFiles, FileExistsQ]];
 If[tcFailed === {}, Print["TRANSPORT_OK"], Print["TRANSPORT_FAIL: ", tcFailed]];
 
 End[];
