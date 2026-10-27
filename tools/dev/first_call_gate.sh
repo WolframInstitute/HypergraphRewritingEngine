@@ -5,6 +5,13 @@
 #   tools/dev/first_call_gate.sh                     # 40 kernels, CPU, this tree's paclet
 #   FIRST_CALL_N=40 FIRST_CALL_DEVICE=GPU tools/dev/first_call_gate.sh
 #   FIRST_CALL_PACLET=/path/to/paclet tools/dev/first_call_gate.sh   # another paclet directory
+#   FIRST_CALL_CASE=notebook tools/dev/first_call_gate.sh   # a case of reference/first_call_probe.wls
+#
+# The cases (first_call_probe.wls): first (the default), notebook (the notebook builds' order:
+# definitions, a file written and read, a plot rasterized, then the paclet and the call), needs,
+# and three that load no paclet and measure the kernel itself: print, startprocess, runprocess.
+# On Windows the gate also counts the wolfram.exe faults the Application log records during the
+# run (event 1000: module and offset).
 #
 # Each kernel runs under the lock /tmp/hg_wolfram.lock, one at a time, with HG_TUNE_MEMORY_LIMIT
 # (default 3 GB) passed to Windows through WSLENV. Check that the GPU is idle (nvidia-smi) before
@@ -21,6 +28,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 N="${FIRST_CALL_N:-40}"
 DEVICE="${FIRST_CALL_DEVICE:-CPU}"
+CASE="${FIRST_CALL_CASE:-first}"
 # The flag that runs a script file: -file for wolframscript, -script for a WolframKernel given as
 # WOLFRAMSCRIPT.
 FLAG="${WOLFRAMSCRIPT_FILE_FLAG:--file}"
@@ -60,6 +68,8 @@ kill_kernel() {
   fi
 }
 
+# The run's start, for the Application-log count at the end.
+T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ended=0
 failed=0
 returned=0
@@ -71,7 +81,7 @@ for i in $(seq 1 "$N"); do
   for attempt in 1 2 3 4 5; do
     rm -f "$MARK_WSL"
     flock /tmp/hg_wolfram.lock timeout 300 "$W" "$FLAG" "$(path "$ROOT/reference/first_call_probe.wls")" \
-      "$PACLET" "$MARK" "$DEVICE" > /dev/null 2>&1
+      "$PACLET" "$MARK" "$DEVICE" "$CASE" > /dev/null 2>&1
     rc=$?
     if grep -q '^start' "$MARK_WSL" 2>/dev/null; then started=1; break; fi
   done
@@ -84,7 +94,8 @@ for i in $(seq 1 "$N"); do
   elif [ -z "$result" ]; then
     ended=$((ended + 1))
     echo "kernel $i rc=$rc ENDED during its first call"
-  elif ! [[ "$result" =~ ^[0-9]+$ ]] || [[ "$messages" == *workerlost* ]]; then
+  elif ! [[ "$result" =~ ^[0-9]+$ || ( "$CASE" != first && "$CASE" != notebook && "$result" != *Failed* ) ]] ||
+       [[ "$messages" == *workerlost* ]]; then
     failed=$((failed + 1))
     echo "kernel $i rc=$rc FAILED: returned $result, messages $messages"
   else
@@ -93,6 +104,13 @@ for i in $(seq 1 "$N"); do
   fi
   rm -f "$MARK_WSL"
 done
-echo "first_call_gate: device $DEVICE, $N kernels: $returned returned, $failed failed," \
-  "$ended ended during the first call, $not_started not started"
+faults=""
+if [ "$WIN" = 1 ]; then
+  faults=$(cd /mnt/c && timeout 120 powershell.exe -NoProfile -Command \
+    "Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=[DateTime]::Parse('$T0').ToLocalTime()} -ErrorAction SilentlyContinue | Where-Object { \$_.Properties[0].Value -eq 'wolfram.exe' } | ForEach-Object { \$_.Properties[3].Value + ' ' + \$_.Properties[7].Value }" \
+    2> /dev/null | tr -d '\r' | sort | uniq -c | sed 's/^ *//' | tr '\n' ';')
+  faults=", Application-log wolfram.exe faults: ${faults:-none}"
+fi
+echo "first_call_gate: case $CASE, device $DEVICE, $N kernels: $returned returned, $failed failed," \
+  "$ended ended during the first call, $not_started not started$faults"
 [ "$ended" = 0 ] && [ "$failed" = 0 ]

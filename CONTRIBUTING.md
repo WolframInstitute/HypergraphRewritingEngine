@@ -78,11 +78,16 @@ tools/dev/oracle_gate.sh
 First-call gate (needs the Wolfram Engine; a local gate, not run in CI).
 `tools/dev/first_call_gate.sh` starts 40 fresh wolframscript kernels, one at a time under the
 Wolfram lock, and counts the kernels that ended during their first `HGEvolve` call; the gate
-passes at 0. Run it on both devices whenever the paclet's engine transport changes.
+passes at 0. On Windows it also counts the `wolfram.exe` faults the Application log records during
+the run. Run it on both devices, and with `FIRST_CALL_CASE=notebook` (definitions, a file written
+and read, a plot rasterized, then the paclet and the call), whenever the paclet's engine transport
+changes. The cases `print`, `startprocess` and `runprocess` load no paclet and measure the kernel
+itself.
 
 ```bash
 tools/dev/first_call_gate.sh
 FIRST_CALL_DEVICE=GPU tools/dev/first_call_gate.sh
+FIRST_CALL_CASE=notebook tools/dev/first_call_gate.sh
 ```
 
 Paclet (needs a Wolfram Engine): `reference/verify_paclet.wls` loads the local paclet
