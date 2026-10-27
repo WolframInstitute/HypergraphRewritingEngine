@@ -20,8 +20,8 @@
 // one hgcommon::ParkGate (park_gate.hpp): the producer publishes its message, passes the gate's
 // barrier and signals only when the writer has announced itself idle.
 //
-// Message text is cut into slots at UTF-8 character boundaries (hgcommon/utf8.hpp), so every log
-// frame is whole characters.
+// A message takes as many slots as its length needs, cut at UTF-8 character boundaries
+// (hgcommon/utf8.hpp), and is published whole or dropped whole. The writer sends it as one frame.
 //
 // THIRD-PARTY OUTPUT. The CUDA runtime prints device printf to fd 1, and drivers and libraries
 // write to fd 1 and fd 2. start_output_capture points both at a pipe the worker owns; its thread
@@ -50,13 +50,14 @@ constexpr std::size_t kCaptureBytesPerJob = 256 * 1024;
 
 enum class MessageKind : uint8_t { Log = 0, Progress = 1, Capture = 2 };
 
-// One bounded ring: kSlots messages of at most kSlotBytes each (a longer message is cut into
-// several). The producer writes tail, the consumer head; each is on its own cache line.
+// One bounded ring of kSlots slots of kSlotBytes each; a message takes one or more consecutive
+// slots. The producer writes tail, the consumer head; each is on its own cache line.
 struct LogRing {
     static constexpr uint32_t kSlots = 64;
     static constexpr uint32_t kSlotBytes = 1000;
     struct Slot {
         uint32_t length;
+        uint16_t parts;  // the message's slot count in its first slot, 0 in the others
         MessageKind kind;
         char text[kSlotBytes];
     };
@@ -66,16 +67,19 @@ struct LogRing {
     std::atomic<uint32_t> owned{0};
     Slot slots[kSlots];
 
-    // Producer side. False (and the message counted as dropped) when the ring is full.
+    // Producer side: the message in the slots it needs, published together. False (and the
+    // message counted as dropped) when the free slots are fewer.
     bool push(MessageKind kind, const char* text, std::size_t length);
-    // Consumer side: the oldest message, or false when the ring is empty.
+    // Consumer side: the oldest message as take(kind, parts, part), where part(i) is the i-th
+    // slot of the message; false when the ring is empty.
     template <class F>
     bool pop(F&& take) {
         const uint64_t h = head.load(std::memory_order_relaxed);
         if (h == tail.load(std::memory_order_acquire)) return false;
-        const Slot& s = slots[h % kSlots];
-        take(s.kind, s.text, s.length);
-        head.store(h + 1, std::memory_order_release);
+        const Slot& first = slots[h % kSlots];
+        const uint32_t parts = first.parts ? first.parts : 1;
+        take(first.kind, parts, [&](uint32_t i) -> const Slot& { return slots[(h + i) % kSlots]; });
+        head.store(h + parts, std::memory_order_release);
         return true;
     }
 };
@@ -144,7 +148,7 @@ WorkerRings& worker_rings();
 LogRing* this_thread_ring();
 
 // Puts a message in the calling thread's ring and wakes the writer if it is parked; never blocks.
-// Messages longer than a slot take several slots, cut at UTF-8 character boundaries.
+// A message longer than a slot takes several (LogRing::push).
 void post_message(MessageKind kind, const char* text, std::size_t length);
 
 class FrameWriter {
@@ -166,6 +170,7 @@ public:
 private:
     void run();
     bool drain_rings();
+    void write_header(uint64_t header);
     void write_frame(uint64_t header, const char* data, std::size_t length);
     void write_report(const char* format, unsigned long long count);
     void finish_handoff();

@@ -19,17 +19,42 @@
 
 namespace hgframe {
 
+namespace {
+
+// The bytes of `text` that go in one slot: at most kSlotBytes, ending at a character boundary
+// unless no boundary is found.
+std::size_t slot_part(const char* text, std::size_t length) {
+    if (length <= LogRing::kSlotBytes) return length;
+    const std::size_t whole = hgcommon::utf8_complete_prefix(text, LogRing::kSlotBytes);
+    return whole > 0 ? whole : LogRing::kSlotBytes;
+}
+
+}  // namespace
+
 bool LogRing::push(MessageKind kind, const char* text, std::size_t length) {
+    uint32_t parts = 0;
+    for (std::size_t rest = length, at = 0; parts == 0 || rest > 0; ++parts) {
+        if (parts > kSlots) break;  // more slots than the ring has: dropped below
+        const std::size_t part = slot_part(text + at, rest);
+        at += part;
+        rest -= part;
+    }
     const uint64_t t = tail.load(std::memory_order_relaxed);
-    if (t - head.load(std::memory_order_acquire) >= kSlots) {
+    if (parts > kSlots - (t - head.load(std::memory_order_acquire))) {
         dropped.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    Slot& s = slots[t % kSlots];
-    s.kind = kind;
-    s.length = static_cast<uint32_t>(length < kSlotBytes ? length : kSlotBytes);
-    std::memcpy(s.text, text, s.length);
-    tail.store(t + 1, std::memory_order_release);
+    for (uint32_t i = 0; i < parts; ++i) {
+        Slot& s = slots[(t + i) % kSlots];
+        const std::size_t part = slot_part(text, length);
+        s.kind = kind;
+        s.parts = static_cast<uint16_t>(i == 0 ? parts : 0);
+        s.length = static_cast<uint32_t>(part);
+        std::memcpy(s.text, text, part);
+        text += part;
+        length -= part;
+    }
+    tail.store(t + parts, std::memory_order_release);
     return true;
 }
 
@@ -71,20 +96,8 @@ LogRing* this_thread_ring() {
 
 void post_message(MessageKind kind, const char* text, std::size_t length) {
     LogRing* r = this_thread_ring();
-    if (!r) {
-        worker_rings().count_unringed();
-    } else {
-        do {
-            std::size_t part = length < LogRing::kSlotBytes ? length : LogRing::kSlotBytes;
-            if (part < length) {
-                const std::size_t whole = hgcommon::utf8_complete_prefix(text, part);
-                if (whole > 0) part = whole;
-            }
-            if (!r->push(kind, text, part)) break;
-            text += part;
-            length -= part;
-        } while (length > 0);
-    }
+    if (!r) worker_rings().count_unringed();
+    else r->push(kind, text, length);
     writer_gate().wake_one(0);
 }
 
@@ -99,10 +112,14 @@ FrameWriter::~FrameWriter() {
 
 void FrameWriter::begin_job() { job_seq_.fetch_add(1, std::memory_order_release); }
 
-void FrameWriter::write_frame(uint64_t header, const char* data, std::size_t length) {
+void FrameWriter::write_header(uint64_t header) {
     uint8_t h[8];
     for (int i = 0; i < 8; ++i) h[i] = static_cast<uint8_t>(header >> (8 * i));
     std::fwrite(h, 1, 8, out_);
+}
+
+void FrameWriter::write_frame(uint64_t header, const char* data, std::size_t length) {
+    write_header(header);
     if (length) std::fwrite(data, 1, length, out_);
 }
 
@@ -126,7 +143,9 @@ bool FrameWriter::drain_rings() {
     for (uint32_t i = 0; i < n; ++i) {
         LogRing* r = rings.at(i);
         if (!r) continue;
-        while (r->pop([&](MessageKind kind, const char* text, uint32_t length) {
+        while (r->pop([&](MessageKind kind, uint32_t parts, auto part) {
+            std::size_t length = 0;
+            for (uint32_t p = 0; p < parts; ++p) length += part(p).length;
             if (kind == MessageKind::Capture) {
                 if (capture_forwarded_ + length > kCaptureBytesPerJob) {
                     capture_omitted_ += length;
@@ -134,8 +153,11 @@ bool FrameWriter::drain_rings() {
                 }
                 capture_forwarded_ += length;
             }
-            write_frame((kind == MessageKind::Progress ? kProgressFrameBit : kLogFrameBit) |
-                            length, text, length);
+            // One frame for the whole message.
+            write_header((kind == MessageKind::Progress ? kProgressFrameBit : kLogFrameBit) |
+                         length);
+            for (uint32_t p = 0; p < parts; ++p)
+                std::fwrite(part(p).text, 1, part(p).length, out_);
         }))
             any = true;
         if (const uint64_t lost = r->dropped.exchange(0, std::memory_order_relaxed)) {
@@ -164,10 +186,7 @@ void FrameWriter::finish_handoff() {
         capture_omitted_ = 0;
     }
     if (reply_) {
-        uint8_t h[8];
-        const uint64_t len = reply_->size();
-        for (int i = 0; i < 8; ++i) h[i] = static_cast<uint8_t>(len >> (8 * i));
-        std::fwrite(h, 1, 8, out_);
+        write_header(reply_->size());
         for (const auto& part : reply_->parts)
             if (!part.empty()) std::fwrite(part.data(), 1, part.size(), out_);
     } else if (error_) {

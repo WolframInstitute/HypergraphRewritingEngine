@@ -254,25 +254,57 @@ TEST(FrameWriter, ProducersEachWriteTheirOwnRing) {
     }
 }
 
-// A message of 2600 bytes whose characters (2, 3 and 4 bytes) straddle the 1000-byte slot size
-// arrives as frames of whole characters that join to the message.
-TEST(FrameWriter, LogTextIsCutAtCharacterBoundaries) {
+// A 2600-byte message of each kind whose characters (2, 3 and 4 bytes) straddle the 1000-byte
+// slot size arrives as one frame equal to the message: a progress line is one line under
+// "ShowProgress".
+TEST(FrameWriter, ALongMessageArrivesAsOneFrame) {
     std::string text(999, 'a');
     text += "\xC3\xA9";              // bytes 999-1000: straddles the first slot's end
     text += "\xE2\x82\xAC";          // bytes 1001-1003
     text.append(994, 'b');
     text += "\xF0\x9F\x98\x80";      // bytes 1998-2001: straddles the second slot's end (1999)
     while (text.size() < 2600) text += "\xC3\xA9";
+    for (const auto kind : {hgframe::MessageKind::Log, hgframe::MessageKind::Progress}) {
+        WriterOnPipe w;
+        std::thread([&] { hgframe::post_message(kind, text.data(), text.size()); }).join();
+        std::vector<std::string> payloads;
+        for (const Frame& f : w.finish())
+            if (f.kind != 0) payloads.push_back(f.payload);
+        ASSERT_EQ(payloads.size(), 1u);
+        EXPECT_EQ(payloads[0], text);
+    }
+}
+
+// Messages of three slots each, posted before any writer runs: the 64-slot ring holds 21 of them
+// whole, and the 22nd to 30th, which do not fit, are dropped whole. The writer sends the 21 whole
+// messages and a report of 9 dropped; no frame carries part of a message.
+TEST(FrameWriter, AMessageIsDeliveredWholeOrDroppedWhole) {
+    auto message = [](int m) {
+        std::string t = "m" + std::to_string(m) + " ";
+        t.append(2500 - t.size(), static_cast<char>('a' + m % 26));
+        return t;
+    };
+    std::thread([&] {
+        for (int m = 0; m < 30; ++m) {
+            const std::string t = message(m);
+            hgframe::post_message(hgframe::MessageKind::Log, t.data(), t.size());
+        }
+    }).join();
     WriterOnPipe w;
-    std::thread([&] { hgframe::post_message(hgframe::MessageKind::Log, text.data(), text.size()); }).join();
-    std::string joined;
+    int whole = 0;
+    uint64_t dropped = 0;
     for (const Frame& f : w.finish()) {
         if (f.kind != hgframe::kLogFrameBit) continue;
-        EXPECT_TRUE(whole_characters(f.payload)) << "a frame of " << f.payload.size() << " bytes";
-        EXPECT_LE(f.payload.size(), hgframe::LogRing::kSlotBytes);
-        joined += f.payload;
+        if (const uint64_t d = dropped_in(f.payload)) {
+            dropped += d;
+            continue;
+        }
+        EXPECT_EQ(f.payload, message(whole)) << "frame " << whole << " of " << f.payload.size()
+                                             << " bytes";
+        ++whole;
     }
-    EXPECT_EQ(joined, text);
+    EXPECT_EQ(whole, 21);
+    EXPECT_EQ(dropped, 9u);
 }
 
 // The capture loop reads a pipe 1000 bytes at a time. Output whose characters straddle the read

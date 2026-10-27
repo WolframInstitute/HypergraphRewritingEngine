@@ -18,8 +18,8 @@
 
 - `HGSessionOpen`, `HGSessionStep` and `HGSessionQuery` accept the `"InitialCondition"` property.
 
-- Text the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output) is cut
-  into pieces only between characters, so a multi-byte UTF-8 character is never split.
+- Each message the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output)
+  arrives whole: a progress message is one line however long.
 
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`
