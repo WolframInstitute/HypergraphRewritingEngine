@@ -137,6 +137,17 @@ function(create_test_executable TARGET_NAME)
         target_link_options(${TARGET_NAME} PRIVATE -static-libgcc -static-libstdc++)
     endif()
 
+    # Test bodies hold Hypergraph (385 KB) and ParallelEvolutionEngine (111-144 KB) objects on the
+    # stack, several per test. A Windows thread's default stack is 1 MB, and a test body with two
+    # of each overflows it (exit 0xC00000FD); Linux's main-thread stack is 8 MB. 8 MB here too.
+    if(WIN32)
+        if(MSVC)
+            target_link_options(${TARGET_NAME} PRIVATE /STACK:8388608)
+        else()
+            target_link_options(${TARGET_NAME} PRIVATE -Wl,--stack,8388608)
+        endif()
+    endif()
+
     if(BUILD_WOLFRAM_LANGUAGE_PACLET)
         add_dependencies(${TARGET_NAME} paclet)
     endif()
