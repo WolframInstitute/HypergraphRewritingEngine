@@ -87,18 +87,18 @@ A state P with m hyperedges, n vertices and k costed transitions:
 
 ## Measurements
 
-Callgrind instructions (Ir), one worker, `hg_evolve` built with the same flags at each commit. The job is a cycle of n vertices with a loop at each vertex and the loop-move rule `{{x,x},{x,y}} -> {{x,y},{y,y}}`, one step under "MaxStatesPerStep" 1, so the initial state's n transitions are each costed once. The table gives the Ir of `transition_cost_of` per transition.
+Callgrind instructions (Ir), one process, clang++ -O3. The job is a cycle of n vertices with a loop at each vertex and the loop-move rule `{{x,x},{x,y}} -> {{x,y},{y,y}}`: the parent's part is built once (`tc_parent_of`) and each of the n transitions is costed (`tc_child_cost`). The table gives the whole process's Ir divided by n, so the parent's part and the start-up are spread over the transitions.
 
-| Field | n | efed30ff | this change |
-|---|---|---|---|
-| Degree | 100 | 9,602 | 12,477 |
-| Degree | 400 | 10,276 | 16,548 |
-| Degree | 1600 | 11,022 | 18,330 |
-| LoopCount | 1600 | 11,400 | 18,883 |
-| Curvature | 100 | 2,438,425 | 2,378,929 |
-| Curvature | 400 | 30,926,544 | 30,016,530 |
+| Field | n | Ir per transition |
+|---|---|---|
+| Degree | 100 | 28,000 |
+| Degree | 400 | 14,233 |
+| Degree | 1600 | 11,253 |
+| LoopCount | 100 | 28,353 |
+| LoopCount | 400 | 14,615 |
+| LoopCount | 1600 | 11,654 |
 
-For the local fields the cost per transition grows by 47% from n = 100 to n = 1600 while n grows 16-fold, and is 30% to 66% above efed30ff, whose sums ran in vertex order over std::vector storage. For the curvature the cost per transition grows with n, as the bound above says, and is 3% lower.
+A transition's own work is about 5,600 Ir at every n (the child's local field over the hyperedges at the rewritten vertices). The host builds the parent's part in one pass: its arena starts at 80 bytes per incidence (`kTcBytesPerIncidence`). `sg_sort` sorts up to 64 values by insertion, which is most of a child's sorts.
 
 Best-first search, the growth rules from a 4-cycle with the degree residual, 10 steps, one worker: the whole run is 39.7, 67.5, 121.9, 220.3 and 424.2 million Ir for budgets of 250, 500, 1000, 2000 and 4000 states, linear in the budget, 103,000 Ir per state created by `run_best_first` with the rewrite, the matching and the costs it runs.
 

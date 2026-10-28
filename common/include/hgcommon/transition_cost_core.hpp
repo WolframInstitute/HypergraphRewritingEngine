@@ -395,10 +395,16 @@ struct TcEdgeLists {
     TcEdges view() const { return TcEdges{off.data(), v.data(), count()}; }
 };
 
-// Runs build(arena) in `bytes`, growing it until the build fits.
+// The arena bytes per incidence a host build starts with. A local field's parent part on the
+// loop-move cycle (docs/TRANSITION_COST.md) fits in it at 100 to 20000 vertices in one pass.
+constexpr size_t kTcBytesPerIncidence = 80;
+
+// Runs build(arena) in `bytes`, at least `hint` bytes, growing it until the build fits. A build
+// that does not fit is run again from the start, so the hint is sized to fit the first time.
 template <class Build>
-inline void tc_with_arena(std::vector<unsigned char>& bytes, Build&& build) {
-    if (bytes.size() < 4096) bytes.resize(4096);
+inline void tc_with_arena(std::vector<unsigned char>& bytes, size_t hint, Build&& build) {
+    if (hint < 4096) hint = 4096;
+    if (bytes.size() < hint) bytes.resize(hint);
     for (;;) {
         SgArena a;
         a.base = bytes.data();
@@ -416,7 +422,8 @@ struct TcFieldOf {
 };
 
 inline void tc_field_of(const TcEdges& el, const TransitionCostSpec& spec, TcFieldOf& out) {
-    tc_with_arena(out.bytes, [&](SgArena& a) { return tc_field_build(el, spec, a, out.field); });
+    tc_with_arena(out.bytes, kTcBytesPerIncidence * el.off[el.count()],
+                  [&](SgArena& a) { return tc_field_build(el, spec, a, out.field); });
 }
 
 // A parent's part, with its hyperedges, in its own storage.
@@ -429,7 +436,7 @@ struct TcParent {
 inline void tc_parent_of(const TcEdges& el, const TransitionCostSpec& spec, TcParent& p) {
     p.edges.clear();
     for (uint32_t i = 0; i < el.count(); ++i) p.edges.add(el.v + el.off[i], el.arity(i));
-    tc_with_arena(p.bytes,
+    tc_with_arena(p.bytes, kTcBytesPerIncidence * el.off[el.count()],
                   [&](SgArena& a) { return tc_parent_build(p.edges.view(), spec, a, p.view); });
 }
 
@@ -437,7 +444,7 @@ inline double tc_child_cost(const TcParent& p, const uint32_t* consumed, uint32_
                             const TcEdges& produced, const TransitionCostSpec& spec) {
     HG_THREAD_LOCAL(std::vector<unsigned char>, bytes);
     double out = 0.0;
-    tc_with_arena(bytes, [&](SgArena& a) {
+    tc_with_arena(bytes, 0, [&](SgArena& a) {
         return tc_child_cost(p.view, consumed, nc, produced, spec, a, out);
     });
     return out;
