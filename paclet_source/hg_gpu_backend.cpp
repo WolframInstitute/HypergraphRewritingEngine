@@ -300,18 +300,22 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     hg_gpu::EvolveInput in = build_input(job);
     // The operating-system limit while a device engine is built: the commit so far plus physical
     // memory above the job's limit, since Windows charges the engine's device memory to the
-    // process's commit and the engine's estimate is below its allocation; then the runtime's
-    // commit (hg_evolve_main) plus the commit the engine added.
+    // process's commit and the engine's estimate is below its allocation. Once it is built: the
+    // runtime's commit (hg_evolve_main), the commit the construction added, and the engine's
+    // estimated device bytes again for the pools a run allocates (the held match sets).
     {
         static const uint64_t runtime = hgcommon::process_memory_overhead();
         auto before = std::make_shared<uint64_t>(0);
-        in.before_engine = [before](uint64_t) {
+        auto estimate = std::make_shared<uint64_t>(0);
+        in.before_engine = [before, estimate](uint64_t device_bytes) {
             *before = hgcommon::process_committed_bytes();
+            *estimate = device_bytes;
             hgcommon::set_process_memory_overhead(*before + hgcommon::host_topology().total_bytes);
         };
-        in.after_engine = [before] {
+        in.after_engine = [before, estimate] {
             const uint64_t now = hgcommon::process_committed_bytes();
-            hgcommon::set_process_memory_overhead(runtime + (now > *before ? now - *before : 0));
+            hgcommon::set_process_memory_overhead(runtime + (now > *before ? now - *before : 0) +
+                                                  *estimate);
         };
     }
 

@@ -245,11 +245,18 @@ const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in
 // (Auto-grow-on-overflow is Stream 5.)
 // ---------------------------------------------------------------------------
 struct Engine::Impl {
+    // The IR arena a run claims (run, below) is allocated here at the size the run asks for, so
+    // its device memory is taken inside the construction that EvolveInput::before_engine and
+    // after_engine bracket. Windows charges device memory to the process's commit, and outside
+    // that window the operating-system limit is the job's "MemoryLimit" plus the runtime's and
+    // the engine's commit.
     explicit Impl(EngineConfig cfg)
         : cfg_(cfg)
         , state_(cfg)
         , matches_(match_pool_records(cfg))
-    {}
+    {
+        state_.ir_arena(persistent_arena_words(cfg.ir_arena_share_words, persistent_grid_of(cfg)));
+    }
 
     void reset() {
         state_.clear();
