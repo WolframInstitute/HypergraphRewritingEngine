@@ -424,6 +424,14 @@ void EngineState::set_state_cost(const hgcommon::StateCost& cost) {
     HG_CUDA_CHECK(cudaMemcpy(state_cost_dev_, &cost, sizeof(hgcommon::StateCost),
                              cudaMemcpyHostToDevice),
                   "EngineState state_cost h2d");
+    // One entry per state slot, twice over for the probe runs; emptied for every run.
+    state_cost_fingerprint_ = hgcommon::state_cost_fingerprint(cost);
+    if (!state_cost_cache_) {
+        uint32_t cap = 1u << 10;
+        while (cap < 2ull * cfg_.max_states && cap < (1u << 26)) cap <<= 1;
+        state_cost_cache_ = std::make_unique<ConcurrentMap<uint64_t, uint64_t>>(cap);
+    }
+    state_cost_cache_->clear();
 }
 
 DeviceState EngineState::device() const {
@@ -457,6 +465,8 @@ DeviceState EngineState::device() const {
         d.undirected                       = undirected_ ? 1u : 0u;
         d.event_order                      = event_ordering_;
         d.state_cost                     = state_cost_on_ ? state_cost_dev_ : nullptr;
+        if (state_cost_on_ && state_cost_cache_) d.state_cost_cache = state_cost_cache_->view();
+        d.state_cost_fingerprint         = state_cost_fingerprint_;
         d.transition_cost                  = transition_cost_;
         d.state_path_cost                  = beam_path_ ? state_path_cost_ : nullptr;
         d.edge_label                       = lineage_ ? edge_label_ : nullptr;

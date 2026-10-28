@@ -125,6 +125,11 @@ struct DeviceState {
     // "StateCost" in device memory, or null: the step cap keeps the lowest-cost successors
     // (select_step, state_cost_of_form_device).
     const hgcommon::StateCost* state_cost = nullptr;
+    // Each successor's cost by hgcommon::state_cost_cache_key, as the host's
+    // ParallelEvolutionEngine::successor_cost keeps it: a candidate whose successor is cached
+    // takes the cost without computing its record. An empty view without "StateCost".
+    ConcurrentMap<uint64_t, uint64_t>::DeviceView state_cost_cache{};
+    uint64_t state_cost_fingerprint = 0;
     // "TransitionCost": field TC_FIELD_NONE when the run has none (transition_cost_device).
     hgcommon::TransitionCostSpec transition_cost{};
     // "BeamCost" -> "Path": each state's path cost ([max_states], NaN until the rewrite that
@@ -743,6 +748,8 @@ private:
     uint32_t                           event_ordering_ = 0;
     hgcommon::StateCost*               state_cost_dev_          = nullptr;
     bool                               state_cost_on_           = false;
+    std::unique_ptr<ConcurrentMap<uint64_t, uint64_t>> state_cost_cache_;
+    uint64_t                           state_cost_fingerprint_  = 0;
     hgcommon::TransitionCostSpec       transition_cost_{};
     bool                               beam_path_ = false;
     double*                            state_path_cost_ = nullptr;

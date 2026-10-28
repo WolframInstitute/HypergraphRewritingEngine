@@ -899,11 +899,27 @@ __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& r
         return false;
     }
     if (full_id) *full_id = hgcommon::SuccessorIdentity{h, 0};
+    // The cost by successor, as the host's successor_cost: a cached successor takes its cost,
+    // and the first to compute one stores it (each candidate that misses computes the same
+    // value, so none waits for another).
+    const IrWarpAll warp{};
+    const uint64_t cache_key = hgcommon::state_cost_cache_key(h, ds.state_cost_fingerprint);
+    const bool caching = ds.state_cost_cache.capacity != 0u;
     uint64_t s = 0;
-    if (!state_cost_of_form_device(ds, form, words, ctx.arena, *ctx.slot, *ctx.slot_words,
-                                   *ds.state_cost, s, IrWarpAll{})) {
-        if ((threadIdx.x & 31u) == 0) ds.errors.record(ErrorKind::kIRArenaExhausted);
-        return false;
+    uint32_t hit = 0;
+    if (caching && warp.leader()) {
+        const auto found = ds.state_cost_cache.lookup(cache_key);
+        if (found.found) { s = found.value; hit = 1u; }
+    }
+    if (caching && warp.bcast(hit) != 0u) {
+        s = warp.bcast64(s);
+    } else {
+        if (!state_cost_of_form_device(ds, form, words, ctx.arena, *ctx.slot, *ctx.slot_words,
+                                       *ds.state_cost, s, warp)) {
+            if ((threadIdx.x & 31u) == 0) ds.errors.record(ErrorKind::kIRArenaExhausted);
+            return false;
+        }
+        if (caching && warp.leader()) ds.state_cost_cache.insert_if_absent(cache_key, s);
     }
     out = transition ? hgcommon::state_cost_key(tc + hgcommon::sp_value_of(s)) : s;
     add_parent_path_cost(ds, parent, out);

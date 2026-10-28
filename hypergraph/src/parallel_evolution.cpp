@@ -1123,7 +1123,7 @@ hgcommon::SuccessorIdentity ParallelEvolutionEngine::successor_identity(StateId 
 
 uint64_t ParallelEvolutionEngine::successor_cost(uint64_t hash,
                                                 const std::vector<uint32_t>& form) {
-    const uint64_t key = hgcommon::avoid_reserved_keys(hash ^ state_cost_fingerprint_);
+    const uint64_t key = hgcommon::state_cost_cache_key(hash, state_cost_fingerprint_);
     if (const auto have = state_costs_.lookup(key)) return *have;
     const uint64_t c = hgcommon::state_cost_key(hg_->state_cost_of_form(state_cost_, form));
     return state_costs_.insert_if_absent(key, c).first;
@@ -3457,16 +3457,7 @@ void ParallelEvolutionEngine::set_matches_per_step(size_t max) {
 
 void ParallelEvolutionEngine::set_state_cost(const hgcommon::StateCost& cost) {
     state_cost_ = cost;
-    // The cost cache's keys mix in the program, so a session call with another program
-    // computes its own costs.
-    uint64_t f = hgcommon::splitmix64(cost.n);
-    for (uint32_t i = 0; i < cost.n; ++i) {
-        uint64_t bits = 0;
-        std::memcpy(&bits, &cost.arg[i], sizeof bits);
-        f = hgcommon::splitmix64(f ^ cost.op[i]);
-        f = hgcommon::splitmix64(f ^ bits);
-    }
-    state_cost_fingerprint_ = f;
+    state_cost_fingerprint_ = hgcommon::state_cost_fingerprint(cost);
 }
 
 void ParallelEvolutionEngine::set_random_seed(uint64_t seed) { random_seed_ = seed; }

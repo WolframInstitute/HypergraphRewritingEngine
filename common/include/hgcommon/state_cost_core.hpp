@@ -19,6 +19,7 @@
 #include "hgcommon/step_pool_core.hpp"
 
 #include <cstdint>
+#include <cstring>
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -165,6 +166,22 @@ HG_HD inline double state_cost_eval(const StateCost& c, const StateInvariantValu
 
 // A cost as a key whose unsigned order is the numeric order (sp_key_of).
 HG_HD inline uint64_t state_cost_key(double cost) { return sp_key_of(cost != cost ? HUGE_VAL : cost); }
+
+// THE COST CACHE'S KEYS, one rule for both engines: a successor's canonical hash mixed with a
+// fingerprint of the program, so a session call with another program computes its own costs.
+HG_HD inline uint64_t state_cost_fingerprint(const StateCost& cost) {
+    uint64_t f = splitmix64(cost.n);
+    for (uint32_t i = 0; i < cost.n; ++i) {
+        uint64_t bits = 0;
+        memcpy(&bits, &cost.arg[i], sizeof bits);
+        f = splitmix64(f ^ cost.op[i]);
+        f = splitmix64(f ^ bits);
+    }
+    return f;
+}
+HG_HD inline uint64_t state_cost_cache_key(uint64_t canonical_hash, uint64_t fingerprint) {
+    return avoid_reserved_keys(canonical_hash ^ fingerprint);
+}
 
 // THE COST ORDER: successors by cost key, then by successor rank (successor_ranks).
 HG_HD inline bool cost_before(uint64_t cost_a, uint64_t rank_a, uint64_t cost_b, uint64_t rank_b) {
