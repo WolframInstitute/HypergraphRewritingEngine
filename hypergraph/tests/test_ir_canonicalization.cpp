@@ -4,6 +4,7 @@
 #include <hypergraph/ir_canonicalization.hpp>
 #include <hypergraph/hypergraph.hpp>
 #include <cstdio>
+#include <type_traits>
 #include <vector>
 #include <set>
 #include <algorithm>
@@ -569,6 +570,290 @@ TEST_F(IRCanonicalizationTest, ManyIsomorphicComponentsHashEquallyWithReusedScra
     EXPECT_EQ(ranks(rank_a, 0, 80), ranks(rank_b, e - 80, e));
 }
 
+// =============================================================================
+// PER-COMPONENT CANONICALISATION AGAINST THE WHOLE-STATE SEARCH
+// =============================================================================
+// ir_canonical_hash canonicalises each connected component on its own; ir_canonical_hash_of
+// searches the state whole. Both give an exact canonical form, so two states have equal forms
+// under one exactly when they have equal forms under the other. The states are disjoint unions
+// of components drawn from a pool of small random hypergraphs (arity 1 to 3, multi-edges and
+// self-loops), so many pairs share components and differ only in their multiplicities or in
+// which component carries which copy.
+namespace {
+
+using IrState = std::vector<std::vector<uint32_t>>;
+
+struct IrOut {
+    std::vector<uint32_t> form, rank, orbit;
+    uint64_t hash = 0;
+    uint32_t status = 0;
+};
+
+IrOut ir_run(const IrState& g, bool whole, bool sym) {
+    std::vector<uint8_t> ea;
+    std::vector<uint32_t> eoff, ev;
+    for (const auto& e : g) {
+        ea.push_back(static_cast<uint8_t>(e.size()));
+        eoff.push_back(static_cast<uint32_t>(ev.size()));
+        for (uint32_t v : e) ev.push_back(v);
+    }
+    const uint32_t ne = static_cast<uint32_t>(g.size()), occ = static_cast<uint32_t>(ev.size());
+    std::vector<uint32_t> verts(occ + 1);
+    const uint32_t n = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
+    IrOut o;
+    o.form.resize(occ + ne);
+    o.rank.resize(ne);
+    o.orbit.resize(ne);
+    std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(n, ne, occ, n + 1) + 2);
+    hgcommon::IrResult r;
+    if (whole) {
+        auto run = [&](auto sym_tag) {
+            return hgcommon::ir_canonical_hash_of<decltype(sym_tag)::value, hgcommon::IrSerial>(
+                ea.data(), eoff.data(), ev.data(), ne, n, occ, scratch.data(), n + 1,
+                o.rank.data(), hgcommon::IR_HOST_GENERATORS, o.orbit.data(), nullptr,
+                o.form.data(), nullptr, nullptr, hgcommon::IrSerial{});
+        };
+        r = sym ? run(std::true_type{}) : run(std::false_type{});
+    } else {
+        r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(), ne, n, occ,
+                                        scratch.data(), n + 1, o.rank.data(),
+                                        hgcommon::IR_HOST_GENERATORS, o.orbit.data(), nullptr,
+                                        o.form.data(), nullptr, nullptr, hgcommon::IrSerial{}, sym);
+    }
+    o.hash = r.hash;
+    o.status = r.status;
+    return o;
+}
+
+// The partition of edges into orbits, as a canonical vector: each edge's smallest orbit-mate.
+std::vector<uint32_t> orbit_partition(const std::vector<uint32_t>& orbit) {
+    std::vector<uint32_t> first(orbit.size(), UINT32_MAX), out(orbit.size());
+    for (uint32_t e = 0; e < orbit.size(); ++e) {
+        if (orbit[e] >= first.size()) return {};
+        if (first[orbit[e]] == UINT32_MAX) first[orbit[e]] = e;
+        out[e] = first[orbit[e]];
+    }
+    return out;
+}
+
+struct Lcg64 {
+    uint64_t x;
+    uint32_t next(uint32_t m) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>((x >> 33) % m);
+    }
+};
+
+IrState random_component(Lcg64& r) {
+    const uint32_t nv = 1 + r.next(4), ne = 1 + r.next(4);
+    IrState c;
+    for (uint32_t i = 0; i < ne; ++i) {
+        std::vector<uint32_t> e;
+        const uint32_t ar = 1 + r.next(3);
+        for (uint32_t k = 0; k < ar; ++k) e.push_back(r.next(nv));
+        c.push_back(e);
+    }
+    // Connected: chain any vertex the edges leave apart onto vertex 0.
+    std::vector<uint32_t> p(nv);
+    for (uint32_t v = 0; v < nv; ++v) p[v] = v;
+    auto find = [&](uint32_t x) { while (p[x] != x) x = p[x] = p[p[x]]; return x; };
+    for (const auto& e : c)
+        for (uint32_t k = 1; k < e.size(); ++k) p[find(e[k])] = find(e[0]);
+    std::vector<bool> used(nv, false);
+    for (const auto& e : c) for (uint32_t v : e) used[v] = true;
+    uint32_t root = 0;
+    while (!used[root]) ++root;
+    for (uint32_t v = root + 1; v < nv; ++v)
+        if (used[v] && find(v) != find(root)) { c.push_back({root, v}); p[find(v)] = find(root); }
+    return c;
+}
+
+// The disjoint union of the components named by `picks`, each on fresh vertices, with every
+// vertex relabelled by `perm_seed` and the edges shuffled.
+IrState union_of(const std::vector<IrState>& pool, const std::vector<uint32_t>& picks,
+                 uint64_t perm_seed) {
+    IrState g;
+    uint32_t base = 0;
+    for (uint32_t i : picks) {
+        uint32_t top = 0;
+        for (const auto& e : pool[i]) {
+            std::vector<uint32_t> f;
+            for (uint32_t v : e) { f.push_back(base + v); top = std::max(top, v + 1); }
+            g.push_back(f);
+        }
+        base += top;
+    }
+    Lcg64 r{perm_seed};
+    std::vector<uint32_t> relabel(base);
+    for (uint32_t v = 0; v < base; ++v) relabel[v] = v;
+    for (uint32_t v = base; v > 1; --v) std::swap(relabel[v - 1], relabel[r.next(v)]);
+    for (auto& e : g) for (auto& v : e) v = relabel[v] * 7 + 3;
+    for (uint32_t i = static_cast<uint32_t>(g.size()); i > 1; --i) std::swap(g[i - 1], g[r.next(i)]);
+    return g;
+}
+
+}  // namespace
+
+TEST(IRComponents, EqualityOfFormsMatchesTheWholeStateSearch) {
+    for (const bool sym : {false, true}) {
+        Lcg64 r{sym ? 99u : 7u};
+        std::vector<IrState> pool;
+        for (int i = 0; i < 6; ++i) pool.push_back(random_component(r));
+        // The same component twice in the pool, so two picks can be isomorphic through
+        // different pool entries.
+        pool.push_back(pool[0]);
+        std::vector<IrState> states;
+        for (int s = 0; s < 120; ++s) {
+            std::vector<uint32_t> picks;
+            const uint32_t k = 1 + r.next(5);
+            for (uint32_t i = 0; i < k; ++i) picks.push_back(r.next(static_cast<uint32_t>(pool.size())));
+            states.push_back(union_of(pool, picks, 1000 + s));
+            // A relabelled, reshuffled copy of the same union, its picks in another order.
+            std::vector<uint32_t> rev(picks.rbegin(), picks.rend());
+            states.push_back(union_of(pool, rev, 5000 + s));
+        }
+        std::vector<IrOut> whole, comp;
+        for (const auto& g : states) {
+            whole.push_back(ir_run(g, true, sym));
+            comp.push_back(ir_run(g, false, sym));
+            ASSERT_EQ(whole.back().status, hgcommon::IR_OK);
+            ASSERT_EQ(comp.back().status, hgcommon::IR_OK);
+            // The orbits are the same partition of the edges.
+            EXPECT_EQ(orbit_partition(comp.back().orbit), orbit_partition(whole.back().orbit));
+        }
+        uint32_t equal_pairs = 0;
+        for (size_t a = 0; a < states.size(); ++a)
+            for (size_t b = a + 1; b < states.size(); ++b) {
+                const bool w = whole[a].form == whole[b].form;
+                const bool c = comp[a].form == comp[b].form;
+                ASSERT_EQ(w, c) << "states " << a << " and " << b << (sym ? " (undirected)" : "");
+                EXPECT_EQ(c, comp[a].hash == comp[b].hash) << a << " " << b;
+                if (c) {
+                    ++equal_pairs;
+                    // Equal forms: the edge at each rank has the same orbit id in both states.
+                    std::vector<uint32_t> oa(states[a].size()), ob(states[b].size());
+                    for (uint32_t e = 0; e < oa.size(); ++e) oa[comp[a].rank[e]] = comp[a].orbit[e];
+                    for (uint32_t e = 0; e < ob.size(); ++e) ob[comp[b].rank[e]] = comp[b].orbit[e];
+                    EXPECT_EQ(oa, ob) << a << " " << b;
+                }
+            }
+        // Every state has its reshuffled copy, so at least 120 pairs are equal.
+        EXPECT_GE(equal_pairs, 120u);
+    }
+}
+
+// Two components X and Y: {X, X, Y} and {X, Y, Y} have the same components and are not
+// isomorphic; {X, Y} and {Y, X} are. X is a triangle with a self-loop, Y a path of two edges with
+// a doubled edge.
+TEST(IRComponents, MultiplicitiesOfComponentsAreDistinguished) {
+    const std::vector<IrState> pool = {{{0, 1}, {1, 2}, {2, 0}, {0, 0}},
+                                       {{0, 1}, {1, 2}, {1, 2}}};
+    for (const bool sym : {false, true}) {
+        const auto xxy = ir_run(union_of(pool, {0, 0, 1}, 1), false, sym);
+        const auto xyy = ir_run(union_of(pool, {0, 1, 1}, 2), false, sym);
+        const auto xy = ir_run(union_of(pool, {0, 1}, 3), false, sym);
+        const auto yx = ir_run(union_of(pool, {1, 0}, 4), false, sym);
+        EXPECT_NE(xxy.form, xyy.form);
+        EXPECT_NE(xxy.hash, xyy.hash);
+        EXPECT_EQ(xy.form, yx.form);
+        EXPECT_EQ(xy.hash, yx.hash);
+    }
+}
+
+// ir_is_connected against a breadth-first search, on unions of 1 to 4 random components, with
+// the vertices numbered in order of first appearance (its one-pass route) and with the
+// numbering relabelled afterwards (its general route).
+TEST(IRComponents, IsConnectedMatchesABreadthFirstSearch) {
+    Lcg64 r{31};
+    std::vector<IrState> pool;
+    for (int i = 0; i < 24; ++i) pool.push_back(random_component(r));
+    for (int t = 0; t < 2000; ++t) {
+        std::vector<uint32_t> picks;
+        const uint32_t k = 1 + r.next(4);
+        for (uint32_t i = 0; i < k; ++i) picks.push_back(r.next(static_cast<uint32_t>(pool.size())));
+        const IrState g = union_of(pool, picks, 1000u + t);
+        std::vector<uint8_t> ea;
+        std::vector<uint32_t> eoff, ev;
+        for (const auto& e : g) {
+            ea.push_back(static_cast<uint8_t>(e.size()));
+            eoff.push_back(static_cast<uint32_t>(ev.size()));
+            for (uint32_t v : e) ev.push_back(v);
+        }
+        const uint32_t ne = static_cast<uint32_t>(g.size()), occ = static_cast<uint32_t>(ev.size());
+        std::vector<uint32_t> verts(occ + 1);
+        const uint32_t n = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
+        std::vector<std::vector<uint32_t>> adj(n);
+        for (uint32_t e = 0; e < ne; ++e)
+            for (uint32_t a = 0; a < ea[e]; ++a)
+                for (uint32_t b = 0; b < ea[e]; ++b) adj[ev[eoff[e] + a]].push_back(ev[eoff[e] + b]);
+        std::vector<bool> seen(n, false);
+        std::vector<uint32_t> queue{0};
+        seen[0] = true;
+        for (size_t q = 0; q < queue.size(); ++q)
+            for (uint32_t w : adj[queue[q]]) if (!seen[w]) { seen[w] = true; queue.push_back(w); }
+        const bool expect = queue.size() == n;
+        std::vector<uint32_t> parent(n);
+        EXPECT_EQ(hgcommon::ir_is_connected(ea.data(), eoff.data(), ev.data(), ne, n, parent.data()), expect)
+            << "trial " << t << " encounter numbering";
+        for (auto& v : ev) v = n - 1 - v;
+        EXPECT_EQ(hgcommon::ir_is_connected(ea.data(), eoff.data(), ev.data(), ne, n, parent.data()), expect)
+            << "trial " << t << " reversed numbering";
+    }
+}
+
+// A disconnected state whose root partition has no cell of 3 or more vertices is searched whole:
+// two copies of a rigid 4-vertex hypergraph give cells of 2, three copies give cells of 3 and
+// take the component route (IR_SPLIT from the whole-state search).
+TEST(IRComponents, OnlyACellOfThreeOrMoreSplitsTheState) {
+    const IrState rigid{{0, 1}, {1, 2}, {2, 3}, {3, 1}};
+    for (const uint32_t copies : {1u, 2u, 3u, 4u}) {
+        std::vector<uint8_t> ea;
+        std::vector<uint32_t> eoff, ev;
+        for (uint32_t c = 0; c < copies; ++c)
+            for (const auto& e : rigid) {
+                ea.push_back(2);
+                eoff.push_back(static_cast<uint32_t>(ev.size()));
+                ev.push_back(e[0] + 4 * c);
+                ev.push_back(e[1] + 4 * c);
+            }
+        const uint32_t ne = static_cast<uint32_t>(ea.size()), occ = static_cast<uint32_t>(ev.size());
+        std::vector<uint32_t> verts(occ + 1);
+        const uint32_t n = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
+        std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(n, ne, occ, n + 1) + 2);
+        const auto r = hgcommon::ir_canonical_hash_of<false, hgcommon::IrSerial>(
+            ea.data(), eoff.data(), ev.data(), ne, n, occ, scratch.data(), n + 1, nullptr,
+            hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, nullptr, nullptr, nullptr,
+            hgcommon::IrSerial{}, true);
+        EXPECT_EQ(r.status, copies >= 3 ? hgcommon::IR_SPLIT : hgcommon::IR_OK) << copies << " copies";
+    }
+}
+
+// The cost the component pass removes: k isomorphic components searched one at a time. A state
+// of 64 copies of a 3-edge star searches no deeper than one copy.
+TEST(IRComponents, IsomorphicComponentsAreSearchedOneAtATime) {
+    IrState g;
+    for (uint32_t c = 0; c < 64; ++c)
+        for (uint32_t k = 1; k <= 3; ++k) g.push_back({c * 4, c * 4 + k});
+    std::vector<uint8_t> ea;
+    std::vector<uint32_t> eoff, ev;
+    for (const auto& e : g) {
+        ea.push_back(2);
+        eoff.push_back(static_cast<uint32_t>(ev.size()));
+        for (uint32_t v : e) ev.push_back(v);
+    }
+    const uint32_t ne = static_cast<uint32_t>(g.size()), occ = static_cast<uint32_t>(ev.size());
+    std::vector<uint32_t> verts(occ + 1);
+    const uint32_t n = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
+    std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(n, ne, occ, 4) + 2);
+    hgcommon::IrWork work{};
+    const auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(), ne, n, occ,
+                                               scratch.data(), 4, nullptr,
+                                               hgcommon::IR_HOST_GENERATORS, nullptr, nullptr,
+                                               nullptr, nullptr, &work);
+    EXPECT_EQ(r.status, hgcommon::IR_OK);
+    EXPECT_LE(work.max_depth, 3u);
+}
+
 namespace {
 
 struct Pinned {
@@ -581,54 +866,54 @@ struct Pinned {
 // all_tests is built with:
 //   all_tests --gtest_also_run_disabled_tests --gtest_filter=IRPinned.DISABLED_PrintTheTable
 const Pinned kPinned[] = {
-    {0x7c26fda4e243a314ull, 0x8849bf21e9158fa2ull, 0x54b0882cd9a76e52ull, 0},
+    {0x8e3f64d7e6cae612ull, 0x8849bf21e9158fa2ull, 0x54b0882cd9a76e52ull, 0},
     {0x6fe42661d334d58cull, 0x3410b74e1eb3e5f3ull, 0x902dca9c47fa0dc3ull, 0},
     {0xea5679bafa4f07f3ull, 0x96d0dfbeb97d9594ull, 0xf8db767d19584253ull, 0},
     {0xb534fc3bf2cd5911ull, 0xc1a35dd95b9fdf87ull, 0xc1a35dd95b9fdf87ull, 0},
-    {0x0078559d2cdf6e16ull, 0x4a19372a68e55013ull, 0x1b86965f230abc21ull, 0},
-    {0x166e8656ebe203b0ull, 0xbd8ecfbf08a20973ull, 0xaec5a85f41c46b53ull, 0},
-    {0x220c7f40df41dbceull, 0x0c2ab750d2be0ad8ull, 0xe6b811254f6f9f13ull, 0},
+    {0x123158d79f01b824ull, 0xac4214504797d7e3ull, 0x9267cbce5387f9f2ull, 0},
+    {0xad453517faa262eaull, 0x3cb5d7fa4f9d5ab3ull, 0xaec5a85f41c46b53ull, 0},
+    {0xacee2940c92ef9b5ull, 0x0c2ab750d2be0ad8ull, 0xe6b811254f6f9f13ull, 0},
     {0x456b6cece40f53eaull, 0x6437c9a572635250ull, 0xc327e8bf29be1593ull, 0},
     {0xf95dce7448b18ac7ull, 0xd4fb63af314e117full, 0xb7a15656e975b273ull, 0},
     {0xa8d6483b678d5947ull, 0x95352af39b5273e3ull, 0x95352af39b5273e3ull, 0},
-    {0xfd1338c3ac2607a7ull, 0x6f41d276065bf1c4ull, 0x7ae2469c5c023ac0ull, 0},
-    {0x3af4013ef3f93878ull, 0xcf610fb81343d363ull, 0x6adb52926c7d0983ull, 0},
-    {0x3441b3891837b969ull, 0x354c7b1ea4149222ull, 0x3c81572a2f70f9f3ull, 0},
+    {0xbef0b128a3153dc2ull, 0x3feda57fda7c7704ull, 0x8251ff79543a90d0ull, 0},
+    {0xc7dd3acffcc07aeaull, 0x62076fc35fded143ull, 0x6adb52926c7d0983ull, 0},
+    {0x6b11ef9c2b43ff61ull, 0x2846f3d2b463dc62ull, 0x3c81572a2f70f9f3ull, 0},
     {0x83fe5314dfb4f41cull, 0xe57c0e3576001d12ull, 0x310ea34061520363ull, 0},
     {0xf95dce7448b18ac7ull, 0xd566f0f1539aa98full, 0xb7a15656e975b273ull, 0},
     {0xd009140a353e106full, 0xb9a61a7569325a10ull, 0xb9a61a7569325a10ull, 0},
-    {0x51ea5dfa17115c67ull, 0xed6599b3937dac53ull, 0x05baf0b7fba1ab83ull, 0},
-    {0x166e8656ebe203b0ull, 0x92e9d2befcb7eff3ull, 0x507c569e1cf39fc3ull, 0},
-    {0x0d873aabd2f84704ull, 0xc09033714334d26full, 0x2d06d2cf3478f8a0ull, 0},
+    {0xee28036e59328ffdull, 0x4384a38059690243ull, 0x2bde991c460b9343ull, 0},
+    {0xad453517faa262eaull, 0x4cf6736bf3a45e83ull, 0x507c569e1cf39fc3ull, 0},
+    {0x9c0598d8bbc4bc0aull, 0x1c15a3dd59bda9afull, 0x2d06d2cf3478f8a0ull, 0},
     {0x61c965105bbae462ull, 0xfd7737618f3f9984ull, 0x5d411311ad9cd553ull, 0},
     {0x17d2848d30ddf51bull, 0x4e7869228e217b02ull, 0x310ea34061520363ull, 0},
     {0xb534fc3bf2cd5911ull, 0x0217fa7272cc5207ull, 0x0217fa7272cc5207ull, 0},
-    {0xc089ba8c7e860ae9ull, 0xffbee8d55901b678ull, 0x58c387cf8449fb00ull, 0},
-    {0xa74809887846ef18ull, 0x791231c4cae1ba32ull, 0x5535781896089d32ull, 0},
+    {0xff1a67288f969614ull, 0x55632c3613bec0a8ull, 0xc630352dba04fcc0ull, 0},
+    {0xc3d5c1c9401e5968ull, 0x5b638dfb44851692ull, 0x5535781896089d32ull, 0},
     {0x382849c574110c3cull, 0x694fd61cf4aed352ull, 0x5d7fc8b3d07ff5a3ull, 0},
     {0xdbac26dcdca4ecdcull, 0x33ae647aee879bf2ull, 0x8db5a7ab724e74e3ull, 0},
     {0x34823e54fc8067fbull, 0x8506259e678fab23ull, 0x171bb79dc8e18503ull, 0},
     {0x62d9570a6a1503deull, 0xc9452a8c9b417b62ull, 0xc9452a8c9b417b62ull, 0},
-    {0xbcf1682676acabadull, 0x47d21855d0f34f74ull, 0x3a530761a82900d0ull, 0},
-    {0xc3c2e67955b2debfull, 0xc39f61bb1f8822c3ull, 0x7f2e0edf0ea528d3ull, 0},
-    {0xe4d2f58d1fb0a1e9ull, 0x0c2ab750d2be0ad8ull, 0xe6b811254f6f9f13ull, 0},
+    {0xf91744ab26ada5c0ull, 0xd7e2b9821284ccd4ull, 0x9c5ec3a74753d900ull, 0},
+    {0x8f0cc81d527902cfull, 0xcb49d63719e24c13ull, 0x7f2e0edf0ea528d3ull, 0},
+    {0x0fa56803f5f5580full, 0x0c2ab750d2be0ad8ull, 0xe6b811254f6f9f13ull, 0},
     {0x2549af7ccef2803full, 0x8f43c7fec9bc853bull, 0x0509655bf1098ab3ull, 0},
     {0xccedfebb8d7a039full, 0x99aa537edcf3f3abull, 0x0509655bf1098ab3ull, 0},
     {0xd009140a353e106full, 0x6437c9a572635250ull, 0x6437c9a572635250ull, 0},
-    {0xfd1338c3ac2607a7ull, 0xbc87844466deade4ull, 0xeed3167e5d293950ull, 0},
-    {0xc3c2e67955b2debfull, 0xcd112dcd7a1c9fe3ull, 0x5853098627073643ull, 0},
-    {0xb67e0994fa8b03e7ull, 0x01363b6cf6859a62ull, 0x7238772b5892cf92ull, 0},
+    {0xbef0b128a3153dc2ull, 0xaa7e2cabb7fbf164ull, 0x7a6b6942d61f9270ull, 0},
+    {0x8f0cc81d527902cfull, 0x32e554f0f8060543ull, 0x5853098627073643ull, 0},
+    {0xb36edf9a6aae09a7ull, 0x37a827cc037ee2b2ull, 0x7238772b5892cf92ull, 0},
     {0x393ac1bbf43258eaull, 0x903c0fe5f130c9dcull, 0xd9677cba17d02bd3ull, 0},
     {0x77f64ffb42aa55a7ull, 0xe24788ecce0f3eefull, 0x8bc0e0dcc21bff73ull, 0},
     {0x16f3ef2f2b299a2dull, 0x05cfa2634ff722e2ull, 0x05cfa2634ff722e2ull, 0},
-    {0xb6e0450f7ebbe00cull, 0x9c3fa29e54c55763ull, 0x7ad9588d35839bc1ull, 0},
-    {0xa74809887846ef18ull, 0x1bbc1c9134932e72ull, 0xa92682dce90421a2ull, 0},
+    {0xd1d3b6ae3e08f69eull, 0xe3a4d6db71346ee3ull, 0x208ca8b9a7616b42ull, 0},
+    {0xc3d5c1c9401e5968ull, 0x76c7049d72b1c422ull, 0xa92682dce90421a2ull, 0},
     {0xaa972f5e214955dfull, 0x1722195b9b90e793ull, 0x235dedbf8f234b73ull, 0},
     {0xe5692984241d4aecull, 0xec44900b2891b822ull, 0x5d7fc8b3d07ff5a3ull, 0},
     {0x1e03a93a3ff19833ull, 0x3aea83193386fcf3ull, 0xc3b584ef67d3af43ull, 0},
     {0xd009140a353e106full, 0x8def0d0e228463c0ull, 0x8def0d0e228463c0ull, 0},
-    {0x43afa9b31e899022ull, 0xbc105d70c359c922ull, 0x2a4cadf2c9608311ull, 0},
-    {0x30bb8840102fa7c0ull, 0x9977233f75b30982ull, 0xc06b72488d147762ull, 0},
+    {0xba05725eedd06762ull, 0x7ff300e494c55bf2ull, 0xc775660e4aa2dfc2ull, 0},
+    {0xa310d4de74aae3c8ull, 0x450315d0e1a1c1e2ull, 0xc06b72488d147762ull, 0},
 };
 
 struct Encoded {
@@ -698,10 +983,13 @@ TEST(IRPinned, DISABLED_PrintTheTable) {
 TEST(IRPinned, ASearchLeavesTheRefinementStampsZero) {
     for (const auto& g : ir_pinned::states()) {
         const Encoded x = encode(g);
-        std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(x.n, x.e, x.occ, x.n + 1) + 2,
+        // The whole-state search, so the scratch it leaves is laid out for this state.
+        std::vector<uint32_t> scratch(hgcommon::ir_search_words(x.n, x.e, x.occ, x.n + 1) + 2,
                                       0u);
-        const auto r = hgcommon::ir_canonical_hash(x.ea.data(), x.eoff.data(), x.ev.data(), x.e,
-                                                   x.n, x.occ, scratch.data(), x.n + 1);
+        const auto r = hgcommon::ir_canonical_hash_of<false, hgcommon::IrSerial>(
+            x.ea.data(), x.eoff.data(), x.ev.data(), x.e, x.n, x.occ, scratch.data(), x.n + 1,
+            nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, nullptr, nullptr, nullptr,
+            hgcommon::IrSerial{});
         ASSERT_EQ(r.status, hgcommon::IR_OK);
         const size_t edge_epoch = (x.n + 1) + 2ull * x.occ + x.n + x.e;
         const size_t on_touched = edge_epoch + 2ull * x.e + x.n;

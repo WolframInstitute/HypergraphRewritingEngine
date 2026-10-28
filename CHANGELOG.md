@@ -9,6 +9,13 @@
   `hg_evolve --serve-socket` is removed. A worker that ends during an evaluation gives
   `HGEvolve::workerlost`, and the next evaluation starts a new one.
 
+- A state with more than one connected component, whose refined vertex partition has a cell of three
+  or more vertices, is canonicalised per component: each component is canonicalised on its own and
+  the state's canonical form is the components' forms in canonical order. A state of k isomorphic
+  components no longer costs a search over all k at once. Canonical hashes
+  (`IncludeCanonicalHashes`) of those states have new values; which states are isomorphic is
+  unchanged.
+
 - An evaluation whose engine worker does not start or does not answer the start-up handshake runs
   in a one-shot `hg_evolve`, and the next evaluation tries to start a worker again. After three
   such evaluations in a row, the device's evaluations run in one-shot `hg_evolve` processes without

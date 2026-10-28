@@ -129,7 +129,12 @@ Which states are the same node.
 | `Automatic` | their edge lists are identical, edges in creation order and vertices by their labels (**not** isomorphism-invariant) | content-ordered hash, with the content words compared on a key hit |
 | `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the canonical hash, with the canonical forms compared on a key hit |
 
-The canonical form is McKay-style individualization–refinement (IR). The **reported** per-state
+The canonical form is McKay-style individualization–refinement (IR). A state with more than one
+connected component (vertices joined by hyperedges) whose root refinement leaves a cell of three or
+more vertices is canonicalised per component: each component is canonicalised on its own, the
+components are ordered by edge count, vertex count and canonical form, and the state's form is
+their forms in that order with each component's labels shifted by the vertices before it. A state
+with an empty hyperedge is canonicalised whole. The **reported** per-state
 canonical hash (`IncludeCanonicalHashes`) is this invariant in every state mode — stored at creation
 when event canonicalization is on (one IR pass serves both the hash and the per-edge ranks of
 §4.2), computed on first query otherwise. Under `Full`, a class whose hash key is already held by a

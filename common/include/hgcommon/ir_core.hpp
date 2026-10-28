@@ -105,7 +105,10 @@ HG_HD inline uint32_t ir_canonical_form_words(uint32_t n_edges, uint32_t total_o
 }
 
 enum IrStatus : uint32_t {
-    IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3
+    IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3,
+    // Internal to ir_canonical_hash: the state is disconnected and its root partition has a cell
+    // of 3 or more vertices, so it is canonicalised per component.
+    IR_SPLIT = 4
 };
 
 // Per-depth working set: the node's sorted target cell, its covered flags, and the scalars.
@@ -115,8 +118,8 @@ enum IrStatus : uint32_t {
 // by that depth (measured: an eighth array per depth cost the device 12% on wolfram24 d7).
 HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 2ull * n_verts + 8ull; }
 
-// Total uint32 words of scratch for a given problem size.
-HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
+// Words of scratch the search itself takes for a given problem size.
+HG_HD inline uint64_t ir_search_words(uint32_t n_verts, uint32_t n_edges,
                                        uint32_t total_occ, uint32_t max_depth,
                                        uint32_t max_generators = IR_HOST_GENERATORS) {
     const uint64_t n = n_verts, e = n_edges, occ = total_occ, d = max_depth;
@@ -765,7 +768,7 @@ HG_HD inline void ir_refine(
 // Stored flat as [arity, v0, v1, ...] runs so two forms compare with one linear scan.
 // -----------------------------------------------------------------------------------------
 template <bool Sym = false>
-HG_HD inline void ir_build_form(
+HG_HD HG_INLINE void ir_build_form(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order, uint32_t* tmp,
     uint64_t* keys)
@@ -824,7 +827,7 @@ HG_HD inline int ir_cmp_form(const uint32_t* a, const uint32_t* b, uint32_t word
 
 // FNV-1a over (vertex count, then each canonical edge's vertices with a separator). This is
 // the canonical hash: any two isomorphic states reach the same form and so the same value.
-HG_HD inline uint64_t ir_hash_form(const uint32_t* form, uint32_t n_edges, uint32_t n_verts) {
+HG_HD HG_INLINE uint64_t ir_hash_form(const uint32_t* form, uint32_t n_edges, uint32_t n_verts) {
     uint64_t h = FNV_OFFSET;
     h ^= uint64_t(n_verts); h *= FNV_PRIME;
     uint32_t w = 0;
@@ -883,6 +886,59 @@ struct IrWork {
     uint32_t searched;    // 0 when the initial refinement was already discrete, so no search ran
 };
 
+// Whether the n_verts vertices are one component, two vertices being joined when an edge holds
+// both. Union-find over `parent` (n_verts words of scratch), each root the smallest vertex of
+// its set, with path halving; it stops at the union that leaves one set. Kept out of
+// ir_canonical_hash_of's body so the search's code is the same with or without the call.
+HG_HD HG_NOINLINE inline bool ir_is_connected(const uint8_t* ea, const uint32_t* eoff,
+                                              const uint32_t* ev, uint32_t n_edges,
+                                              uint32_t n_verts, uint32_t* parent) {
+    if (n_verts <= 1) return true;
+    // One pass in edge order when the vertices are numbered in order of first appearance
+    // (ir_renumber_encounter): a vertex equal to `seen` is new and joins the edge's set directly,
+    // so only vertices seen before take a find.
+    {
+        uint32_t seen = 0, sets = 0;
+        bool ordered = true;
+        for (uint32_t e = 0; e < n_edges && ordered; ++e) {
+            const uint32_t* t = ev + eoff[e];
+            uint32_t r = 0xFFFFFFFFu;
+            for (uint32_t k = 0; k < ea[e]; ++k) {
+                uint32_t w = t[k];
+                if (w == seen) {
+                    ++seen;
+                    if (r == 0xFFFFFFFFu) { parent[w] = w; r = w; ++sets; }
+                    else parent[w] = r;
+                } else if (w < seen) {
+                    while (parent[w] != w) { parent[w] = parent[parent[w]]; w = parent[w]; }
+                    if (r == 0xFFFFFFFFu) { r = w; continue; }
+                    if (w == r) continue;
+                    if (w < r) { parent[r] = w; r = w; } else parent[w] = r;
+                    --sets;
+                } else {
+                    ordered = false;
+                    break;
+                }
+            }
+        }
+        if (ordered && seen == n_verts) return sets == 1;
+    }
+    for (uint32_t v = 0; v < n_verts; ++v) parent[v] = v;
+    uint32_t sets = n_verts;
+    for (uint32_t e = 0; e < n_edges; ++e) {
+        const uint32_t* t = ev + eoff[e];
+        for (uint32_t k = 1; k < ea[e]; ++k) {
+            uint32_t a = t[0], b = t[k];
+            while (parent[a] != a) { parent[a] = parent[parent[a]]; a = parent[a]; }
+            while (parent[b] != b) { parent[b] = parent[parent[b]]; b = parent[b]; }
+            if (a == b) continue;
+            if (a < b) parent[b] = a; else parent[a] = b;
+            if (--sets == 1) return true;
+        }
+    }
+    return false;
+}
+
 // -----------------------------------------------------------------------------------------
 // Canonical hash of a state.
 //
@@ -912,7 +968,8 @@ struct IrWork {
 // whose size covers 2 * n_edges words only then.
 //
 // ir_canonical_hash below takes `sym` (the state's edges are undirected, ir_sym_edge) as a value
-// and runs the instance of this body for it.
+// and runs the instance of this body for it. With `split_disconnected` the body returns IR_SPLIT
+// for a disconnected state whose root partition has a cell of 3 or more vertices.
 template <bool Sym, class Par>
 HG_HD inline IrResult ir_canonical_hash_of(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
@@ -921,7 +978,7 @@ HG_HD inline IrResult ir_canonical_hash_of(
     uint32_t max_generators,
     uint32_t* out_edge_orbit, uint32_t* out_edge_class,
     uint32_t* out_canonical_form, uint32_t* out_vertex_label,
-    IrWork* out_work, Par par)
+    IrWork* out_work, Par par, bool split_disconnected = false)
 {
     constexpr bool sym = Sym;
     IrResult out{0, IR_EMPTY, 0};
@@ -1219,6 +1276,22 @@ HG_HD inline IrResult ir_canonical_hash_of(
             out_edge_orbit[e2] = orbit_of[cfind(klass_of[e2])];
     };
 
+    // A state whose root partition has a cell of 3 or more vertices is searched whole only when it
+    // is connected; a disconnected one goes to ir_canonical_hash_components. k isomorphic
+    // components put every vertex of theirs in a cell of at least k vertices, so a state with no
+    // such cell has at most pairs of isomorphic components, and the whole-state search on it
+    // costs at most a constant factor more. Both conditions are isomorphism invariants.
+    if (split_disconnected && !pi.is_discrete()) {
+        bool whole = true;
+        if (par.leader()) {
+            bool wide = false;
+            for (uint32_t s = 0; s < n && !wide; s += pi.clen_at[s]) wide = pi.clen_at[s] >= 3;
+            whole = !wide || ir_is_connected(ea, eoff, ev, n_edges, n, path);
+        }
+        par.sync();
+        if (!par.bcast(whole ? 1u : 0u)) { out.status = IR_SPLIT; return out; }
+    }
+
     if (pi.is_discrete()) {
         if (par.leader()) {
             leaf(pi, 0);
@@ -1397,6 +1470,318 @@ HG_HD inline IrResult ir_canonical_hash_of(
     return out;
 }
 
+// -----------------------------------------------------------------------------------------
+// THE STATE AS ITS CONNECTED COMPONENTS. Two vertices are connected when a hyperedge holds both;
+// a state's automorphisms permute its components and map each onto an isomorphic one, so a
+// canonical form of the state is its components' canonical forms in a canonical order. Each
+// component is canonicalised on its own (ir_canonical_hash_of), the components are ordered by
+// (edge count, vertex count, canonical form), and the state's labelling gives each component's
+// vertices its canonical labels offset by the vertices of the components before it. The form,
+// hash, ranks and classes are then built from that labelling exactly as for one component, and
+// an edge's orbit is the union of its component's orbit with the edges at the same canonical
+// position in every component of identical form.
+//
+// The search cost of a state of k isomorphic components falls from ~k^2 nodes over the whole
+// state to k searches of one component. A connected state, a state whose root partition has no
+// cell of 3 or more vertices and a state with an empty hyperedge are canonicalised whole
+// (ir_canonical_hash_of). Each of the three conditions is an isomorphism invariant, so isomorphic
+// states take the same route.
+// -----------------------------------------------------------------------------------------
+
+// Scratch words the component pass takes in front of the search's own scratch.
+HG_HD inline uint64_t ir_component_words(uint32_t n_verts, uint32_t n_edges, uint32_t total_occ) {
+    const uint64_t n = n_verts, e = n_edges, occ = total_occ;
+    return
+        n + n + n                       // vertex parent, vertex component, vertex local index
+      + n                               // the state's labelling
+      + e + (e + 1) + e                 // edges grouped by component, component starts, sort tmp
+      + e + e + e                       // component order, component form offsets, group of each
+      + e + e                           // per edge: local canonical rank, local orbit
+      + n                               // per vertex: label within its component
+      + 3 * (occ + e)                   // component forms, the state's form, one component's form
+      + e + occ + e                     // one component flattened: arity (as words), eoff, ev
+      + e + e                           // the state's edge order, ir_build_form's sort tmp
+      + 2 * (occ + e)                   // ir_build_form's keys, as uint64
+      + e + e                           // orbit pass: class per edge, union-find over classes
+      + e                               // orbit pass: first edge at each position of a group's lead
+      + 16;                             // alignment slack for the uint64 view
+}
+
+template <bool Sym, class Par>
+HG_HD inline IrResult ir_canonical_hash_components(
+    const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
+    uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
+    uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank,
+    uint32_t max_generators,
+    uint32_t* out_edge_orbit, uint32_t* out_edge_class,
+    uint32_t* out_canonical_form, uint32_t* out_vertex_label,
+    IrWork* out_work, Par par)
+{
+    const uint32_t n = n_verts, ne = n_edges;
+    IrScratch sc{scratch, 0};
+    uint32_t* vparent   = sc.u32(n);
+    uint32_t* vcomp     = sc.u32(n);
+    uint32_t* vlocal    = sc.u32(n);
+    uint32_t* labeling  = sc.u32(n);
+    uint32_t* by_comp   = sc.u32(ne);
+    uint32_t* cstart    = sc.u32(ne + 1);
+    uint32_t* sort_tmp  = sc.u32(ne);
+    uint32_t* corder    = sc.u32(ne);
+    uint32_t* cform_off = sc.u32(ne);
+    uint32_t* cgroup    = sc.u32(ne);
+    uint32_t* lrank     = sc.u32(ne);
+    uint32_t* lorbit    = sc.u32(ne);
+    uint32_t* vlabel    = sc.u32(n);
+    uint32_t* cforms    = sc.u32(total_occ + ne);
+    uint32_t* sform     = sc.u32(total_occ + ne);
+    uint32_t* one_form  = sc.u32(total_occ + ne);
+    uint32_t* l_ea_w    = sc.u32(ne);
+    uint32_t* l_eoff    = sc.u32(ne);
+    uint32_t* l_ev      = sc.u32(total_occ);
+    uint32_t* sorder    = sc.u32(ne);
+    uint32_t* build_tmp = sc.u32(ne);
+    uint32_t* klass     = sc.u32(ne);
+    uint32_t* ufc       = sc.u32(ne);
+    uint32_t* lead_at   = sc.u32(ne);
+    uint64_t* keys      = sc.u64(total_occ + ne);
+    uint32_t* search_scratch = scratch + ir_component_words(n_verts, n_edges, total_occ);
+    uint8_t*  l_ea      = reinterpret_cast<uint8_t*>(l_ea_w);
+
+    // Components: union-find over vertices, numbered by their smallest vertex; edges grouped by
+    // component in input order.
+    uint32_t n_comp = 0;
+    if (par.leader()) {
+        for (uint32_t v = 0; v < n; ++v) vparent[v] = v;
+        auto find = [&](uint32_t x) {
+            while (vparent[x] != x) { vparent[x] = vparent[vparent[x]]; x = vparent[x]; }
+            return x;
+        };
+        for (uint32_t e = 0; e < ne; ++e)
+            for (uint32_t k = 1; k < ea[e]; ++k) {
+                const uint32_t a = find(ev[eoff[e]]), b = find(ev[eoff[e] + k]);
+                if (a != b) { if (a < b) vparent[b] = a; else vparent[a] = b; }
+            }
+        // A connected state goes straight to the search: one root, and nothing else is built.
+        uint32_t roots = 0;
+        for (uint32_t v = 0; v < n && roots < 2; ++v) roots += vparent[v] == v ? 1u : 0u;
+        if (roots < 2) {
+            n_comp = 1;
+        } else {
+            for (uint32_t v = 0; v < n; ++v) vcomp[v] = 0xFFFFFFFFu;
+            for (uint32_t v = 0; v < n; ++v) {
+                const uint32_t r = find(v);
+                if (vcomp[r] == 0xFFFFFFFFu) vcomp[r] = n_comp++;
+                vcomp[v] = vcomp[r];
+            }
+            for (uint32_t c = 0; c <= n_comp; ++c) cstart[c] = 0;
+            for (uint32_t e = 0; e < ne; ++e) ++cstart[vcomp[ev[eoff[e]]] + 1];
+            for (uint32_t c = 0; c < n_comp; ++c) cstart[c + 1] += cstart[c];
+            for (uint32_t c = 0; c < n_comp; ++c) sort_tmp[c] = cstart[c];
+            for (uint32_t e = 0; e < ne; ++e) by_comp[sort_tmp[vcomp[ev[eoff[e]]]]++] = e;
+        }
+    }
+    par.sync();
+    n_comp = par.bcast(n_comp);
+    if (n_comp <= 1)
+        return ir_canonical_hash_of<Sym, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                              search_scratch, max_depth, out_edge_rank,
+                                              max_generators, out_edge_orbit, out_edge_class,
+                                              out_canonical_form, out_vertex_label, out_work, par);
+
+    const bool want_orbits = out_edge_orbit != nullptr || out_edge_class != nullptr;
+    IrResult out{0, IR_OK, n};
+    if (out_work) { out_work->leaves = 0; out_work->nodes = 0;
+                    out_work->max_depth = 0; out_work->searched = 0; }
+    bool need_generators = false;
+    uint32_t form_at = 0;
+
+    // Each component on its own: flattened to local vertices in first-appearance order, then
+    // searched; its form, labels, ranks and orbits are kept per component.
+    for (uint32_t c = 0; c < n_comp; ++c) {
+        uint32_t ce = 0, cv = 0, cocc = 0;
+        if (par.leader()) {
+            ce = cstart[c + 1] - cstart[c];
+            for (uint32_t i = 0; i < ce; ++i) {
+                const uint32_t e = by_comp[cstart[c] + i];
+                l_ea[i] = ea[e];
+                l_eoff[i] = cocc;
+                for (uint32_t k = 0; k < ea[e]; ++k) l_ev[cocc++] = ev[eoff[e] + k];
+            }
+            // First-appearance numbering, written to vlocal for every vertex of the component.
+            for (uint32_t o = 0; o < cocc; ++o) vlocal[l_ev[o]] = 0xFFFFFFFFu;
+            for (uint32_t o = 0; o < cocc; ++o) {
+                if (vlocal[l_ev[o]] == 0xFFFFFFFFu) vlocal[l_ev[o]] = cv++;
+                l_ev[o] = vlocal[l_ev[o]];
+            }
+            cform_off[c] = form_at;
+        }
+        par.sync();
+        ce = par.bcast(ce); cv = par.bcast(cv); cocc = par.bcast(cocc);
+
+        IrWork w{};
+        const IrResult r = ir_canonical_hash_of<Sym, Par>(
+            l_ea, l_eoff, l_ev, ce, cv, cocc, search_scratch, max_depth, lrank + cstart[c],
+            max_generators, want_orbits ? lorbit + cstart[c] : nullptr, nullptr,
+            one_form, labeling, out_work ? &w : nullptr, par);
+        if (r.status == IR_NEED_DEPTH) { out.status = IR_NEED_DEPTH; return out; }
+        if (r.status == IR_NEED_GENERATORS) need_generators = true;
+        if (out_work && par.leader()) {
+            out_work->leaves += w.leaves;
+            out_work->nodes += w.nodes;
+            if (w.max_depth > out_work->max_depth) out_work->max_depth = w.max_depth;
+            out_work->searched |= w.searched;
+        }
+        if (par.leader()) {
+            // `labeling` holds local vertex -> label within the component; keep it per vertex.
+            for (uint32_t i = 0; i < ce; ++i) {
+                const uint32_t e = by_comp[cstart[c] + i];
+                for (uint32_t k = 0; k < ea[e]; ++k) {
+                    const uint32_t v = ev[eoff[e] + k];
+                    vlabel[v] = labeling[vlocal[v]];
+                }
+            }
+            const uint32_t words = cocc + ce;
+            for (uint32_t i = 0; i < words; ++i) cforms[form_at + i] = one_form[i];
+            form_at += words;
+        }
+        par.sync();
+    }
+
+    // The components in canonical order: (edges, vertices, form). Equal keys are identical
+    // forms, so any order among them gives the same state form.
+    if (par.leader()) {
+        struct CompCmp {
+            const uint32_t* cstart; const uint32_t* cform_off; const uint32_t* cforms;
+            const uint32_t* vcount;
+            HG_HD int operator()(uint32_t a, uint32_t b) const {
+                const uint32_t ea_ = cstart[a + 1] - cstart[a], eb = cstart[b + 1] - cstart[b];
+                if (ea_ != eb) return ea_ < eb ? -1 : 1;
+                if (vcount[a] != vcount[b]) return vcount[a] < vcount[b] ? -1 : 1;
+                const uint32_t* fa = cforms + cform_off[a];
+                const uint32_t* fb = cforms + cform_off[b];
+                // Equal edge counts: walk both forms edge by edge.
+                uint32_t wa = 0, wb = 0;
+                for (uint32_t i = 0; i < ea_; ++i) {
+                    const uint32_t la = fa[wa], lb = fb[wb];
+                    if (la != lb) return la < lb ? -1 : 1;
+                    for (uint32_t k = 1; k <= la; ++k)
+                        if (fa[wa + k] != fb[wb + k]) return fa[wa + k] < fb[wb + k] ? -1 : 1;
+                    wa += 1 + la; wb += 1 + lb;
+                }
+                return 0;
+            }
+        };
+        // Vertex count per component, in cgroup until the groups are assigned.
+        for (uint32_t c = 0; c < n_comp; ++c) cgroup[c] = 0;
+        for (uint32_t v = 0; v < n; ++v) ++cgroup[vcomp[v]];
+        for (uint32_t c = 0; c < n_comp; ++c) corder[c] = c;
+        // cgroup holds the vertex counts during the sort; vcount aliases it.
+        ir_sort_idx(corder, n_comp, CompCmp{cstart, cform_off, cforms, cgroup}, sort_tmp);
+        // Offsets: each component's labels shifted by the vertices before it, in sorted order.
+        uint32_t base = 0;
+        for (uint32_t i = 0; i < n_comp; ++i) {
+            const uint32_t c = corder[i];
+            const uint32_t vc = cgroup[c];
+            // `lead_at` holds each component's offset for the labelling below.
+            lead_at[c] = base;
+            base += vc;
+        }
+        for (uint32_t v = 0; v < n; ++v) labeling[v] = lead_at[vcomp[v]] + vlabel[v];
+        // Groups: runs of identical forms in sorted order, named by their first component.
+        const CompCmp cmp{cstart, cform_off, cforms, cgroup};
+        uint32_t lead = 0;
+        for (uint32_t i = 0; i < n_comp; ++i) {
+            if (i == 0 || cmp(corder[i - 1], corder[i]) != 0) lead = corder[i];
+            sort_tmp[corder[i]] = lead;
+        }
+        for (uint32_t c = 0; c < n_comp; ++c) cgroup[c] = sort_tmp[c];
+        ir_build_form<Sym>(ea, eoff, ev, ne, labeling, sform, sorder, build_tmp, keys);
+    }
+    par.sync();
+
+    out.hash = ir_hash_form(sform, ne, n);
+    if (par.leader()) {
+        if (out_edge_rank)
+            for (uint32_t i = 0; i < ne; ++i) out_edge_rank[sorder[i]] = i;
+        if (out_canonical_form)
+            for (uint32_t i = 0; i < total_occ + ne; ++i) out_canonical_form[i] = sform[i];
+        if (out_vertex_label)
+            for (uint32_t v = 0; v < n; ++v) out_vertex_label[v] = labeling[v];
+        if (want_orbits) {
+            // Classes: runs of equal canonical content in the state's form.
+            uint32_t n_classes = 0;
+            {
+                uint32_t w = 0, prev = 0, cls = 0;
+                for (uint32_t i = 0; i < ne; ++i) {
+                    const uint32_t len = 1u + sform[w];
+                    if (i > 0) {
+                        const uint32_t plen = 1u + sform[prev];
+                        bool eq = (plen == len);
+                        for (uint32_t k = 0; eq && k < len; ++k) eq = sform[prev + k] == sform[w + k];
+                        if (!eq) ++cls;
+                    }
+                    klass[sorder[i]] = cls;
+                    n_classes = cls + 1;
+                    prev = w; w += len;
+                }
+            }
+            if (out_edge_class) for (uint32_t e = 0; e < ne; ++e) out_edge_class[e] = klass[e];
+            if (out_edge_orbit) {
+                for (uint32_t k = 0; k < n_classes; ++k) ufc[k] = k;
+                auto cfind = [&](uint32_t x) {
+                    while (ufc[x] != x) { ufc[x] = ufc[ufc[x]]; x = ufc[x]; }
+                    return x;
+                };
+                auto unite = [&](uint32_t a, uint32_t b) {
+                    a = cfind(a); b = cfind(b);
+                    if (a != b) { if (a < b) ufc[b] = a; else ufc[a] = b; }
+                };
+                // Within a component: its own orbits. lorbit holds the component's orbit id per
+                // edge (indexed by the edge's place in by_comp); the first edge seen of each
+                // orbit stands for it, in sort_tmp by local orbit id.
+                for (uint32_t c = 0; c < n_comp; ++c) {
+                    const uint32_t ce = cstart[c + 1] - cstart[c];
+                    for (uint32_t i = 0; i < ce; ++i) sort_tmp[i] = 0xFFFFFFFFu;
+                    for (uint32_t i = 0; i < ce; ++i) {
+                        const uint32_t e = by_comp[cstart[c] + i];
+                        const uint32_t o = lorbit[cstart[c] + i];
+                        if (sort_tmp[o] == 0xFFFFFFFFu) sort_tmp[o] = e;
+                        else unite(klass[sort_tmp[o]], klass[e]);
+                    }
+                }
+                // Across a group: the edge at local rank p of every member with the edge at
+                // local rank p of the group's first member.
+                for (uint32_t c = 0; c < n_comp; ++c) {
+                    if (cgroup[c] != c) continue;
+                    const uint32_t ce = cstart[c + 1] - cstart[c];
+                    for (uint32_t i = 0; i < ce; ++i)
+                        lead_at[cstart[c] + lrank[cstart[c] + i]] = by_comp[cstart[c] + i];
+                }
+                for (uint32_t c = 0; c < n_comp; ++c) {
+                    const uint32_t g = cgroup[c];
+                    if (g == c) continue;
+                    const uint32_t ce = cstart[c + 1] - cstart[c];
+                    for (uint32_t i = 0; i < ce; ++i) {
+                        const uint32_t e = by_comp[cstart[c] + i];
+                        unite(klass[e], klass[lead_at[cstart[g] + lrank[cstart[c] + i]]]);
+                    }
+                }
+                // Orbits numbered by their smallest member class, as ir_canonical_hash_of does.
+                for (uint32_t k = 0; k < n_classes; ++k) sort_tmp[k] = 0xFFFFFFFFu;
+                uint32_t next = 0;
+                for (uint32_t k = 0; k < n_classes; ++k) {
+                    const uint32_t r = cfind(k);
+                    if (sort_tmp[r] == 0xFFFFFFFFu) sort_tmp[r] = next++;
+                }
+                for (uint32_t e = 0; e < ne; ++e) out_edge_orbit[e] = sort_tmp[cfind(klass[e])];
+            }
+        }
+    }
+    par.sync();
+    out.status = (out_edge_orbit && need_generators) ? IR_NEED_GENERATORS : IR_OK;
+    return out;
+}
+
 // `sym`: the state's edges are undirected (ir_sym_edge).
 template <class Par = IrSerial>
 HG_HD inline IrResult ir_canonical_hash(
@@ -1408,15 +1793,54 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr,
     IrWork* out_work = nullptr, Par par = Par{}, bool sym = false)
 {
+    // The whole-state search, which reports IR_SPLIT for a disconnected state whose root
+    // partition has a cell of 3 or more vertices; that state is canonicalised per component.
+    // A state with an empty hyperedge is always searched whole: an empty hyperedge joins no
+    // component.
+    uint32_t* search_scratch = scratch + ir_component_words(n_verts, n_edges, total_occ);
+    const IrResult r = sym
+        ? ir_canonical_hash_of<true, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                          search_scratch, max_depth, out_edge_rank,
+                                          max_generators, out_edge_orbit, out_edge_class,
+                                          out_canonical_form, out_vertex_label, out_work, par,
+                                          true)
+        : ir_canonical_hash_of<false, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                           search_scratch, max_depth, out_edge_rank,
+                                           max_generators, out_edge_orbit, out_edge_class,
+                                           out_canonical_form, out_vertex_label, out_work, par,
+                                           true);
+    if (r.status != IR_SPLIT) return r;
+    bool has_empty = false;
+    for (uint32_t e = 0; e < n_edges && !has_empty; ++e) has_empty = ea[e] == 0;
+    if (has_empty)
+        return sym
+            ? ir_canonical_hash_of<true, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                              search_scratch, max_depth, out_edge_rank,
+                                              max_generators, out_edge_orbit, out_edge_class,
+                                              out_canonical_form, out_vertex_label, out_work, par)
+            : ir_canonical_hash_of<false, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                               search_scratch, max_depth, out_edge_rank,
+                                               max_generators, out_edge_orbit, out_edge_class,
+                                               out_canonical_form, out_vertex_label, out_work, par);
     if (sym)
-        return ir_canonical_hash_of<true, Par>(ea, eoff, ev, n_edges, n_verts, total_occ, scratch,
-                                               max_depth, out_edge_rank, max_generators,
-                                               out_edge_orbit, out_edge_class, out_canonical_form,
-                                               out_vertex_label, out_work, par);
-    return ir_canonical_hash_of<false, Par>(ea, eoff, ev, n_edges, n_verts, total_occ, scratch,
-                                            max_depth, out_edge_rank, max_generators,
-                                            out_edge_orbit, out_edge_class, out_canonical_form,
-                                            out_vertex_label, out_work, par);
+        return ir_canonical_hash_components<true, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                                       scratch, max_depth, out_edge_rank,
+                                                       max_generators, out_edge_orbit,
+                                                       out_edge_class, out_canonical_form,
+                                                       out_vertex_label, out_work, par);
+    return ir_canonical_hash_components<false, Par>(ea, eoff, ev, n_edges, n_verts, total_occ,
+                                                    scratch, max_depth, out_edge_rank,
+                                                    max_generators, out_edge_orbit, out_edge_class,
+                                                    out_canonical_form, out_vertex_label,
+                                                    out_work, par);
+}
+
+// Total uint32 words of scratch for a given problem size: the component pass and the search.
+HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
+                                       uint32_t total_occ, uint32_t max_depth,
+                                       uint32_t max_generators = IR_HOST_GENERATORS) {
+    return ir_component_words(n_verts, n_edges, total_occ) +
+           ir_search_words(n_verts, n_edges, total_occ, max_depth, max_generators);
 }
 
 }  // namespace common
