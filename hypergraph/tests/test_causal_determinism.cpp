@@ -20,6 +20,7 @@
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hgcommon/transitive_reduction.hpp"
+#include "corpus_gen.hpp"
 
 // =============================================================================
 // Canonical determinism gate.
@@ -291,9 +292,12 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
     // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
     // exactly like a short one and differs only here, and nothing was reading it.
-    for (const std::string& w : e.warnings()) {
+    // Only truncating warnings: an advisory such as the disconnected-left-side note leaves the
+    // result complete.
+    for (size_t i = 0; i < e.warnings().size(); ++i) {
+        if (!e.warning_truncates(i)) continue;
         if (!fp.warnings.empty()) fp.warnings += "; ";
-        fp.warnings += w;
+        fp.warnings += e.warnings()[i];
     }
     // HG_DET_DUMP=<dir>: write this run's listing so a run that disagrees with the reference can
     // be diffed against it offline and the missing event NAMED -- its input and output states
@@ -358,6 +362,21 @@ std::vector<Workload> workloads() {
         {hg::engine::make_rule(0).lhs({0,1}).rhs({1,0}).build(),
          hg::engine::make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
         {{0,1}}, 6});
+    // star-l3a2g1r2 from the bench corpus: 10 canonical states over 847 raw states at 2 steps,
+    // the highest raw-to-canonical ratio the sweep covers.
+    for (const auto& g : corpus::corpus()) {
+        if (g.name != "star-l3a2g1r2") continue;
+        Workload s{"star-l3a2g1r2", {}, {}, 2};
+        for (const auto& r : g.rules) {
+            auto b = hg::engine::make_rule(static_cast<uint16_t>(s.rules.size()));
+            for (const auto& e : r.lhs) b.lhs(std::vector<hg::engine::VertexId>(e.begin(), e.end()));
+            for (const auto& e : r.rhs) b.rhs(std::vector<hg::engine::VertexId>(e.begin(), e.end()));
+            s.rules.push_back(b.build());
+        }
+        for (const auto& e : g.init) s.init.push_back(std::vector<hg::engine::VertexId>(e.begin(), e.end()));
+        w.push_back(std::move(s));
+    }
+    EXPECT_EQ(w.size(), 4u) << "star-l3a2g1r2 is missing from corpus::corpus()";
     return w;
 }
 

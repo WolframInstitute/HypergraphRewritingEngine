@@ -225,6 +225,7 @@ create_test_executable(all_tests
 target_compile_definitions(all_tests PRIVATE HG_STANDALONE_BINARY)
 target_include_directories(all_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/paclet_source
+    ${CMAKE_SOURCE_DIR}/tools   # corpus_gen.hpp: the bench corpus, for the determinism sweep
 )
 
 
