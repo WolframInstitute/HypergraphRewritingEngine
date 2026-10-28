@@ -118,10 +118,19 @@ struct SgArena {
     }
 };
 
-// Heap sort, ascending. The device has no std::sort.
+// Ascending: insertion sort up to 64 elements, heap sort beyond. The device has no std::sort.
 template <class T>
 HG_HD void sg_sort(T* a, size_t n) {
     if (n < 2) return;
+    if (n <= 64) {
+        for (size_t i = 1; i < n; ++i) {
+            const T x = a[i];
+            size_t j = i;
+            for (; j > 0 && x < a[j - 1]; --j) a[j] = a[j - 1];
+            a[j] = x;
+        }
+        return;
+    }
     auto sift = [&](size_t root, size_t end) {
         while (2 * root + 1 < end) {
             size_t child = 2 * root + 1;
