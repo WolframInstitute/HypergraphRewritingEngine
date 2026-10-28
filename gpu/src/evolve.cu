@@ -1307,6 +1307,25 @@ EngineConfig initial_config(const EvolveInput& in, uint64_t mem_cap) {
     return cfg;
 }
 
+namespace {
+// EvolveInput::before_engine before an Engine is built, and after_engine once it is built or its
+// construction threw, so a failed construction does not leave the operating-system limit raised.
+struct EngineCommitGuard {
+    const EvolveInput& in;
+    bool pending = true;
+    EngineCommitGuard(const EvolveInput& input, uint64_t device_bytes) : in(input) {
+        if (in.before_engine) in.before_engine(device_bytes);
+    }
+    void built() {
+        if (pending && in.after_engine) in.after_engine();
+        pending = false;
+    }
+    ~EngineCommitGuard() { built(); }
+    EngineCommitGuard(const EngineCommitGuard&) = delete;
+    EngineCommitGuard& operator=(const EngineCommitGuard&) = delete;
+};
+}  // namespace
+
 EvolveResult evolve(const EvolveInput& in) {
     // A fresh engine per attempt: the pools are re-allocated at the new sizes.
     const uint64_t mem_cap = resolved_memory_cap(in.max_device_memory_bytes);
@@ -1323,9 +1342,9 @@ EvolveResult evolve(const EvolveInput& in) {
                                        "the engine does not fit in device memory (" +
                                        std::to_string(free_b >> 20) + " MiB free)");
                                cudaGetLastError();
-                               if (in.before_engine) in.before_engine(estimated_device_bytes(cfg));
+                               EngineCommitGuard commit(in, estimated_device_bytes(cfg));
                                Engine engine(cfg);
-                               if (in.after_engine) in.after_engine();
+                               commit.built();
                                return engine.run(in);
                            });
 }
@@ -1406,9 +1425,10 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
             return out;
         }
         try {
-            if (in.before_engine) in.before_engine(estimated_device_bytes(cfg));
-            engine_ = std::make_unique<Engine>(cfg);
-            if (in.after_engine) in.after_engine();
+            {
+                EngineCommitGuard commit(in, estimated_device_bytes(cfg));
+                engine_ = std::make_unique<Engine>(cfg);
+            }
         } catch (const std::exception& e) {
             out.error = std::string("could not build a device engine for this session: ") + e.what();
             return out;
@@ -1532,9 +1552,10 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
         if (!has_engine_ || std::memcmp(&cfg, &cfg_, sizeof(EngineConfig)) != 0) {
             engine_.reset();
             has_engine_ = false;
-            if (in.before_engine) in.before_engine(estimated_device_bytes(cfg));
-            engine_ = std::make_unique<Engine>(cfg);
-            if (in.after_engine) in.after_engine();
+            {
+                EngineCommitGuard commit(in, estimated_device_bytes(cfg));
+                engine_ = std::make_unique<Engine>(cfg);
+            }
             cfg_        = cfg;
             has_engine_ = true;
         }
