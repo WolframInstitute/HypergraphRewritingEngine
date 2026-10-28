@@ -238,9 +238,11 @@ def rules_association(rules):
 def initial_states(initial):
     """The initial states as lists of edges of integers. One hypergraph is one state; a list of
     hypergraphs is several. Vertices that are not all integers are numbered from 0 by first
-    appearance across the states, as HGEvolve's normalizeInitialStates numbers them."""
+    appearance across the states, as HGEvolve's normalizeInitialStates numbers them. A name
+    ("Grid") or a spec dict ({"Type": "BrillLindquist", "Density": 400, ...}) is a generated
+    initial condition: its edges (initial_condition)."""
     if isinstance(initial, (dict, str)):
-        raise ValueError(_GENERATED)
+        return [initial_condition(initial)["Edges"]]
     initial = _as_list(initial)
     if not isinstance(initial, (list, tuple)) or not initial:
         raise ValueError(_INITIAL)
@@ -268,6 +270,31 @@ def initial_states(initial):
 
 _INITIAL = ("initial is a hypergraph (a non-empty list of edges, each a non-empty list of "
             "vertices) or a non-empty list of them")
-_GENERATED = ("generated initial conditions (\"Grid\", \"BrillLindquist\", a \"Type\" association) "
-              "are made by the Wolfram Language paclet; pass the edges they generate, for example "
-              "HGBrillLindquist[...][\"Edges\"]")
+def initial_condition(spec):
+    """A generated initial condition, made by the engine (the "InitialCondition" job of
+    paclet_source/initial_condition_job.hpp, which lists the types and keys). `spec` is a type
+    name or a dict with "Type" and the generator's keys under HGEvolve's names ("Width",
+    "Resolution", "Density", "Seed", ...); a key not given takes the engine's default, and
+    "Seed" defaults to 0. Returns a dict: "Edges" (lists of two vertices numbered from 1),
+    "VertexCount", "VertexCoordinates" (one list per vertex) and, where the generator gives
+    them, "VertexCoordinates3D", "SpacetimePoints", "EdgeThreshold" and "DimensionEstimate"."""
+    if isinstance(spec, str):
+        spec = {"Type": spec}
+    if not isinstance(spec, dict) or "Type" not in spec:
+        raise ValueError(f"an initial condition spec is a type name or a dict with \"Type\": {spec!r}")
+    wire = {}
+    for k, v in spec.items():
+        v = _as_list(v)
+        # A list is reals, so a list of integers and reals reads as one type.
+        if isinstance(v, (list, tuple)):
+            v = [[float(x) for x in _as_list(r)] if isinstance(_as_list(r), (list, tuple))
+                 else float(r) for r in v]
+        wire[str(k)] = v
+    try:
+        values = _core.run({"Op": "InitialCondition", "InitialCondition": wire,
+                            "Options": {"Op": "InitialCondition"}}).values()
+    except RuntimeError as e:
+        raise ValueError(str(e)) from None
+    if not values.get("Edges"):
+        raise ValueError(f"the {spec['Type']} initial condition generated no edges")
+    return values

@@ -13,14 +13,14 @@ parallel, in worker processes (examples/parallel_sweep.py).
 import warnings as _warnings
 
 from . import _core
-from ._options import DATA, DEFAULT_DATA, OPTIONS, Function, Symbol, initial_states, \
-    job_options, rules_association
+from ._options import DATA, DEFAULT_DATA, OPTIONS, Function, Symbol, initial_condition, \
+    initial_states, job_options, rules_association
 from ._result import EdgeLists, Ragged, Relation, Result, Table, VertexReals
 from ._cost import state_cost_program
 
-__all__ = ["evolve", "Session", "encode_job", "Result", "Table", "Relation", "Ragged",
-           "EdgeLists", "VertexReals", "EngineError", "EngineWarning", "OPTIONS", "DATA",
-           "DEFAULT_DATA", "state_cost_program", "build_stamp"]
+__all__ = ["evolve", "Session", "encode_job", "initial_condition", "Result", "Table", "Relation",
+           "Ragged", "EdgeLists", "VertexReals", "EngineError", "EngineWarning", "OPTIONS",
+           "DATA", "DEFAULT_DATA", "state_cost_program", "build_stamp"]
 
 
 class EngineError(RuntimeError):

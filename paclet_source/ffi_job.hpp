@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "hgcommon/initial_condition_core.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/tuning.hpp"
 #include "hypergraph/types.hpp"
@@ -79,6 +80,9 @@ std::vector<std::vector<std::vector<VertexIdT>>> dense_initial_states(
 
 struct ParsedJob {
     std::vector<std::vector<std::vector<int64_t>>> initial_states_raw;
+    // "InitialCondition": the spec of an "InitialCondition" job (initial_condition_job.hpp).
+    hgcommon::IcSpec initial_condition;
+    bool has_initial_condition = false;
     std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> parsed_rules_raw;
     int steps = 1;
 

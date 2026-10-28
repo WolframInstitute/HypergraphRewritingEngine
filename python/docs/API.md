@@ -9,7 +9,7 @@
 `HGEvolve[rules, initial, steps]`. Returns a `Result`.
 
 - `rules`: one `(lhs, rhs)` pair or a list of them. A side is a list of edges, and an edge is a list of vertex labels. Labels may be integers or any hashable values. Each rule's labels are numbered from 0 in order of first appearance in the left side, then the right side, as HGEvolve numbers them.
-- `initial`: one hypergraph (a list of edges) or a list of hypergraphs, which may also be NumPy arrays. Integer labels are sent as given. Other labels are numbered from 0 in order of first appearance across the states. Generated initial conditions ("Grid", "BrillLindquist", ...) are made by the paclet's Wolfram Language code with the kernel's random generator, so the package takes their edges instead (`examples/brill_lindquist_history.py`). A generator name or a `"Type"` dict raises `ValueError` saying so.
+- `initial`: one hypergraph (a list of edges) or a list of hypergraphs, which may also be NumPy arrays. Integer labels are sent as given. Other labels are numbered from 0 in order of first appearance across the states. A generated initial condition is a type name ("Grid", "Torus", "BrillLindquist", ...) or a dict with `"Type"` and the generator's keys, as HGEvolve takes it (`initial_condition`).
 - `steps`: a non-negative integer.
 - `data`: what the reply holds, as a list of names from the data table below. The default is `hg.DEFAULT_DATA`: states, events, causal and branchial edges, and the four counts.
 - `options`: the options table below.
@@ -26,6 +26,10 @@
 ### `hg.encode_job(rules, initial, steps, *, data=None, graph_properties=None, **options)`
 
 The WXF bytes of the job `evolve` runs, which `hg_evolve` reads on stdin. `graph_properties` takes HGEvolve graph property names and adds the "GraphData" the paclet builds graphs from.
+
+### `hg.initial_condition(spec)`
+
+The initial condition HGEvolve generates for `spec`: a type name or a dict with `"Type"` and the generator's keys ("Width", "Height", "Holes", "Resolution", "Radius", "Density", "MinDistance", "EdgeThreshold", "BoxX", "Mass1", "Seed", ...; paclet_source/initial_condition_job.hpp lists them). A key not given takes the default of the HGEvolve option it stands for, and "Seed" defaults to 0. Returns a dict: "Edges", "VertexCount", "VertexCoordinates" and, where the generator gives them, "VertexCoordinates3D", "SpacetimePoints", "EdgeThreshold" and "DimensionEstimate". An unknown type or key raises `ValueError`.
 
 ### `hg.build_stamp()`
 

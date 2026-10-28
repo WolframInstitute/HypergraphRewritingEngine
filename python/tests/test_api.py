@@ -33,9 +33,28 @@ def test_initial_states_forms():
     assert initial_states(np.array([[1, 2], [2, 3]])) == [[[1, 2], [2, 3]]]
     with pytest.raises(ValueError):
         initial_states([])
-    for generated in ({"Type": "Grid", "Width": 3}, "Grid"):
-        with pytest.raises(ValueError, match="Wolfram Language paclet"):
-            initial_states(generated)
+    for generated in ({"Type": "Grid", "Width": 3, "Height": 2, "RandomizeDirections": False},):
+        assert initial_states(generated) == [[[1, 3], [1, 2], [2, 4], [3, 5], [3, 4], [4, 6], [5, 6]]]
+    with pytest.raises(ValueError, match="unknown initial condition"):
+        initial_states("Hexagon")
+
+
+def test_generated_initial_conditions():
+    """The generators run in the engine (hgcommon/initial_condition_core.hpp): a seed gives one
+    output, the spec's keys override the type's defaults, and an evolution from a spec equals one
+    from the edges it generates."""
+    a = hg.initial_condition({"Type": "BrillLindquist", "Density": 120, "Seed": 4})
+    b = hg.initial_condition({"Type": "BrillLindquist", "Density": 120, "Seed": 4})
+    assert a == b and a["VertexCount"] == 120 and len(a["VertexCoordinates"][0]) == 2
+    assert hg.initial_condition({"Type": "BrillLindquist", "Density": 120, "Seed": 5}) != a
+    t = hg.initial_condition({"Type": "Torus", "Resolution": 4})
+    assert t["VertexCount"] == 16 and len(t["Edges"]) == 32 and len(t["VertexCoordinates3D"]) == 16
+    s = hg.initial_condition({"Type": "Sprinkling", "Density": 40, "SpatialDim": 1, "Seed": 2})
+    assert len(s["SpacetimePoints"]) == 40
+    spec = {"Type": "Grid", "Width": 3, "Height": 3, "Seed": 1}
+    r1 = hg.evolve(CHAIN, spec, 2, data=["num_states", "num_events"])
+    r2 = hg.evolve(CHAIN, hg.initial_condition(spec)["Edges"], 2, data=["num_states", "num_events"])
+    assert (r1.num_states, r1.num_events) == (r2.num_states, r2.num_events)
 
 
 def test_symbolic_and_integer_rules_agree():

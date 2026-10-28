@@ -177,6 +177,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_causal_determinism.cpp
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../hypergraph/tests/test_sparse_bitset.cpp
+    ../hypergraph/tests/test_initial_conditions.cpp
     ../hypergraph/tests/ir_pinned_states.hpp
     ../hypergraph/tests/test_pattern_matching.cpp
     ../hypergraph/tests/test_match_completeness.cpp
@@ -239,6 +240,7 @@ create_test_executable(core_tests
     test_helpers.cpp
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../hypergraph/tests/test_sparse_bitset.cpp
+    ../hypergraph/tests/test_initial_conditions.cpp
     ../hypergraph/tests/ir_pinned_states.hpp
     ../wxf/tests/test_wxf.cpp
 )

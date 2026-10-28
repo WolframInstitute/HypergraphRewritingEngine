@@ -38,6 +38,7 @@
 #include "graph_marshal.hpp"
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "reply_out.hpp"         // WireReply and ArrayReply, the two reply forms
+#include "initial_condition_job.hpp"  // the "InitialCondition" job
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
 #include "hgcommon/memory_limit.hpp"  // process_memory_limit, for "Device"
@@ -157,6 +158,10 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
         parser.read_association([&](const std::string& key, P& value_parser) {
             if (key == "InitialStates") {
                 req.initial_states_raw = value_parser.template read<std::vector<std::vector<std::vector<int64_t>>>>();
+            }
+            else if (key == "InitialCondition") {
+                req.initial_condition = HG_NAMESPACE::ffi::read_initial_condition_spec(value_parser);
+                req.has_initial_condition = true;
             }
             else if (key == "InitialEdges") {
                 // Legacy single-state format
@@ -1121,6 +1126,18 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                 "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
                 "Full and Automatic"});
 #endif
+        if (req.session_op == "InitialCondition") {
+            // A generated initial condition, on either device: no rules and no evolution.
+            if (!req.has_initial_condition)
+                throw std::runtime_error("an \"InitialCondition\" job names no \"InitialCondition\" spec");
+            const hgcommon::IcGraph g = hgcommon::ic_generate(req.initial_condition);
+            if (!g.error.empty()) throw std::runtime_error(g.error);
+            for (auto& kv : HG_NAMESPACE::ffi::initial_condition_reply(g)) {
+                reply.value(kv.first.template get<std::string>(), std::move(kv.second));
+            }
+            reply.finish();
+            return;
+        }
         if (req.session_op == "Close") {
             // ANSWERED BEFORE THE RULES ARE CHECKED, on either device: a Close carries no
             // rules, and demanding them would make releasing a session harder than opening
@@ -1150,8 +1167,8 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
         const bool held_session = (req.session_op == "Step" || req.session_op == "Query");
         if (!req.session_op.empty() && !opening_session && !held_session && req.session_op != "Evolve") {
             throw std::runtime_error(
-                "Op '" + req.session_op + "' is not a verb; 'Evolve', 'Open', 'Step', 'Query' and "
-                "'Close' are");
+                "Op '" + req.session_op + "' is not a verb; 'Evolve', 'Open', 'Step', 'Query', "
+                "'Close' and 'InitialCondition' are");
         }
 
         // A held session already has its rules; sending them again would be sending rules the

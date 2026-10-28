@@ -16,6 +16,13 @@
   (`IncludeCanonicalHashes`) of those states have new values; which states are isomorphic is
   unchanged.
 
+- The engine generates the named initial conditions ("Grid", "Torus", "BrillLindquist", ...): one
+  C++ body (`hgcommon/initial_condition_core.hpp`) serves the paclet and the Python package, which
+  now accepts a name or a spec dict where it takes an initial state (`hg.initial_condition`).
+  The Wolfram Language generators are removed. A given "RandomSeed" or "Seed" gives other
+  edges than before for the randomized families (edge directions, point sets); the lattices with
+  "RandomizeDirections" -> False are unchanged.
+
 - An evaluation whose engine worker does not start or does not answer the start-up handshake runs
   in a one-shot `hg_evolve`, and the next evaluation tries to start a worker again. After three
   such evaluations in a row, the device's evaluations run in one-shot `hg_evolve` processes without

@@ -41,6 +41,8 @@ PYTHONPATH=python python3 -c "import hgevolve"
 
 Every array of a `Result` is a read-only view of that reply, and nothing is copied. Each array holds a reference to the reply, so the reply lives as long as any of its arrays, after the `Result` and its `Session` are gone. Ragged data (each state's edges, each event's consumed and produced edges) comes as CSR pairs: a flat values array and an offsets array.
 
+A generated initial condition is a type name or a spec dict, as in HGEvolve: `hg.evolve(rule, {"Type": "Torus", "Resolution": 8, "Seed": 1}, 3)`. The engine generates it with the generators the paclet uses (`common/include/hgcommon/initial_condition_core.hpp`, the "InitialCondition" job), so a spec and a seed give the same edges in Python and in the Wolfram Language. `hg.initial_condition(spec)` returns the edges with the vertex coordinates. "Seed" defaults to 0.
+
 ## Crashes, memory and threads
 
 - **An engine crash ends the Python process.** The engine runs in the interpreter's process, so a segmentation fault or abort in the engine takes the interpreter with it, and no exception is raised. Work that may crash, or that should be stoppable from outside, belongs in a child process (`examples/parallel_sweep.py`).
@@ -54,7 +56,7 @@ Every array of a `Result` is a read-only view of that reply, and nothing is copi
 |---|---|
 | `examples/multiway.py` | a multiway evolution and its arrays |
 | `examples/sampled_history.py` | one sampled history from a 30 x 30 grid (`uniform_random`, `matches_per_step`) |
-| `examples/brill_lindquist_history.py` | a sampled history from a Brill-Lindquist initial condition exported from the paclet |
+| `examples/brill_lindquist_history.py` | a sampled history from a Brill-Lindquist initial condition (`initial_condition`) |
 | `examples/generational_and_orderings.py` | `generational` and `event_ordering_function` |
 | `examples/undirected_edges.py` | `undirected_edges` |
 | `examples/step_statistics.py` | step statistics with measures and branchial metrics |

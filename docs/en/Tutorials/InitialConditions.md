@@ -120,7 +120,7 @@ Length[HGEvolve[rule, <|"Type" -> "Grid", "Width" -> 4, "Height" -> 4|>, 0, "Glo
 HGEvolve[rule, "Grid", 0, "GlobalEdges", "GridWidth" -> 4, "GridHeight" -> 4, "RandomSeed" -> 1]
 ```
 
-<!-- => {{0, 0, 1}, {1, 2, 0}, {2, 2, 3}, {3, 4, 2}, {4, 5, 4}, {5, 6, 4}, {6, 6, 7}, {7, 8, 1}, {8, 3, 1}, {9, 3, 9}, {10, 5, 3}, {11, 5, 10}, {12, 7, 5}, {13, 11, 7}, {14, 8, 12}, {15, 8, 9}, {16, 9, 13}, {17, 9, 10}, {18, 14, 10}, {19, 11, 10}, {20, 11, 15}, {21, 13, 12}, {22, 14, 13}, {23, 14, 15}} -->
+<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 4, 2}, {4, 4, 5}, {5, 4, 6}, {6, 6, 7}, {7, 8, 1}, {8, 1, 3}, {9, 9, 3}, {10, 3, 5}, {11, 10, 5}, {12, 5, 7}, {13, 11, 7}, {14, 12, 8}, {15, 8, 9}, {16, 9, 13}, {17, 9, 10}, {18, 10, 14}, {19, 11, 10}, {20, 15, 11}, {21, 13, 12}, {22, 14, 13}, {23, 15, 14}} -->
 
 ```wl
 initialStateGraph[HGEvolve[rule, "Grid", 0, "GlobalEdges", "GridWidth" -> 4, "GridHeight" -> 4, "RandomSeed" -> 1], GraphLayout -> "SpringElectricalEmbedding"]
@@ -168,7 +168,7 @@ The association keys are `"Width"`, `"Height"`, `"Holes"` and `"Seed"`. A 4 by 3
 HGEvolve[rule, <|"Type" -> "Grid", "Width" -> 4, "Height" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"]
 ```
 
-<!-- => {{0, 0, 1}, {1, 2, 0}, {2, 2, 3}, {3, 4, 2}, {4, 5, 4}, {5, 6, 1}, {6, 1, 3}, {7, 7, 3}, {8, 5, 3}, {9, 5, 8}, {10, 9, 6}, {11, 6, 7}, {12, 10, 7}, {13, 8, 7}, {14, 8, 11}, {15, 9, 10}, {16, 10, 11}} -->
+<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 4, 2}, {4, 4, 5}, {5, 1, 6}, {6, 1, 3}, {7, 7, 3}, {8, 3, 5}, {9, 8, 5}, {10, 6, 9}, {11, 7, 6}, {12, 7, 10}, {13, 8, 7}, {14, 11, 8}, {15, 9, 10}, {16, 10, 11}} -->
 
 ## Surfaces
 
@@ -278,7 +278,7 @@ The number of edges with 1, 2 and 3 space dimensions:
 Table[Length[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "SprinklingSpatialDim" -> d, "RandomSeed" -> 1]], {d, {1, 2, 3}}]
 ```
 
-<!-- => {46, 55, 32} -->
+<!-- => {47, 47, 24} -->
 
 With speeds of light 0.5, 1 and 2:
 
@@ -286,7 +286,7 @@ With speeds of light 0.5, 1 and 2:
 Table[Length[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "SprinklingLightconeAngle" -> c, "RandomSeed" -> 1]], {c, {0.5, 1., 2.}}]
 ```
 
-<!-- => {23, 55, 64} -->
+<!-- => {19, 47, 62} -->
 
 With Alexandrov cutoffs 1, 2, 5 and 10:
 
@@ -294,7 +294,7 @@ With Alexandrov cutoffs 1, 2, 5 and 10:
 Table[Length[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "SprinklingAlexandrovCutoff" -> a, "RandomSeed" -> 1]], {a, {1., 2., 5., 10.}}]
 ```
 
-<!-- => {10, 19, 55, 57} -->
+<!-- => {1, 12, 47, 57} -->
 
 With and without the transitivity reduction:
 
@@ -302,7 +302,7 @@ With and without the transitivity reduction:
 Table[Length[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "SprinklingTransitivityReduction" -> q, "RandomSeed" -> 1]], {q, {True, False}}]
 ```
 
-<!-- => {55, 72} -->
+<!-- => {47, 49} -->
 
 At most one link from each point gives a forest:
 
@@ -320,7 +320,7 @@ The association keys are the option names without `Sprinkling`: `"Density"`, `"T
 Length[HGEvolve[rule, <|"Type" -> "Sprinkling", "Density" -> 24, "SpatialDim" -> 1, "AlexandrovCutoff" -> 2., "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
-<!-- => 33 -->
+<!-- => 32 -->
 
 Two steps from the sprinkling of 24 points:
 
@@ -328,7 +328,7 @@ Two steps from the sprinkling of 24 points:
 HGEvolve[rule, "Sprinkling", 2, "NumStates", "SprinklingDensity" -> 24, "RandomSeed" -> 1]
 ```
 
-<!-- => 3136 -->
+<!-- => 2304 -->
 
 ## Brill-Lindquist point clouds
 
@@ -340,7 +340,7 @@ Thirty points in the default box have few pairs within that distance:
 Length[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 30, "RandomSeed" -> 1]]
 ```
 
-<!-- => 7 -->
+<!-- => 12 -->
 
 A smaller box and a threshold of 4 join the points into one piece:
 
@@ -350,13 +350,13 @@ initialStateGraph[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "Sprinkling
 
 ![A smaller box and a threshold of 4 join the points into one piece](../images/InitialConditions/InitialConditions-38.png)
 
-A point with no edge is not in the hypergraph, so 29 of the 30 points appear:
+A point with no edge is not in the hypergraph. Here each of the 30 points has an edge:
 
 ```wl
 VertexCount @ initialStateGraph @ HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 30, "BrillLindquistBoxX" -> {-8., 8.}, "BrillLindquistBoxY" -> {-8., 8.}, "EdgeThreshold" -> 4., "RandomSeed" -> 1]
 ```
 
-<!-- => 29 -->
+<!-- => 30 -->
 
 ---
 
@@ -366,7 +366,7 @@ The number of edges at thresholds 2, 3 and 4:
 Table[Length[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 30, "BrillLindquistBoxX" -> {-8., 8.}, "BrillLindquistBoxY" -> {-8., 8.}, "EdgeThreshold" -> t, "RandomSeed" -> 1]], {t, {2., 3., 4.}}]
 ```
 
-<!-- => {21, 47, 68} -->
+<!-- => {32, 54, 95} -->
 
 The masses change where the points are placed, so the same seed gives different points at two masses:
 
@@ -382,7 +382,7 @@ The number of edges at separations 2, 6 and 20:
 Table[Length[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 30, "BrillLindquistSeparation" -> s, "BrillLindquistBoxX" -> {-8., 8.}, "BrillLindquistBoxY" -> {-8., 8.}, "EdgeThreshold" -> 3., "RandomSeed" -> 1]], {s, {2., 6., 20.}}]
 ```
 
-<!-- => {65, 56, 37} -->
+<!-- => {46, 66, 41} -->
 
 ---
 
@@ -392,7 +392,7 @@ The association keys are `"Density"`, `"Mass1"`, `"Mass2"`, `"Separation"`, `"Bo
 Length[HGEvolve[rule, <|"Type" -> "BrillLindquist", "Density" -> 30, "Mass1" -> 3., "Mass2" -> 3., "Separation" -> 10., "BoxX" -> {-8., 8.}, "BoxY" -> {-8., 8.}, "EdgeThreshold" -> 3., "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
-<!-- => 47 -->
+<!-- => 54 -->
 
 Two steps, with isomorphic states identified:
 
@@ -400,7 +400,7 @@ Two steps, with isomorphic states identified:
 HGEvolve[rule, "BrillLindquist", 2, "NumStates", "SprinklingDensity" -> 30, "BrillLindquistBoxX" -> {-8., 8.}, "BrillLindquistBoxY" -> {-8., 8.}, "EdgeThreshold" -> 3., "RandomSeed" -> 1, "CanonicalizeStates" -> Full]
 ```
 
-<!-- => 900 -->
+<!-- => 1230 -->
 
 ### Three dimensions
 
@@ -413,7 +413,7 @@ gorard = <|"Type" -> "BrillLindquist", "Dimension" -> 3, "Periodic" -> True, "De
 With[{g = Graph[DirectedEdge @@@ Rest /@ HGEvolve[rule, gorard, 0, "GlobalEdges"]]}, {VertexCount[g], EdgeCount[g], Length[WeaklyConnectedComponents[g]]}]
 ```
 
-<!-- => {200, 886, 1} -->
+<!-- => {200, 788, 1} -->
 
 The same points without periodic distances have fewer edges:
 
@@ -421,7 +421,7 @@ The same points without periodic distances have fewer edges:
 Length[HGEvolve[rule, Append[gorard, "Periodic" -> False], 0, "GlobalEdges"]]
 ```
 
-<!-- => 724 -->
+<!-- => 638 -->
 
 ### The points
 
@@ -433,7 +433,7 @@ pts = Values[ic["VertexCoordinates"]];
 {Dimensions[pts], Min[Norm[# - {0.5, 0., 0.}] & /@ pts] > 0.25, Length[ic["Edges"]]}
 ```
 
-<!-- => {{200, 3}, True, 886} -->
+<!-- => {{200, 3}, True, 788} -->
 
 ## Poisson-disk and uniform point clouds
 
@@ -447,13 +447,13 @@ initialStateGraph[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity
 
 ![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-48.png)
 
-21 points are kept:
+22 points are kept:
 
 ```wl
 VertexCount @ initialStateGraph @ HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "PoissonMinDistance" -> 2., "RandomSeed" -> 1]
 ```
 
-<!-- => 21 -->
+<!-- => 22 -->
 
 The number of edges at minimum distances 0.5, 1 and 2, each with its automatic threshold:
 
@@ -461,7 +461,7 @@ The number of edges at minimum distances 0.5, 1 and 2, each with its automatic t
 Table[Length[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "PoissonMinDistance" -> d, "RandomSeed" -> 1]], {d, {0.5, 1., 2.}}]
 ```
 
-<!-- => {14, 41, 51} -->
+<!-- => {14, 40, 63} -->
 
 And at thresholds 1.5, 2 and 3 with the default minimum distance:
 
@@ -469,7 +469,7 @@ And at thresholds 1.5, 2 and 3 with the default minimum distance:
 Table[Length[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "EdgeThreshold" -> t, "RandomSeed" -> 1]], {t, {1.5, 2., 3.}}]
 ```
 
-<!-- => {22, 41, 90} -->
+<!-- => {16, 40, 84} -->
 
 The association keys are `"Density"`, `"MinDistance"`, `"BoxX"`, `"BoxY"`, `"EdgeThreshold"` and `"Seed"`. The box can only be set in the association. Boxes of side 10 and 20:
 
@@ -477,7 +477,7 @@ The association keys are `"Density"`, `"MinDistance"`, `"BoxX"`, `"BoxY"`, `"Edg
 Table[Length[HGEvolve[rule, <|"Type" -> "Poisson", "Density" -> 30, "MinDistance" -> 2., "BoxX" -> {0, b}, "BoxY" -> {0, b}, "Seed" -> 1|>, 0, "GlobalEdges"]], {b, {10, 20}}]
 ```
 
-<!-- => {51, 41} -->
+<!-- => {63, 40} -->
 
 ---
 
@@ -497,7 +497,7 @@ The number of edges at thresholds 2, 3 and 4:
 Table[Length[HGEvolve[rule, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 20, "EdgeThreshold" -> t, "RandomSeed" -> 1]], {t, {2., 3., 4.}}]
 ```
 
-<!-- => {29, 50, 66} -->
+<!-- => {28, 44, 68} -->
 
 The association keys are `"Density"`, `"BoxX"`, `"BoxY"`, `"EdgeThreshold"` and `"Seed"`. Twenty points in a box of side 5:
 
@@ -505,7 +505,7 @@ The association keys are `"Density"`, `"BoxX"`, `"BoxY"`, `"EdgeThreshold"` and 
 Length[HGEvolve[rule, <|"Type" -> "Uniform", "Density" -> 20, "BoxX" -> {0, 5}, "BoxY" -> {0, 5}, "EdgeThreshold" -> 2., "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
-<!-- => 66 -->
+<!-- => 68 -->
 
 Two steps from the twenty points, with isomorphic states identified:
 
@@ -513,7 +513,7 @@ Two steps from the twenty points, with isomorphic states identified:
 HGEvolve[rule, "Uniform", 2, "NumStates", "SprinklingDensity" -> 20, "RandomSeed" -> 1, "CanonicalizeStates" -> Full]
 ```
 
-<!-- => 1653 -->
+<!-- => 1274 -->
 
 ## The random seed
 
@@ -533,7 +533,7 @@ Different seeds give different point clouds:
 Table[Length[HGEvolve[rule, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> s]], {s, {1, 2, 3}}]
 ```
 
-<!-- => {56, 51, 49} -->
+<!-- => {50, 58, 60} -->
 
 ---
 
@@ -543,7 +543,7 @@ For a grid, the size fixes the number of edges and the seed fixes their directio
 Table[HGEvolve[rule, "Grid", 2, "NumStates", "GridWidth" -> 4, "GridHeight" -> 4, "RandomSeed" -> s, "CanonicalizeStates" -> Full], {s, {1, 2, 3}}]
 ```
 
-<!-- => {300, 253, 300} -->
+<!-- => {276, 276, 300} -->
 
 The `"Seed"` key of the association is the same seed:
 
@@ -551,6 +551,6 @@ The `"Seed"` key of the association is the same seed:
 Length[HGEvolve[rule, <|"Type" -> "Uniform", "Density" -> 20, "Seed" -> 2|>, 0, "GlobalEdges"]]
 ```
 
-<!-- => 51 -->
+<!-- => 58 -->
 
 `"RandomSeed"` also seeds the sampling options of the evolution, described in [Sampling and Pruning the Multiway System](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/SamplingAndPruning).
