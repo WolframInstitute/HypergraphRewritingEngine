@@ -362,11 +362,12 @@ HG_HD inline uint64_t si_record_fixed_bytes(uint32_t slots, uint32_t m, uint32_t
            5 * 8 * (uint64_t{slots} + 1);
 }
 
-// A first scratch size for state_record: the geometry's graph and its metrics at maximum degree 8.
-// state_record reports the size it needs when that is short.
-HG_HD inline uint64_t si_record_bytes_hint(uint32_t slots, uint32_t m, uint32_t lanes) {
+// A first scratch size for state_record: the geometry's graph and its metrics for the measures in
+// `want` at maximum degree 8. state_record reports the size it needs when that is short.
+HG_HD inline uint64_t si_record_bytes_hint(uint32_t slots, uint32_t m, uint32_t lanes,
+                                             uint32_t want = SG_MEASURES_ALL) {
     return si_record_fixed_bytes(slots, m, lanes) + sg_build_bytes(slots, slots) +
-           sg_metric_bytes(slots, 8, slots, lanes);
+           sg_metric_bytes(slots, 8, slots, lanes, want);
 }
 
 // An IR canonical form (ir_core.hpp: per edge in canonical order, its arity then its canonical
@@ -433,7 +434,7 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     auto* dists = reinterpret_cast<SgDistribution*>(reinterpret_cast<unsigned char*>(wave) -
                                                     sizeof(SgDistribution) * SG_DISTS);
     if (fixed > capacity) {
-        needed = si_record_bytes_hint(S, m, par.width());
+        needed = si_record_bytes_hint(S, m, par.width(), want);
         return false;
     }
     const uint32_t largest_n =
@@ -489,7 +490,7 @@ HG_HD inline bool state_record_of_form(const uint32_t* form, uint32_t words,
     uint32_t* goff = reinterpret_cast<uint32_t*>(scratch);
     uint32_t* gverts = goff + words + 2;
     if (head > capacity) {
-        needed = head + si_record_bytes_hint(words, words, par.width());
+        needed = head + si_record_bytes_hint(words, words, par.width(), want);
         return false;
     }
     uint32_t gm = 0;

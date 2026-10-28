@@ -978,7 +978,10 @@ const hgcommon::StateInvariantRecord* Hypergraph::invariant_record_of_form(
     const std::vector<uint32_t>& form) {
     const uint32_t words = static_cast<uint32_t>(form.size());
     auto mk = worker_scratch().mark();
-    uint64_t bytes = hgcommon::si_form_csr_bytes(words) + hgcommon::si_record_bytes_hint(words, words, 1);
+    const uint32_t want =
+        hgcommon::SG_MEASURES_BASE | statistics_measures_.load(std::memory_order_relaxed);
+    uint64_t bytes =
+        hgcommon::si_form_csr_bytes(words) + hgcommon::si_record_bytes_hint(words, words, 1, want);
     hgcommon::SiResult r;
     for (;;) {
         auto* scratch = static_cast<unsigned char*>(worker_scratch().allocate_raw(bytes, 8));
@@ -986,8 +989,7 @@ const hgcommon::StateInvariantRecord* Hypergraph::invariant_record_of_form(
         if (hgcommon::state_record_of_form(form.data(), words, scratch, bytes, needed, r,
                                            hgcommon::IrSerial{},
                                            statistics_graph_.load(std::memory_order_relaxed),
-                                           hgcommon::SG_MEASURES_BASE |
-                                               statistics_measures_.load(std::memory_order_relaxed)))
+                                           want))
             break;
         bytes = needed > bytes ? needed : 2 * bytes;
     }
@@ -1001,7 +1003,8 @@ double Hypergraph::state_cost_of_form(const hgcommon::StateCost& cost,
                                       const std::vector<uint32_t>& form) {
     const uint32_t words = static_cast<uint32_t>(form.size());
     auto mk = worker_scratch().mark();
-    uint64_t bytes = hgcommon::si_form_csr_bytes(words) + hgcommon::si_record_bytes_hint(words, words, 1);
+    uint64_t bytes = hgcommon::si_form_csr_bytes(words) +
+                     hgcommon::si_record_bytes_hint(words, words, 1, cost.measures);
     hgcommon::SiResult r;
     for (;;) {
         auto* scratch = static_cast<unsigned char*>(worker_scratch().allocate_raw(bytes, 8));

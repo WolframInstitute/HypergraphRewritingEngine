@@ -405,7 +405,8 @@ __device__ bool state_cost_of_form_device(const DeviceState& ds, const uint32_t*
                                           const hgcommon::StateCost& cost, uint64_t& out_key,
                                           Par par) {
     uint64_t bytes = hgcommon::si_form_csr_bytes(form_words) +
-                     hgcommon::si_record_bytes_hint(form_words, form_words, par.width());
+                     hgcommon::si_record_bytes_hint(form_words, form_words, par.width(),
+                                                     cost.measures);
     hgcommon::SiResult r;
     for (int attempt = 0; attempt < 4; ++attempt) {
         const bool form_in_slot = form && slot && form >= slot && form < slot + slot_words;
