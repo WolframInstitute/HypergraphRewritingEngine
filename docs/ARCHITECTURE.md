@@ -74,7 +74,8 @@ Core engine:
   owns canonical-state dedup. Matching is a worst-case-optimal join
   (`pattern_matcher.hpp`, `ancestry.hpp`, `signature.hpp`). Canonicalization under the exact
   mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
-  state; its hash selects the dedup key and its canonical form, stored once per canonical
+  state, per connected component when the state is disconnected and its refined partition has a
+  cell of three or more vertices (`hgcommon/ir_core.hpp`); its hash selects the dedup key and its canonical form, stored once per canonical
   state (`hgcommon/canonical_form_core.hpp`), decides a key hit; the coarse modes deduplicate by a
   content-ordered key (`content_core.hpp`), and a key hit compares the content words with the
   class's first state. Event identity claims the signature values the same way: a key hit
@@ -90,11 +91,15 @@ Core engine:
   exploration, event-canonicalization conventions), the orbits come from that same
   IR pass, so nothing is canonicalized twice. Storage is
   arena-backed and lock-free (`arena.hpp`, `segmented_array.hpp`, `concurrent_map.hpp`,
-  `bitset.hpp`, `lock_free_list.hpp`). Causal/branchial in `causal_graph.hpp`.
+  `bitset.hpp`, `lock_free_list.hpp`). A state's edge set (`SparseBitset`) shares its parent's
+  chunks and, past 32 chunks, its parent's radix index, so a state costs the chunks it changes.
+  Causal/branchial in `causal_graph.hpp`.
 - **`job_system/`** — work-stealing task scheduler the engine runs on.
 - **`lockfree_deque/`** — the lock-free deque backing the scheduler.
 - **`common/`** (`hgcommon/`) — shared primitives: portable intrinsics, the WL hash
-  core shared by CPU and GPU.
+  core shared by CPU and GPU. The named initial conditions are generated here
+  (`initial_condition_core.hpp`) for the paclet and the Python package, through the engine's
+  "InitialCondition" job.
 - **`wxf/`** — Wolfram Exchange Format reader/writer for the WL boundary.
 
 GPU (optional, `BUILD_GPU=ON`):

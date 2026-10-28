@@ -46,6 +46,18 @@
   with the "memory exhausted" warning naming the limit. `"OSMemoryLimit"` in `"Device"` reports
   the sum.
 
+- The GPU worker's operating-system limit also allows the device memory a run allocates after the
+  engine is built (the IR arena, the held match sets), which Windows counts in the process's
+  commit. A 40-step `"StepStatistics"` run on a 9 x 9 torus with `"MatchesPerStep"` completes on
+  Windows at a `"MemoryLimit"` of 1 to 4 GB (it returned a partial result at 2 to 4 GB).
+
+- The Python package returns the memory each `hg.evolve` call used: its process's resident set
+  stays at its size after the first call over later calls (30.6 to 30.8 MB over five calls, three
+  of them filling a 64 MB `"MemoryLimit"`).
+
+- A single history costs the same memory per event at every length: about 2.1 kB per event from
+  10,000 to 250,000 events of a 2 -> 3 rule (519 MB at 250,000 events; it was 3.4 GB).
+
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`
   (each vertex's point, keyed by the vertex as the states name it). With other properties it is
