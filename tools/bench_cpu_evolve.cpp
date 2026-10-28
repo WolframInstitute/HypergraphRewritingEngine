@@ -541,9 +541,6 @@ int main(int argc, char** argv) {
             }
         }
     }
-#ifdef HG_BITSET_STATS
-    hg::engine::bitset_stats_report(want);
-#endif
 #ifdef HG_MATCH_BRANCH_STATS
     // CANDIDATE-BRANCH COVERAGE, reported so a corpus can be CHECKED to reach all three rather
     // than assumed to. Order matches the branches in pattern_matcher.hpp.

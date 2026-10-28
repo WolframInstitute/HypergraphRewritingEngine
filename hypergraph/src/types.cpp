@@ -302,24 +302,6 @@ uint64_t QcEventContent::triple_hash() const {
     return hgcommon::qr_content_hash(from_class, to_class, rule);
 }
 
-uint32_t EdgeOrbitTable::index_of(EdgeId e) const {
-    uint32_t lo = 0, hi = n;
-    while (lo < hi) {
-        uint32_t mid = lo + ((hi - lo) >> 1);
-        if (edges[mid] < e) lo = mid + 1; else hi = mid;
-    }
-    return (lo < n && edges[lo] == e) ? lo : n;
-}
-
-uint32_t EdgeOrbitTable::orbit_of(EdgeId e) const {
-    const uint32_t i = index_of(e);
-    return i < n ? orbit[i] : 0;
-}
-
-uint32_t EdgeOrbitTable::slot_of(EdgeId e) const {
-    const uint32_t i = index_of(e);
-    return (i < n && slot) ? slot[i] : 0;
-}
 
 
 uint32_t SlotMatch::consumed(uint32_t i) const { return consumed_slots[i]; }

@@ -117,8 +117,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
   - `ConcurrentHeterogeneousArena` (**per-worker bump cursors** — each thread bumps a private non-atomic offset, no shared atomic on the fast path, only a lock-free head CAS to grab a fresh ~1 MB block; scratch arenas keep the shared `allocate_shared` path for `mark/release/reset`; `create`/`create_untracked`), `ArenaWorkerRegistry` (thread→dense index, released at exit), `ArenaVector<T>`; `worker_scratch()` — the recycling scratch arena bumps `current_block_` with plain relaxed accesses (`allocate_single`), not the shared atomic claim: it is single-threaded, and the locked RMW cost 4.35x on the bump path
 - **`scratch_alloc.hpp`** -- STL-compatible allocators over the scratch/persistent arenas.
   - `ScratchAlloc<T>`, `PersistAlloc<T>`, `PersistTarget`; `worker_persistent()`; aliases `SVec`/`PVec`/`SSet`/`SUSet`/`SMap`/`SUMap`/`PUMap`
-- **`bitset.hpp`** -- sparse chunked bitset for a state's edge set.
-  - `SparseBitset` (+ `derive()`, `from_edges()`), nested `Chunk`/`ChunkEntry`
+- **`bitset.hpp`** -- sparse chunked bitset for a state's edge set: a flat index of up to 32 chunks, then a persistent radix tree of 8-slot nodes (a derived state copies only the paths it changes).
+  - `SparseBitset` (+ `derive()`, `from_edges()`), nested `Chunk`/`ChunkEntry`/`Node`
 - **`segmented_array.hpp`** -- append-only fixed-segment array, stable pointers, O(1) access.
   - `SegmentedArray<T>` (`emplace_at`/`slot`/`find`/`operator[]`); records no extent: an index is read only after its writer published it to the reader
   - `MAX_SEGMENTS` is now enforced in `get_or_create_segment` (throws `std::length_error`); every write path funnels through it, and past it the CAS would land in the adjacent member
@@ -178,7 +178,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`signature.cpp`** -- `EdgeSignature`'s accessors, both builders (`from_edge`, `from_pattern`) and `signature_compatible`.
 - **`arena.cpp`** -- `ConcurrentHeterogeneousArena`'s bodies (construction, `allocate_raw` and the four bump/grow paths, `register_destructor`, `mark`/`release`/`reset`), `worker_scratch()`, and `scratch_alloc.hpp`'s siblings `worker_persistent_target()`/`worker_persistent()`/`PersistTarget`/`ScratchIdSet` -- the scratch and persistent per-worker arenas are one mechanism at two lifetimes. `ArenaWorkerRegistry::acquire`/`release` are NOT here: `verification/genmc/arena_worker_index_exclusive.cpp` compiles that header alone and links no library, so those two stay inline.
 - **`types.cpp`** -- the engine's value types: `VariableBinding`, `Edge`, `Event`, `State`, `GlobalCounters`, `CausalEdge`, `BranchialEdge`, `EventSignature`, and `quotient_types.hpp`'s identity records (`QcEventContent::triple_hash`, `EdgeOrbitTable`, `SlotMatch`).
-- **`bitset.cpp`** -- `SparseBitset::Chunk` and the bitset's construction, move, `count`, `find_entry_index` and `invalidate_count`. `contains` and `find_chunk` are NOT here: they are `HG_INLINE` in the header with the measurement that pins them (outlining the engine's hottest predicate cost +3.7%).
+- **`bitset.cpp`** -- `SparseBitset::Chunk` and the bitset's construction, move, `count`, `num_chunks` and the radix lookup `find_chunk_radix`. `contains` and `find_chunk` are NOT here: they are `HG_INLINE` in the header with the measurement that pins them (outlining the engine's hottest predicate cost +3.7%).
 - **`rewriter.cpp`** -- `RewriteResult`'s constructor, `Rewriter`'s constructor, the free `apply_rewrite`, and `Rewriter::apply`: validate match, derive child edge set, allocate fresh vertices, create RHS edges/state/event, register causal/branchial (consumed edges in descending-producer order for correct online TR). `Rewriter::apply_generation` applies a generation's disjoint matches together: one state, one event per match, the produced edges and fresh vertices in match order. `record_event` stores an event and registers it, for both.
 
 ## `gpu/include/hg_gpu/` -- CUDA port (headers)
@@ -476,7 +476,7 @@ No suite here is part of any build; all three are gates run by `ctest`.
 ## Tests
 
 - **`testing/`** -- `main.cpp` (gtest entry), `test_helpers.hpp` + **`test_helpers.cpp`** (the canonical-form comparisons and the WolframScript shell-out, in all six test targets), `CMakeLists.txt` (fetches GoogleTest, builds `all_tests` + subset targets `core_tests`/`evolution_tests`/`causal_tests`/`stress_tests`/`integration_tests`).
-- **`hypergraph/tests/*.cpp`** -- CPU suites: `test_concurrent_map`, `test_quotient_completeness`, `test_causal_tr_exactness`, `test_ir_canonicalization`, `test_pattern_matching`, `test_parallel_evolution`, `test_multiple_initial_states`, `test_evolution_limits`, `test_sampling_reproducibility`, `test_event_ordering`, `test_causal_branchial`, `test_event_canonicalization`, `test_determinism_fuzzing`, `test_blackhole_idempotent`, `test_grid_performance`, `test_repeated_invocation`, `test_reference_oracle`.
+- **`hypergraph/tests/*.cpp`** -- CPU suites: `test_concurrent_map`, `test_quotient_completeness`, `test_causal_tr_exactness`, `test_ir_canonicalization`, `test_sparse_bitset`, `test_pattern_matching`, `test_parallel_evolution`, `test_multiple_initial_states`, `test_evolution_limits`, `test_sampling_reproducibility`, `test_event_ordering`, `test_causal_branchial`, `test_event_canonicalization`, `test_determinism_fuzzing`, `test_blackhole_idempotent`, `test_grid_performance`, `test_repeated_invocation`, `test_reference_oracle`.
 
 ## `benchmarks/` + `benchmarking/`
 

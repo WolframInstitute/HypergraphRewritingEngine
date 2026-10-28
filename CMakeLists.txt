@@ -18,11 +18,6 @@ if(HG_PHASE_TIMING)
     message(STATUS "Host phase timing ENABLED -- this build is for measurement, not for shipping")
 endif()
 
-option(HG_BITSET_STATS "SparseBitset search-depth histogram (measurement builds only)" OFF)
-if(HG_BITSET_STATS)
-    add_compile_definitions(HG_BITSET_STATS)
-endif()
-
 option(HG_MATCH_BRANCH_STATS "Matcher candidate-branch coverage counters (measurement builds only)" OFF)
 if(HG_MATCH_BRANCH_STATS)
     add_compile_definitions(HG_MATCH_BRANCH_STATS)

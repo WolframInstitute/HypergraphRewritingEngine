@@ -8,30 +8,8 @@
 namespace HG_NAMESPACE {
 namespace engine {
 
-// =============================================================================
-// SparseBitset::Chunk
-// =============================================================================
-
 SparseBitset::Chunk::Chunk() {
     std::memset(words, 0, sizeof(words));
-}
-
-bool SparseBitset::Chunk::get(size_t bit_index) const {
-    size_t word_idx = bit_index / 64;
-    size_t bit_idx = bit_index % 64;
-    return (words[word_idx] >> bit_idx) & 1;
-}
-
-void SparseBitset::Chunk::set(size_t bit_index) {
-    size_t word_idx = bit_index / 64;
-    size_t bit_idx = bit_index % 64;
-    words[word_idx] |= (1ULL << bit_idx);
-}
-
-void SparseBitset::Chunk::clear(size_t bit_index) {
-    size_t word_idx = bit_index / 64;
-    size_t bit_idx = bit_index % 64;
-    words[word_idx] &= ~(1ULL << bit_idx);
 }
 
 bool SparseBitset::Chunk::empty() const {
@@ -49,10 +27,6 @@ size_t SparseBitset::Chunk::popcount() const {
     return count;
 }
 
-// =============================================================================
-// SparseBitset
-// =============================================================================
-
 SparseBitset::SparseBitset()
     : entries_(nullptr)
     , num_entries_(0)
@@ -68,7 +42,6 @@ SparseBitset::SparseBitset(SparseBitset&& other) noexcept
     , count_cached_(other.count_cached_.load(std::memory_order_relaxed))
     , count_valid_(other.count_valid_.load(std::memory_order_relaxed))
 {
-    // Clear the source to prevent aliasing
     other.entries_ = nullptr;
     other.num_entries_ = 0;
     other.capacity_ = 0;
@@ -78,7 +51,6 @@ SparseBitset::SparseBitset(SparseBitset&& other) noexcept
 
 SparseBitset& SparseBitset::operator=(SparseBitset&& other) noexcept {
     if (this != &other) {
-        // Take over other's data
         entries_ = other.entries_;
         num_entries_ = other.num_entries_;
         capacity_ = other.capacity_;
@@ -86,8 +58,6 @@ SparseBitset& SparseBitset::operator=(SparseBitset&& other) noexcept {
                             std::memory_order_relaxed);
         count_valid_.store(other.count_valid_.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
-
-        // Clear the source to prevent aliasing
         other.entries_ = nullptr;
         other.num_entries_ = 0;
         other.capacity_ = 0;
@@ -102,9 +72,7 @@ size_t SparseBitset::count() const {
         return count_cached_.load(std::memory_order_relaxed);
     }
     size_t total = 0;
-    for (size_t i = 0; i < num_entries_; ++i) {
-        total += entries_[i].chunk->popcount();
-    }
+    for_each_chunk([&](uint32_t, const Chunk& c) { total += c.popcount(); });
     count_cached_.store(total, std::memory_order_relaxed);
     count_valid_.store(true, std::memory_order_release);
     return total;
@@ -114,22 +82,19 @@ bool SparseBitset::empty() const {
     return count() == 0;
 }
 
+const SparseBitset::Chunk* SparseBitset::find_chunk_radix(uint32_t chunk_id) const {
+    if ((uint64_t(chunk_id) >> (FANOUT_SHIFT * height_)) != 0) return nullptr;
+    uintptr_t p = root_ & ~uintptr_t{1};
+    for (uint32_t h = height_; h > 0 && p; --h)
+        p = reinterpret_cast<const Node*>(p)->slot[(chunk_id >> (FANOUT_SHIFT * (h - 1))) & (FANOUT - 1)] &
+            ~uintptr_t{1};
+    return reinterpret_cast<const Chunk*>(p);
+}
+
 size_t SparseBitset::num_chunks() const {
-    return num_entries_;
-}
-
-bool SparseBitset::find_entry_index(uint32_t chunk_id, size_t& out_idx) const {
-    size_t lo = 0, hi = num_entries_;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (entries_[mid].chunk_id < chunk_id) lo = mid + 1; else hi = mid;
-    }
-    out_idx = lo;
-    return lo < num_entries_ && entries_[lo].chunk_id == chunk_id;
-}
-
-void SparseBitset::invalidate_count() {
-    count_valid_.store(false, std::memory_order_relaxed);
+    size_t n = 0;
+    for_each_chunk([&](uint32_t, const Chunk&) { ++n; });
+    return n;
 }
 
 }  // namespace engine

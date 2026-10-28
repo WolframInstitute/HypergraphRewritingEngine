@@ -4,111 +4,38 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include "hgcommon/core.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#ifdef HG_BITSET_STATS
-#include "hgcommon/diag.hpp"
-#endif
 
 namespace HG_NAMESPACE {
 namespace engine {
 
 // =============================================================================
-// SparseBitset: Sparse chunked bitset for edge membership tracking
+// SparseBitset: the set of EdgeIds present in a state
 // =============================================================================
 //
-// Tracks which EdgeIds are present in a state. Only allocates storage for
-// non-empty chunks, making it memory-efficient for sparse states.
+// Edge ids are grouped in chunks of 512 bits (64 bytes); a chunk is allocated once one of its
+// ids is set. A derived state shares its parent's chunks and copies the chunks it changes
+// (copy-on-write). The chunks are found through one of two indexes:
 //
-// Interface designed to be implementation-agnostic - can be swapped for
-// dense bitset, sorted array, or hash set if needed.
+// - FLAT, up to kFlatChunks (32) chunks: a sorted array of (chunk id, chunk) entries, searched by
+//   bisection. A derived state copies the array: at most 32 x 16 bytes.
+// - RADIX, beyond that: a tree of 8-slot nodes (64 bytes each) indexed by chunk id, `height_`
+//   levels deep (height h covers chunk ids below 8^h). A derived state shares its parent's tree
+//   and copies the path from the root to each chunk it changes (path copying), so a state of any
+//   size costs O(changed chunks x height) bytes and a single history of n events O(n log n).
+// An index turns radix when it passes kFlatChunks and stays radix in every state derived from it.
 //
-// Thread safety: Safe for concurrent reads after construction.
-//                Single-writer during construction only.
+// Ownership is a tag: the `owned` field of a flat entry, the low bit of a radix slot (and of
+// root_). It is set when this bitset allocated the node or chunk, which may then be mutated in
+// place, and clear when it is shared with the parent, which is copied before the first write.
+// A node's copy carries the parent's slots with the tag cleared. Nodes and chunks of a published
+// state are never written again, so sharing them across states and threads is race-free.
 //
-// Allocation: All memory allocated from provided arena.
-//
-
-// The counters below stay in this header, and are the one place in it that is neither a
-// template nor force-inlined. They are inside HG_BITSET_STATS, which no shipping build
-// defines, and the accumulator is read from inside contains() -- which is force-inlined for
-// a measured reason recorded at its definition.
-#ifdef HG_BITSET_STATS
-// SparseBitset search-depth histogram. Answers one question: how many DEPENDENT loads does
-// contains() serialise? Chain length, not instruction count, is what a latency-bound path pays.
-// Registered as HG_BITSET_STATS in the top-level CMakeLists; never on in a shipping build.
-struct BitsetStats {
-    uint64_t calls = 0;          // contains() invocations
-    uint64_t iters = 0;          // binary-search iterations (each one a dependent load)
-    uint64_t entries = 0;        // sum of num_entries_ seen, for the mean chunk count
-    uint64_t dense = 0;          // calls whose entries_ were a contiguous chunk_id run
-    uint64_t hits = 0;           // calls that found the chunk
-    uint64_t last = 0;           // calls whose chunk is the LAST entry (newest chunk)
-    uint64_t first = 0;          // calls whose chunk is the FIRST entry
-    uint64_t beyond = 0;         // calls whose chunk id is past the last entry (a certain miss)
-    uint64_t within64 = 0;       // calls whose chunk id is within 64 of the first entry's
-};
-// Global accumulators. Each worker's thread_local folds itself in when the thread ends, so a
-// reader after the join sees every worker without any synchronisation on the hot path.
-struct BitsetStatsGlobal {
-    std::atomic<uint64_t> calls{0}, iters{0}, entries{0}, dense{0}, hits{0};
-    std::atomic<uint64_t> last{0}, first{0}, beyond{0}, within64{0};
-};
-inline BitsetStatsGlobal& bitset_stats_global() {
-    static BitsetStatsGlobal g;
-    return g;
-}
-struct BitsetStatsTLS {
-    BitsetStats s;
-    ~BitsetStatsTLS() {
-        BitsetStatsGlobal& g = bitset_stats_global();
-        g.calls.fetch_add(s.calls, std::memory_order_relaxed);
-        g.iters.fetch_add(s.iters, std::memory_order_relaxed);
-        g.entries.fetch_add(s.entries, std::memory_order_relaxed);
-        g.dense.fetch_add(s.dense, std::memory_order_relaxed);
-        g.hits.fetch_add(s.hits, std::memory_order_relaxed);
-        g.last.fetch_add(s.last, std::memory_order_relaxed);
-        g.first.fetch_add(s.first, std::memory_order_relaxed);
-        g.beyond.fetch_add(s.beyond, std::memory_order_relaxed);
-        g.within64.fetch_add(s.within64, std::memory_order_relaxed);
-    }
-};
-inline BitsetStats& bitset_stats() {
-    HG_THREAD_LOCAL(BitsetStatsTLS, t);
-    return t.s;
-}
-// Folds the CALLING thread in as well, so a single-threaded run reports without waiting on
-// destruction order. Idempotent per call site only in the sense that it zeroes what it folds.
-inline void bitset_stats_report(const char* tag) {
-    BitsetStats& me = bitset_stats();
-    BitsetStatsGlobal& g = bitset_stats_global();
-    uint64_t calls   = g.calls.load(std::memory_order_relaxed)   + me.calls;
-    uint64_t iters   = g.iters.load(std::memory_order_relaxed)   + me.iters;
-    uint64_t entries = g.entries.load(std::memory_order_relaxed) + me.entries;
-    uint64_t dense   = g.dense.load(std::memory_order_relaxed)   + me.dense;
-    uint64_t hits    = g.hits.load(std::memory_order_relaxed)    + me.hits;
-    uint64_t last    = g.last.load(std::memory_order_relaxed)    + me.last;
-    uint64_t first   = g.first.load(std::memory_order_relaxed)   + me.first;
-    uint64_t beyond  = g.beyond.load(std::memory_order_relaxed)  + me.beyond;
-    uint64_t within  = g.within64.load(std::memory_order_relaxed) + me.within64;
-    hgcommon::diag_printf(
-        "[bitset:%s] contains_calls=%llu mean_entries=%.2f mean_search_depth=%.2f "
-        "dense_frac=%.4f hit_frac=%.4f last_frac=%.4f first_frac=%.4f beyond_frac=%.4f within64_frac=%.4f\n",
-        tag,
-        (unsigned long long)calls,
-        calls ? double(entries) / double(calls) : 0.0,
-        calls ? double(iters) / double(calls) : 0.0,
-        calls ? double(dense) / double(calls) : 0.0,
-        calls ? double(hits) / double(calls) : 0.0,
-        calls ? double(last) / double(calls) : 0.0,
-        calls ? double(first) / double(calls) : 0.0,
-        calls ? double(beyond) / double(calls) : 0.0,
-        calls ? double(within) / double(calls) : 0.0);
-}
-#endif
+// Thread safety: concurrent reads after construction; one writer during construction.
+// Allocation: entries, nodes and chunks come from the arena passed to set, clear, derive and
+// from_edges.
 
 class SparseBitset {
 public:
@@ -116,15 +43,19 @@ public:
     static constexpr size_t WORDS_PER_CHUNK = BITS_PER_CHUNK / 64;
     static constexpr size_t CHUNK_SHIFT = 9;  // log2(512)
     static constexpr size_t CHUNK_MASK = BITS_PER_CHUNK - 1;
+    static constexpr uint32_t FANOUT_SHIFT = 3;
+    static constexpr uint32_t FANOUT = 1u << FANOUT_SHIFT;  // 8 slots: one 64-byte node
+    static constexpr uint32_t kFlatChunks = 32;
+    static constexpr uint32_t kRadix = ~uint32_t{0};  // num_entries_ of a radix index
 
     struct Chunk {
         uint64_t words[WORDS_PER_CHUNK];
 
         Chunk();
 
-        bool get(size_t bit_index) const;
-        void set(size_t bit_index);
-        void clear(size_t bit_index);
+        HG_INLINE bool get(size_t bit_index) const { return (words[bit_index >> 6] >> (bit_index & 63)) & 1; }
+        void set(size_t bit_index) { words[bit_index >> 6] |= uint64_t{1} << (bit_index & 63); }
+        void clear(size_t bit_index) { words[bit_index >> 6] &= ~(uint64_t{1} << (bit_index & 63)); }
         bool empty() const;
         size_t popcount() const;
 
@@ -141,105 +72,77 @@ public:
         }
     };
 
-    // Entry in the chunk index. `owned` distinguishes a chunk this bitset allocated
-    // (safe to mutate in place) from a chunk SHARED by reference from a parent state
-    // (copy-on-write before any mutation). Chunks are immutable once a state is
-    // published, so sharing them across states is lock-free and race-free. Field order
-    // keeps the struct at 16 bytes.
+    // A flat index entry. Field order keeps the struct at 16 bytes.
     struct ChunkEntry {
         Chunk* chunk;
         uint32_t chunk_id;
         bool owned;
     };
 
-    // Default constructor - empty bitset
+    struct Node {
+        uintptr_t slot[FANOUT];  // child pointer | owned tag; 0 for an absent subtree
+        Node() { std::memset(slot, 0, sizeof(slot)); }
+    };
+
     SparseBitset();
-
-    // Move constructor - takes ownership of the other's data (single-owner
-    // context: relaxed atomic access)
     SparseBitset(SparseBitset&& other) noexcept;
-
-    // Move assignment - takes ownership of the other's data (single-owner
-    // context: relaxed atomic access)
     SparseBitset& operator=(SparseBitset&& other) noexcept;
-
-    // Delete copy constructor and assignment to prevent accidental aliasing
     SparseBitset(const SparseBitset&) = delete;
     SparseBitset& operator=(const SparseBitset&) = delete;
 
-    // Is this edge in the set? O(log num_chunks).
+    // Is this edge in the set?
     //
     // Force-inlined, with find_chunk, because it is the engine's hottest predicate -- 15% of a
     // 5-step Wolfram evolution -- and as a mere hint its inlining tracked the size of whatever
-    // else lived in the same translation unit. Pointing the matcher at the shared join added
-    // template instantiations to this header's users; GCC's per-unit budget tightened and
-    // contains was outlined from ParallelEvolutionEngine::execute_expand_task, which cost
-    // 2.15M instructions (+3.7%) while changing no arithmetic. Forcing only contains and
-    // leaving find_chunk a hint is WORSE than either (+4.5%): contains becomes a wrapper around
-    // a call. Measured with tools/cost_sweep.sh, wolfram-5step.
+    // else lived in the same translation unit (measured with tools/cost_sweep.sh, wolfram-5step:
+    // an outlined contains cost 2.15M instructions, +3.7%).
     HG_INLINE bool contains(uint32_t edge_id) const {
-        if (num_entries_ == 0) return false;
-
-        uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
-        size_t bit_index = edge_id & CHUNK_MASK;
-
-
-#ifdef HG_BITSET_STATS
-        {
-            BitsetStats& st = bitset_stats();
-            ++st.calls;
-            st.entries += num_entries_;
-            size_t n = num_entries_;
-            size_t d = 0;
-            while ((size_t(1) << d) < n) ++d;
-            st.iters += d;
-            bool contiguous = true;
-            for (size_t i = 1; i < n; ++i) {
-                if (entries_[i].chunk_id != entries_[i - 1].chunk_id + 1) { contiguous = false; break; }
-            }
-            if (contiguous) ++st.dense;
-            if (entries_[n - 1].chunk_id == chunk_id) ++st.last;
-            if (entries_[0].chunk_id == chunk_id) ++st.first;
-            if (chunk_id > entries_[n - 1].chunk_id) ++st.beyond;
-            if (chunk_id >= entries_[0].chunk_id && chunk_id < entries_[0].chunk_id + 64) ++st.within64;
-        }
-#endif
-
-        const Chunk* chunk = find_chunk(chunk_id);
-#ifdef HG_BITSET_STATS
-        if (chunk) ++bitset_stats().hits;
-#endif
-        return chunk && chunk->get(bit_index);
+        const Chunk* chunk = find_chunk(edge_id >> CHUNK_SHIFT);
+        return chunk && chunk->get(edge_id & CHUNK_MASK);
     }
 
-    // Add edge to set
-    // Arena must be provided for potential new chunk allocation
+    // Add edge to set. Arena must be provided for entry, node and chunk allocation.
     template<typename Arena>
     void set(uint32_t edge_id, Arena& arena) {
-        uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
-        size_t bit_index = edge_id & CHUNK_MASK;
-
-        Chunk* chunk = find_or_create_owned_chunk(chunk_id, arena);
-        if (!chunk->get(bit_index)) {
-            chunk->set(bit_index);
-            invalidate_count();
+        const uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
+        const size_t bit_index = edge_id & CHUNK_MASK;
+        if (num_entries_ != kRadix) {
+            uint32_t lo;
+            if (flat_find(chunk_id, lo)) {
+                ChunkEntry& e = entries_[lo];
+                if (e.chunk->get(bit_index)) return;
+                if (!e.owned) own_entry(e, arena);
+                e.chunk->set(bit_index);
+            } else {
+                insert_chunk(lo, chunk_id, arena)->set(bit_index);
+            }
+        } else {
+            const Chunk* now = find_chunk_radix(chunk_id);
+            if (now && now->get(bit_index)) return;
+            owned_chunk_radix(chunk_id, arena)->set(bit_index);
         }
+        adjust_count(+1);
     }
 
-    // Remove edge from set. Needs the arena to copy-on-write a shared chunk before
-    // mutating it (a shared chunk belongs to a parent state and must not be touched).
+    // Remove edge from set. A shared chunk (and, in a radix index, the nodes on its path) is
+    // copied first. An emptied chunk stays in the index.
     template<typename Arena>
     void clear(uint32_t edge_id, Arena& arena) {
-        uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
-        size_t bit_index = edge_id & CHUNK_MASK;
-
-        size_t idx;
-        if (!find_entry_index(chunk_id, idx)) return;
-        if (!entries_[idx].chunk->get(bit_index)) return;
-        Chunk* chunk = make_entry_owned(idx, arena);  // COW if shared
-        chunk->clear(bit_index);
-        invalidate_count();
-        // Note: we don't remove empty chunks - they stay allocated
+        const uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
+        const size_t bit_index = edge_id & CHUNK_MASK;
+        if (num_entries_ != kRadix) {
+            uint32_t lo;
+            if (!flat_find(chunk_id, lo)) return;
+            ChunkEntry& e = entries_[lo];
+            if (!e.chunk->get(bit_index)) return;
+            if (!e.owned) own_entry(e, arena);
+            e.chunk->clear(bit_index);
+        } else {
+            const Chunk* now = find_chunk_radix(chunk_id);
+            if (!now || !now->get(bit_index)) return;
+            owned_chunk_radix(chunk_id, arena)->clear(bit_index);
+        }
+        adjust_count(-1);
     }
 
     // Number of set bits. The lazy cache fill is safe under concurrent const
@@ -249,20 +152,27 @@ public:
     // valid (acquire) also observes the value.
     size_t count() const;
 
-    // Is the set empty?
     bool empty() const;
 
-    // Iterate over all set bits
+    // Every set bit, in increasing edge id.
     template<typename F>
     void for_each(F&& f) const {
-        for (size_t i = 0; i < num_entries_; ++i) {
-            uint32_t base_id = entries_[i].chunk_id << CHUNK_SHIFT;
-            entries_[i].chunk->for_each(base_id, f);
-        }
+        for_each_chunk([&](uint32_t chunk_id, const Chunk& c) {
+            c.for_each(size_t(chunk_id) << CHUNK_SHIFT, f);
+        });
     }
 
-    // Create a derived bitset: copy parent, clear consumed, set produced
-    // This is the typical pattern for creating a child state's edge set
+    // Every chunk, in increasing chunk id, as (chunk id, chunk).
+    template<typename F>
+    void for_each_chunk(F&& f) const {
+        if (num_entries_ != kRadix) {
+            for (uint32_t i = 0; i < num_entries_; ++i) f(entries_[i].chunk_id, *entries_[i].chunk);
+            return;
+        }
+        walk(root_ & ~uintptr_t{1}, height_, 0, f);
+    }
+
+    // A child state's edge set: the parent's, without `consumed`, with `produced`.
     template<typename Arena>
     static SparseBitset derive(
         const SparseBitset& parent,
@@ -271,132 +181,183 @@ public:
         Arena& arena
     ) {
         SparseBitset result;
-
-        // Share the parent's chunks BY REFERENCE (copy-on-write). Chunks are immutable
-        // once a state is published, so the child can point straight at them; only the
-        // handful of chunks a consumed/produced edge actually touches get copied — on
-        // write, below. This is the difference between O(E) and O(delta) memory per
-        // derived state, and it removes the per-chunk memcpy from the rewrite hot path.
-        if (parent.num_entries_ > 0) {
-            size_t initial_capacity = parent.num_entries_ + 4;  // Room for new chunks
-            result.entries_ = arena.template allocate_array<ChunkEntry>(initial_capacity);
-            result.capacity_ = initial_capacity;
-
-            for (size_t i = 0; i < parent.num_entries_; ++i) {
-                result.entries_[i].chunk    = parent.entries_[i].chunk;   // shared
+        if (parent.num_entries_ == kRadix) {
+            result.num_entries_ = kRadix;
+            result.root_ = parent.root_ & ~uintptr_t{1};
+            result.height_ = parent.height_;
+        } else if (parent.num_entries_ > 0) {
+            const uint32_t cap = parent.num_entries_ + 4;
+            result.entries_ = arena.template allocate_array<ChunkEntry>(cap);
+            result.capacity_ = cap;
+            for (uint32_t i = 0; i < parent.num_entries_; ++i) {
+                result.entries_[i].chunk = parent.entries_[i].chunk;   // shared
                 result.entries_[i].chunk_id = parent.entries_[i].chunk_id;
-                result.entries_[i].owned    = false;                      // COW on first write
+                result.entries_[i].owned = false;                      // COW on first write
             }
             result.num_entries_ = parent.num_entries_;
         }
-
-        // Clear consumed edges (copy-on-write the touched chunk).
-        for (size_t i = 0; i < num_consumed; ++i) {
-            result.clear(consumed[i], arena);
-        }
-
-        // Set produced edges (copy-on-write existing chunks / create owned new ones).
-        for (size_t i = 0; i < num_produced; ++i) {
-            result.set(produced[i], arena);
-        }
-
+        result.count_cached_.store(parent.count_cached_.load(std::memory_order_relaxed),
+                                   std::memory_order_relaxed);
+        result.count_valid_.store(parent.count_valid_.load(std::memory_order_relaxed),
+                                  std::memory_order_relaxed);
+        for (size_t i = 0; i < num_consumed; ++i) result.clear(consumed[i], arena);
+        for (size_t i = 0; i < num_produced; ++i) result.set(produced[i], arena);
         return result;
     }
 
-    // Create from a list of edge IDs
     template<typename Arena>
     static SparseBitset from_edges(const uint32_t* edges, size_t num_edges, Arena& arena) {
         SparseBitset result;
-        for (size_t i = 0; i < num_edges; ++i) {
-            result.set(edges[i], arena);
-        }
+        for (size_t i = 0; i < num_edges; ++i) result.set(edges[i], arena);
         return result;
     }
 
-    // Number of chunks (for diagnostics)
+    // Number of chunks (for diagnostics).
     size_t num_chunks() const;
 
 private:
-    // Binary search for chunk by id (const version)
+    // The chunk of `chunk_id`, or null.
     HG_INLINE const Chunk* find_chunk(uint32_t chunk_id) const {
-        if (num_entries_ == 0) return nullptr;
+        if (num_entries_ == kRadix) return find_chunk_radix(chunk_id);
+        uint32_t lo;
+        return flat_find(chunk_id, lo) ? entries_[lo].chunk : nullptr;
+    }
 
-        size_t lo = 0, hi = num_entries_;
+    // Bisection of the flat index: true with `lo` at the entry of `chunk_id`, else false with
+    // `lo` at its insertion point.
+    HG_INLINE bool flat_find(uint32_t chunk_id, uint32_t& lo) const {
+        lo = 0;
+        uint32_t hi = num_entries_;
         while (lo < hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            if (entries_[mid].chunk_id < chunk_id) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
+            const uint32_t mid = lo + (hi - lo) / 2;
+            if (entries_[mid].chunk_id < chunk_id) lo = mid + 1; else hi = mid;
         }
-        if (lo < num_entries_ && entries_[lo].chunk_id == chunk_id) {
-            return entries_[lo].chunk;
-        }
-        return nullptr;
+        return lo < num_entries_ && entries_[lo].chunk_id == chunk_id;
     }
 
-    // Binary search. Returns true and sets out_idx to the entry index when chunk_id
-    // is present; otherwise returns false and sets out_idx to the insertion point.
-    bool find_entry_index(uint32_t chunk_id, size_t& out_idx) const;
+    HG_NOINLINE const Chunk* find_chunk_radix(uint32_t chunk_id) const;
 
-    // Ensure entries_[idx]'s chunk is private to this bitset. If it is shared from a
-    // parent (copy-on-write), copy it once and take ownership. Returns the mutable chunk.
+    // A shared flat entry's chunk, copied and owned.
     template<typename Arena>
-    Chunk* make_entry_owned(size_t idx, Arena& arena) {
-        if (!entries_[idx].owned) {
-            Chunk* copy = arena.template create<Chunk>();
-            std::memcpy(copy->words, entries_[idx].chunk->words, sizeof(Chunk::words));
-            entries_[idx].chunk = copy;
-            entries_[idx].owned = true;
-        }
-        return entries_[idx].chunk;
+    static void own_entry(ChunkEntry& e, Arena& arena) {
+        Chunk* copy = arena.template create<Chunk>();
+        std::memcpy(copy->words, e.chunk->words, sizeof(copy->words));
+        e.chunk = copy;
+        e.owned = true;
     }
 
-    // Find or create a chunk owned by this bitset (COW an existing shared chunk),
-    // maintaining sorted order.
+    // A new chunk for `chunk_id`, absent from the flat index, at insertion point `lo`; a full
+    // flat index turns radix first.
     template<typename Arena>
-    Chunk* find_or_create_owned_chunk(uint32_t chunk_id, Arena& arena) {
-        size_t idx;
-        if (find_entry_index(chunk_id, idx)) {
-            return make_entry_owned(idx, arena);
+    HG_NOINLINE Chunk* insert_chunk(uint32_t lo, uint32_t chunk_id, Arena& arena) {
+        if (num_entries_ >= kFlatChunks) {
+            to_radix(arena);
+            return owned_chunk_radix(chunk_id, arena);
         }
-
-        // Insert a fresh, owned chunk at position idx.
-        ensure_capacity(arena);
-        for (size_t i = num_entries_; i > idx; --i) {
-            entries_[i] = entries_[i - 1];
+        if (num_entries_ == capacity_) {
+            const uint32_t cap = capacity_ ? capacity_ * 2 : 4;
+            ChunkEntry* grown = arena.template allocate_array<ChunkEntry>(cap);
+            if (entries_) std::memcpy(grown, entries_, num_entries_ * sizeof(ChunkEntry));
+            entries_ = grown;
+            capacity_ = cap;
         }
-        Chunk* new_chunk = arena.template create<Chunk>();
-        entries_[idx].chunk = new_chunk;
-        entries_[idx].chunk_id = chunk_id;
-        entries_[idx].owned = true;
+        for (uint32_t i = num_entries_; i > lo; --i) entries_[i] = entries_[i - 1];
+        Chunk* fresh = arena.template create<Chunk>();
+        entries_[lo] = ChunkEntry{fresh, chunk_id, true};
         ++num_entries_;
-
-        return new_chunk;
+        return fresh;
     }
 
+    // The chunk of `chunk_id` in a radix index, owned by this bitset: every shared node and chunk
+    // on its path is copied, an absent one created, and the tree raised to cover chunk_id.
     template<typename Arena>
-    void ensure_capacity(Arena& arena) {
-        if (num_entries_ < capacity_) return;
-
-        size_t new_capacity = (capacity_ == 0) ? 4 : capacity_ * 2;
-        ChunkEntry* new_entries = arena.template allocate_array<ChunkEntry>(new_capacity);
-
-        if (entries_) {
-            std::memcpy(new_entries, entries_, num_entries_ * sizeof(ChunkEntry));
+    HG_NOINLINE Chunk* owned_chunk_radix(uint32_t chunk_id, Arena& arena) {
+        while ((uint64_t(chunk_id) >> (FANOUT_SHIFT * height_)) != 0) {
+            if (!root_) { ++height_; continue; }
+            Node* top = arena.template create<Node>();
+            top->slot[0] = root_;
+            root_ = reinterpret_cast<uintptr_t>(top) | 1;
+            ++height_;
         }
-
-        entries_ = new_entries;
-        capacity_ = new_capacity;
-        // Old entries_ left in arena, not freed (arena semantics)
+        uintptr_t* slot = &root_;
+        for (uint32_t h = height_; h > 0; --h) {
+            Node* node = owned_node(*slot, arena);
+            slot = &node->slot[(chunk_id >> (FANOUT_SHIFT * (h - 1))) & (FANOUT - 1)];
+        }
+        if (!(*slot & 1)) {
+            Chunk* c = arena.template create<Chunk>();
+            if (*slot) std::memcpy(c->words, reinterpret_cast<const Chunk*>(*slot)->words, sizeof(c->words));
+            *slot = reinterpret_cast<uintptr_t>(c) | 1;
+        }
+        return reinterpret_cast<Chunk*>(*slot & ~uintptr_t{1});
     }
 
-    void invalidate_count();
+    // The flat entries moved into a radix tree, each slot tagged as its entry was.
+    template<typename Arena>
+    HG_NOINLINE void to_radix(Arena& arena) {
+        ChunkEntry* flat = entries_;
+        const uint32_t n = num_entries_;
+        entries_ = nullptr;
+        num_entries_ = kRadix;
+        capacity_ = 0;
+        root_ = 0;
+        height_ = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t id = flat[i].chunk_id;
+            while ((uint64_t(id) >> (FANOUT_SHIFT * height_)) != 0) {
+                if (!root_) { ++height_; continue; }
+                Node* top = arena.template create<Node>();
+                top->slot[0] = root_;
+                root_ = reinterpret_cast<uintptr_t>(top) | 1;
+                ++height_;
+            }
+            uintptr_t* slot = &root_;
+            for (uint32_t h = height_; h > 0; --h)
+                slot = &owned_node(*slot, arena)->slot[(id >> (FANOUT_SHIFT * (h - 1))) & (FANOUT - 1)];
+            *slot = reinterpret_cast<uintptr_t>(flat[i].chunk) | (flat[i].owned ? 1 : 0);
+        }
+    }
 
-    ChunkEntry* entries_;
-    size_t num_entries_;
-    size_t capacity_;
+    // The node `slot` points at, made owned: a shared node is copied with its slots' tags
+    // cleared, an absent one created.
+    template<typename Arena>
+    static Node* owned_node(uintptr_t& slot, Arena& arena) {
+        if (!(slot & 1)) {
+            Node* n = arena.template create<Node>();
+            if (slot) {
+                const Node* from = reinterpret_cast<const Node*>(slot);
+                for (uint32_t i = 0; i < FANOUT; ++i) n->slot[i] = from->slot[i] & ~uintptr_t{1};
+            }
+            slot = reinterpret_cast<uintptr_t>(n) | 1;
+        }
+        return reinterpret_cast<Node*>(slot & ~uintptr_t{1});
+    }
+
+    template<typename F>
+    static void walk(uintptr_t p, uint32_t h, uint32_t base, F& f) {
+        if (!p) return;
+        if (h == 0) { f(base, *reinterpret_cast<const Chunk*>(p)); return; }
+        const Node* n = reinterpret_cast<const Node*>(p);
+        for (uint32_t i = 0; i < FANOUT; ++i)
+            walk(n->slot[i] & ~uintptr_t{1}, h - 1, (base << FANOUT_SHIFT) | i, f);
+    }
+
+    // One bit set (+1) or cleared (-1): the cached count follows while it is valid.
+    void adjust_count(int delta) {
+        if (count_valid_.load(std::memory_order_relaxed))
+            count_cached_.store(count_cached_.load(std::memory_order_relaxed) + size_t(delta),
+                                std::memory_order_relaxed);
+    }
+
+    union {
+        ChunkEntry* entries_;  // flat index
+        uintptr_t root_;       // radix: top node (or the chunk, at height 0) | owned tag; 0 when empty
+    };
+    uint32_t num_entries_;     // flat: entries in use; kRadix: the radix index is in use
+    union {
+        uint32_t capacity_;    // flat: entries allocated
+        uint32_t height_;      // radix: node levels above the chunks
+    };
     // Atomic so concurrent const readers can fill the cache without a data race
     // (single-owner mutation paths use relaxed ops; see count()).
     mutable std::atomic<size_t> count_cached_;

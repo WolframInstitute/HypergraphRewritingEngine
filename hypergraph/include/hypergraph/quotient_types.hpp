@@ -109,10 +109,25 @@ struct EdgeOrbitTable {
     // the isomorphism between them, and a state is aligned onto its class frame by rank.
     const uint32_t* rank = nullptr;     // length n, parallel to edges
 
-    // Binary search the sorted edge array; returns n if absent (edge not in state).
-    uint32_t index_of(EdgeId e) const;
-    uint32_t orbit_of(EdgeId e) const;
-    uint32_t slot_of(EdgeId e) const;
+    // Binary search the sorted edge array; returns n if absent (edge not in state). HG_INLINE:
+    // under LTO its inlining follows unrelated code size, and outlined it cost 3.0M instructions
+    // on wolfram24 depth 6 (callgrind, one thread).
+    HG_INLINE uint32_t index_of(EdgeId e) const {
+        uint32_t lo = 0, hi = n;
+        while (lo < hi) {
+            const uint32_t mid = lo + ((hi - lo) >> 1);
+            if (edges[mid] < e) lo = mid + 1; else hi = mid;
+        }
+        return (lo < n && edges[lo] == e) ? lo : n;
+    }
+    uint32_t orbit_of(EdgeId e) const {
+        const uint32_t i = index_of(e);
+        return i < n ? orbit[i] : 0;
+    }
+    uint32_t slot_of(EdgeId e) const {
+        const uint32_t i = index_of(e);
+        return (i < n && slot) ? slot[i] : 0;
+    }
 };
 
 // One match of the expanded representative of a canonical state, named in SLOTS -- the unit

@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/core.hpp"   // HG_INLINE
 #include "hgcommon/cache_line.hpp"
 #include "hgcommon/tuning.hpp"
 #include "hypergraph/zero_value_init.hpp"
@@ -272,8 +273,10 @@ public:
     // is where the per-site profile is booked.
     // `zero`, when given, receives whether the bytes handed out are known to be zero already
     // (see Block::dirty_end); a caller that would value-initialise them then skips the fill.
-    void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t),
-                       bool* zero = nullptr) {
+    // HG_INLINE: under LTO its inlining follows unrelated code size, and outlined it cost 3.9M
+    // instructions on wolfram24 depth 6 (callgrind, one thread).
+    HG_INLINE void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t),
+                                 bool* zero = nullptr) {
 #if !HG_ENGINE_STATS
         if (recycle_) {
             // The scratch arena is single-threaded and bumps current_block_ directly. Inline
