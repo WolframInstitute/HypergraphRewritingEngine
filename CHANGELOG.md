@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A GPU run with "MaxStatesPerStep" and "StateCost" sizes the device IR arena for its largest
+  state before it starts. A 400-vertex cycle that ran out of device memory and returned a partial
+  result now completes in one attempt with the CPU's states.
+
 - The paclet talks to its engine worker over the worker's standard input and output
   (`hg_evolve --serve` started with `StartProcess`) and opens no socket. On Windows, Wolfram 15.0's
   `SocketConnect` to the old socket worker took about 2 s, and in 7 of 40 fresh wolframscript

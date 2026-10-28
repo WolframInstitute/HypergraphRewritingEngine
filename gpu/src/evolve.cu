@@ -5,6 +5,8 @@
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/initial_upload.hpp"
+#include "hg_gpu/ir_canon.hpp"
+#include "hgcommon/state_invariants_core.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
@@ -190,9 +192,30 @@ EngineConfig config_from_input(const EvolveInput& in) {
         f = static_cast<uint16_t>(std::max<size_t>(f, std::min<size_t>(n, 0xFFFFu)));
     };
     for (const auto& e : in.initial_state) widen(cfg.max_edge_arity, e.size());
+    for (const auto& s : in.initial_states)
+        for (const auto& e : s) widen(cfg.max_edge_arity, e.size());
     for (const auto& r : in.rules) {
         for (const auto& e : r.rhs) widen(cfg.max_edge_arity, e.size());
         widen(cfg.max_lhs_edges, r.lhs.size());
+    }
+    // A step cap that reads "StateCost" costs a candidate on its block's IR slot: the
+    // successor's IR at the default depth, then its record from the form
+    // (state_cost_of_form_device), after the form at the end of the slot. A block's region holds
+    // both for the largest state the run can make, with the record sized for the measures the
+    // cost reads.
+    if (in.max_states_per_step != 0 && hgcommon::state_cost_active(in.state_cost)) {
+        const uint64_t edges = std::min<uint64_t>(state_edges_bound, 1u << 24);
+        const uint64_t occs = edges * std::max<uint16_t>(cfg.max_edge_arity, 1u);
+        const IrSlotShape shape =
+            ir_slot_shape(static_cast<uint32_t>(edges), static_cast<uint32_t>(occs),
+                          hgcommon::IR_MAX_DEPTH_DEFAULT, hgcommon::IR_DEVICE_GENERATORS);
+        const uint32_t form = static_cast<uint32_t>(edges + occs);
+        const uint64_t record_words =
+            (hgcommon::si_form_csr_bytes(form) +
+             hgcommon::si_record_bytes_hint(form, form, 32u, in.state_cost.measures) + 3u) / 4u;
+        const uint64_t share = shape.stride() + record_words;
+        cfg.ir_arena_share_words = static_cast<uint32_t>(std::min<uint64_t>(
+            std::max<uint64_t>(cfg.ir_arena_share_words, share), 1ull << 30));
     }
     return cfg;
 }
@@ -1024,8 +1047,13 @@ static void log_config_growth(const char* header, const EngineConfig& initial,
 // is still possible. Bucket counts (power-of-two) and fixed control words are
 // left alone. A run under the shrunk config that needs more will overflow and
 // return a partial result, which is the intended "constrain to memory" behaviour.
-void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
-    uint64_t est = estimated_device_bytes(cfg);
+// `ir_share` false leaves the IR arena out of both the estimate and the scaling: its share is
+// sized for the largest state a step cap costs (config_from_input).
+void fit_config_to_cap(EngineConfig& cfg, uint64_t cap, bool ir_share = true) {
+    const uint64_t arena =
+        ir_share ? 0u
+                 : persistent_arena_words(cfg.ir_arena_share_words, persistent_grid_of(cfg)) * 4u;
+    uint64_t est = estimated_device_bytes(cfg) - arena;
     if (cap == 0 || est <= cap) return;
     double r = static_cast<double>(cap) / static_cast<double>(est);
     auto sc = [&](uint32_t& f, uint32_t floor) {
@@ -1041,6 +1069,7 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
     sc(cfg.branchial_pair_slots, 1u<<12); sc(cfg.edge_consumer_nodes, 1u<<12);
     sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_preds_nodes, 1u<<12);
     sc(cfg.canonical_form_words, 1u<<14);
+    if (ir_share) sc(cfg.ir_arena_share_words, 1u<<16);
     if (cfg.max_matches) {
         uint32_t m = match_pool_records(cfg);
         sc(m, 1u<<13);
@@ -1119,6 +1148,8 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(match_pool_records(cfg)) * 76;         // match pool (records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
     b += u64(cfg.max_states)          * 8;          // the state record log (RecordEntry)
+    // The IR arena (Engine::Impl allocates it with the engine).
+    b += persistent_arena_words(cfg.ir_arena_share_words, persistent_grid_of(cfg)) * 4;
 
     // The device stack: EngineState's constructor sets cudaLimitStackSize, and the driver
     // reserves that per-thread size for every thread the device can hold resident, not for the
@@ -1194,10 +1225,10 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
         if (dbg_config)
             hgcommon::diag_printf(
                          "[hg_gpu config] attempt %d: ~%llu MB, cap %llu MB, states %u, events %u, "
-                         "edges %u\n",
+                         "edges %u, IR share %u words\n",
                          attempt_no + 1, (unsigned long long)(estimated_device_bytes(cfg) >> 20),
                          (unsigned long long)(mem_cap >> 20), cfg.max_states, cfg.max_events,
-                         cfg.max_edges);
+                         cfg.max_edges, cfg.ir_arena_share_words);
         try {
             result = attempt(cfg);
         } catch (const std::exception& e) {
@@ -1318,7 +1349,7 @@ uint32_t lane_backlog_of(const EngineConfig& cfg) {
 
 EngineConfig initial_config(const EvolveInput& in, uint64_t mem_cap) {
     EngineConfig cfg = config_from_input(in);
-    if (mem_cap != 0) fit_config_to_cap(cfg, mem_cap / 4);
+    if (mem_cap != 0) fit_config_to_cap(cfg, mem_cap / 4, /*ir_share=*/false);
     return cfg;
 }
 
