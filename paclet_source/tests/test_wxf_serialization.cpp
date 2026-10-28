@@ -7460,7 +7460,73 @@ void evolve_under_a_job_memory_limit() {
         std::_Exit(7);
     }
 }
+
+// Jobs in one process, as the Python module and the paclet's library run them: a 6-step job, the
+// growth job under "MemoryLimit" -> 64 MB three times, and the 6-step job again, each followed by
+// release_job_memory(0). The address space is capped 1 GB above its size at start. Exit 0 when
+// both 6-step jobs give the same untruncated count, no arena block is held between jobs
+// (arena_block_bytes_live() after each release equals its value before the first job), and the
+// resident set after the last job is within 16 MB of its value after the first; 5 otherwise.
+void repeated_jobs_release_their_memory() {
+    constexpr int64_t kLimit = int64_t{64} << 20;
+    auto job = [&](int64_t steps, bool limited) {
+        auto opts = [&](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents"});
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string("Threads"));
+            ww.write(int64_t{2});
+            if (!limited) return;
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string("Tuning"));
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            ww.write_varint(1);
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string("MemoryLimit"));
+            ww.write(kLimit);
+        };
+        return build_input(kSeed, kLhs, kRhs, steps, opts, limited ? 3 : 2);
+    };
+    const rlim_t cap = static_cast<rlim_t>(vm_size_kb_now() + 1024 * 1024) * 1024;
+    rlimit r{cap, cap};
+    if (setrlimit(RLIMIT_AS, &r) != 0) std::_Exit(3);
+    HostBridge host;
+    const size_t held_before = hypergraph::arena_block_bytes_live();
+    bool ok = true;
+    auto run = [&](int64_t steps, bool limited) {
+        const auto out = run_rewriting_core(job(steps, limited), host);
+        release_job_memory(0);
+        const size_t held = hypergraph::arena_block_bytes_live();
+        const int64_t states = read_int_key(out, "NumStates");
+        std::fprintf(stderr, "steps %lld limited %d: states %lld, truncated %d, held %zu, rss %ld kB\n",
+                     static_cast<long long>(steps), int(limited), static_cast<long long>(states),
+                     int(reply_mentions(out, "TRUNCATED")), held, status_kb("VmRSS:"));
+        ok = ok && held == held_before && (limited || !reply_mentions(out, "TRUNCATED"));
+        return states;
+    };
+    try {
+        const int64_t first = run(6, false);
+        const long rss_first = status_kb("VmRSS:");
+        for (int i = 0; i < 3; ++i) run(12, true);
+        const int64_t last = run(6, false);
+        const long rss_last = status_kb("VmRSS:");
+        ok = ok && first == last && first > 0 && rss_last - rss_first < 16 * 1024;
+        std::_Exit(ok ? 0 : 5);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        std::_Exit(7);
+    }
+}
 }  // namespace
+
+// A process that runs jobs one after another holds no arena block between them and returns the
+// resident set a job grew (release_job_memory(0), which the Python module and the paclet's
+// library call after each job).
+TEST(PartialResults, RepeatedJobsInOneProcessReleaseTheirMemory) {
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1')
+        GTEST_SKIP() << "ASan and TSan do not throw bad_alloc under a lowered RLIMIT_AS";
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(repeated_jobs_release_their_memory(), ::testing::ExitedWithCode(0), "");
+}
 
 // "MemoryLimit" in "Tuning" stops the run in the calling process through the arenas' check (the
 // paclet's library and the Python module run the engine this way), with a partial result.

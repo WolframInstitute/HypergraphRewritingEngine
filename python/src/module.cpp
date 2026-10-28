@@ -267,6 +267,7 @@ Reply run(nb::handle job) {
         nb::gil_scoped_release release;
         std::lock_guard<std::mutex> lock(g_job_mutex);
         reply = std::make_shared<hgffi::ArrayReply>(run_rewriting_arrays(value, host));
+        release_job_memory(0);
     }
     return Reply{std::move(reply)};
 }

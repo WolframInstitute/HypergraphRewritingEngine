@@ -18,6 +18,9 @@
 #include <functional>
 #include <cmath>
 #include <stdexcept>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #include "hg_core.hpp"
 #include "hg_gpu_backend.hpp"
@@ -2441,6 +2444,14 @@ hgffi::ArrayReply run_rewriting_arrays(const wxf::WXFValue& job, const HostBridg
     return out;
 }
 
+void release_job_memory(size_t keep_pooled_bytes) {
+    hypergraph::arena_trim_block_pool(keep_pooled_bytes);
+    HG_NAMESPACE::jobs::JobSlotPool::trim_retired_pools();
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+}
+
 #ifndef HG_STANDALONE_BINARY
 
 // LibraryLink fallback adapter: unwrap the WXF ByteArray argument, run the core,
@@ -2467,9 +2478,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         HostBridge host;
 
         const wxf::Pieces out = run_rewriting_core_pieces(wxf_bytes, host);
-        // The kernel process outlives the call: the evolution's pooled blocks are unmapped now.
-        hypergraph::arena_trim_block_pool(hypergraph::kPooledBytesKeptBetweenJobs);
-        HG_NAMESPACE::jobs::JobSlotPool::trim_retired_pools();
+        release_job_memory(0);
 
         mint out_dims[1] = {static_cast<mint>(out.size())};
         MNumericArray result_array;
