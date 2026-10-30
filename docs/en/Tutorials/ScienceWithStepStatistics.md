@@ -474,24 +474,24 @@ The paper states the setup. Two Schwarzschild black holes of mass 0.5M each are 
 
 The paper applies the rule at each step to every match that shares no hyperedge with another match applied in the step. It does not state the value of the cut-off, the number of steps per unit of t, the order among matches that share a hyperedge, or the direction of each edge.
 
-The runs here use the three-dimensional `"BrillLindquist"` cloud of [Generated Initial Conditions](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/InitialConditions) in a periodic box of side 20, with a cut-off of c times the mean spacing (8000/n)^(1/3) and edges in random directions. `"Generational" -> True` applies the update the paper describes. Each step applies every match that shares no hyperedge with a match before it in the standard order, so the evolution follows one history. From 200 points with c = 1.25, 105 steps reach 10 events per edge of the initial state:
+The runs here use the three-dimensional `"BrillLindquist"` cloud of [Generated Initial Conditions](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/InitialConditions) in a periodic box of side 20, with a cut-off of c times the mean spacing (8000/n)^(1/3) and edges in random directions. `"Generational" -> True` applies the update the paper describes. Each step applies every match that shares no hyperedge with a match before it in the standard order, so the evolution follows one history. From 200 points with c = 1.25, 115 steps reach 10 events per edge of the initial state:
 
 ```wl
 gorard[n_, c_, seed_] := <|"Type" -> "BrillLindquist", "Dimension" -> 3, "Periodic" -> True, "Density" -> n, "Mass1" -> 0.5, "Mass2" -> 0.5, "Separation" -> 1., "BoxX" -> {-10., 10.}, "BoxY" -> {-10., 10.}, "BoxZ" -> {-10., 10.}, "EdgeThreshold" -> c (8000./n)^(1/3), "Seed" -> seed|>;
-merger = HGEvolve[ruleA, gorard[200, 1.25, 1], 105, {"StepStatistics", "CausalEdges", "NumEvents"}, "Generational" -> True, "CausalTransitiveReduction" -> False, "StepStatisticsMeasures" -> {"VolumeGrowth"}];
+merger = HGEvolve[ruleA, gorard[200, 1.25, 1], 115, {"StepStatistics", "CausalEdges", "NumEvents"}, "Generational" -> True, "CausalTransitiveReduction" -> False, "StepStatisticsMeasures" -> {"VolumeGrowth"}];
 {Length[HGEvolve[ruleA, gorard[200, 1.25, 1], 0, "GlobalEdges"]], merger["NumEvents"]}
 ```
 
-<!-- => {780, 7159} -->
+<!-- => {780, 7809} -->
 
 The steps that reach 10 events per initial edge at each number of points, with c = 1.25 and seed 1:
 
 | points | initial edges | steps | events |
 |---|---|---|---|
-| 200 | 877 | 105 | 8829 |
-| 400 | 1813 | 109 | 18,205 |
-| 800 | 3587 | 128 | 36,131 |
-| 1600 | 7219 | 110 | 72,217 |
+| 200 | 780 | 115 | 7809 |
+| 400 | 1661 | 111 | 16,723 |
+| 800 | 3422 | 113 | 34,353 |
+| 1600 | 7070 | 116 | 71,124 |
 
 The ball dimension, the sphere dimension and the dimension of the largest component of the spatial hypergraph at each step:
 
@@ -501,7 +501,7 @@ ListLinePlot[Table[perStep[merger["StepStatistics"], "Invariants", key, "Mean"],
 
 ![The ball dimension, the sphere dimension and the dimension of the largest component of the spatial hypergraph at each step](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-48.png)
 
-The ball dimension falls from 1.72 at step 0 to 1.08 at step 105. The ball dimension of a uniform sample of a flat 3D periodic box reads 1.64 to 2.57 at 200 points and 2.05 to 2.38 at 1000 points. It reads 3 within 0.1 only near 10,000 points, so at 200 to 1600 points the reading does not give the dimension of the space the points sample.
+The ball dimension falls from 1.75 at step 0 to 1.10 at step 115. The ball dimension of a uniform sample of a flat 3D periodic box reads 1.64 to 2.57 at 200 points and 2.05 to 2.38 at 1000 points. It reads 3 within 0.1 only near 10,000 points, so at 200 to 1600 points the reading does not give the dimension of the space the points sample.
 
 The ball scalar curvature and the number of components at each step:
 
@@ -511,20 +511,20 @@ GraphicsRow[{ListLinePlot[perStep[merger["StepStatistics"], "Invariants", "BallS
 
 ![The ball scalar curvature and the number of components at each step](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-49.png)
 
-From about step 17 the state has 159 components, and the readings repeat a cycle of a few steps. The state of step 105 has 1036 vertices. The ball scalar curvature is negative on a uniform sample of a flat 3D box at 200 and at 1000 points, where the scalar curvature is 0. It reads the known curvature of a sphere or a torus within 25% only near 10,000 points.
+From step 18 the state has 153 components, and the readings repeat a cycle of a few steps. The state of step 115 has 930 vertices. The ball scalar curvature is negative on a uniform sample of a flat 3D box at 200 and at 1000 points, where the scalar curvature is 0. It reads the known curvature of a sphere or a torus within 25% only near 10,000 points.
 
 ### The dimension of the causal graph
 
-The causal graph of the run has 17,742 causal pairs. `myrheimMeyer` of the section on the dimension of a causal graph gives its whole-set value and the median over 30 sampled intervals of at least 40 events:
+The causal graph of the run has 15,903 causal pairs. `myrheimMeyer` of the section on the dimension of a causal graph gives its whole-set value and the median over 30 sampled intervals of at least 40 events:
 
 ```wl
 pairs = DeleteDuplicates[Lookup[merger["CausalEdges"], {"From", "To"}]];
 With[{mm = myrheimMeyer[pairs, 30, 40, 1]}, {N[Round[100 mm["WholeSet"]]/100], mm["Intervals"], mm["IntervalMedian"]}]
 ```
 
-<!-- => {5.84, 30, 1.} -->
+<!-- => {5.86, 30, 1.} -->
 
-The Myrheim-Meyer formula holds for an interval. The whole causal graph of an evolution is not an interval, so its whole-set value of 6.03 is outside the calibration on sprinkled diamonds. The sampled intervals give a median of 1. The cone measure does not apply here, since it does not reproduce the dimension of sprinkled causal sets.
+The Myrheim-Meyer formula holds for an interval. The whole causal graph of an evolution is not an interval, so its whole-set value of 5.86 is outside the calibration on sprinkled diamonds. The sampled intervals give a median of 1. The cone measure does not apply here, since it does not reproduce the dimension of sprinkled causal sets.
 
 ### Causal invariance
 
