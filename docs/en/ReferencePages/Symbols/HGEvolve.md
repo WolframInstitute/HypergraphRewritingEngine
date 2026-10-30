@@ -1190,7 +1190,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "S
 HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "StatesGraphStructure", "TransitionRate" -> 0.01, "RandomSeed" -> 7, AspectRatio -> 1/2]
 ```
 
-![A state whose every draw failed keeps its lowest-keyed transition, so the sample reaches the requested depth at any rate.](../../images/HGEvolve/HGEvolve-101.png)
+![A state whose every draw failed keeps its lowest-keyed transition, so the sample reaches the requested depth at any rate.](../../images/HGEvolve/HGEvolve-105.png)
 
 ### "RuleWeights"
 
@@ -1245,7 +1245,7 @@ HGEvolve[triangle, {{1, 2}, {1, 3}}, 4, "Debug", "CanonicalizeStates" -> Full, "
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True, AspectRatio -> 1/2]
 ```
 
-![The same counts with one state per class expanded.](../../images/HGEvolve/HGEvolve-107.png)
+![The same counts with one state per class expanded.](../../images/HGEvolve/HGEvolve-111.png)
 
 ---
 
@@ -1422,7 +1422,7 @@ Table[EdgeCount[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure", "BranchialStep" -> All]
 ```
 
-![All shows every step](../../images/HGEvolve/HGEvolve-124.png)
+![All shows every step](../../images/HGEvolve/HGEvolve-128.png)
 
 ### "EdgeDeduplication"
 
@@ -1537,7 +1537,7 @@ The genesis event is the first vertex of the causal graph:
 HGEvolve[chain, {{1, 2}}, 2, "CausalGraphStructure", "ShowGenesisEvents" -> True, AspectRatio -> 1/2]
 ```
 
-![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-136.png)
+![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-140.png)
 
 ### "ColorByRule"
 
@@ -1548,7 +1548,7 @@ extend = {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}};
 HGEvolve[extend, {{1, 1}, {1, 1}}, 1, "StatesGraph", "ColorByRule" -> True, ImageSize -> 420]
 ```
 
-![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-137.png)
+![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-141.png)
 
 The result is a [Legended]() graph:
 
@@ -1575,7 +1575,7 @@ EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Fu
 HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged", ImageSize -> 400, AspectRatio -> 1/2]
 ```
 
-!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-140.png)
+!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-144.png)
 
 ```wl
 EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged"]]
@@ -1658,7 +1658,7 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3, ImageSize -> 300]
 ```
 
-![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-148.png)
+![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-152.png)
 
 ```wl
 Options[HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3], AspectRatio]
@@ -1673,7 +1673,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "StatesGraphStructure", VertexLabels -> Automatic, AspectRatio -> 1/2]
 ```
 
-![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-150.png)
+![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-154.png)
 
 ### "GridWidth"
 
@@ -1855,7 +1855,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 25 states](../../images/HGEvolve/HGEvolve-168.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 25 states](../../images/HGEvolve/HGEvolve-172.png)
 
 Two steps reach 215 states up to isomorphism:
 
@@ -2009,7 +2009,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-184.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-188.png)
 
 ---
 
