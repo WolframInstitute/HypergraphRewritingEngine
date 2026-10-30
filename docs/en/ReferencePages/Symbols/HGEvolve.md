@@ -462,7 +462,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, "Grid", 0, "GlobalEdges", "GridWidth" -> 2, "GridHeight" -> 2, "RandomSeed" -> 1]
 ```
 
-<!-- => {{0, 0, 1}, {1, 2, 0}, {2, 2, 3}, {3, 3, 1}} -->
+<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 3, 1}} -->
 
 One step of the triangle rule on it:
 
@@ -481,7 +481,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, <|"Type" -> "Grid", "Width" -> 2, "Height" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"]
 ```
 
-<!-- => {{0, 0, 1}, {1, 2, 0}, {2, 2, 3}, {3, 4, 2}, {4, 5, 4}, {5, 3, 1}, {6, 3, 5}} -->
+<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 4, 2}, {4, 4, 5}, {5, 1, 3}, {6, 3, 5}} -->
 
 ---
 
@@ -1066,7 +1066,7 @@ ruleA = {{x, y}, {y, z}, {z, w}, {w, v}} -> {{y, u}, {u, v}, {w, x}, {x, u}};
 N[Round[Lookup[#["Invariants", "BallDimension"], "Mean"], 1/1000]] & /@ HGEvolve[ruleA, <|"Type" -> "Torus", "Resolution" -> 6, "Seed" -> 1|>, 6, "StepStatistics", "CanonicalizeStates" -> Full, "MaxStatesPerStep" -> 1, "StateCost" -> (Abs[#BallDimension - 1.5] &), "StepStatisticsMeasures" -> {"VolumeGrowth"}, "RandomSeed" -> 7]
 ```
 
-<!-- => {1.364, 1.416, 1.472, 1.5, 1.5, 1.5, 1.501} -->
+<!-- => {1.364, 1.416, 1.476, 1.502, 1.5, 1.5, 1.501} -->
 
 A function outside the supported operations returns `$Failed`:
 
@@ -1491,7 +1491,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 {HGEvolve[triangle, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 6, "RandomSeed" -> 1], HGEvolve[triangle, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 6, "RandomSeed" -> 2]}
 ```
 
-<!-- => {{{0, 0, 1}, {1, 0, 2}, {2, 3, 1}, {3, 3, 2}}, {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}}} -->
+<!-- => {{{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 3, 4}, {4, 1, 4}}, {{0, 0, 1}, {1, 2, 3}, {2, 3, 4}}} -->
 
 ### "IncludeCanonicalHashes"
 
@@ -1725,7 +1725,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 6, "RandomSeed" -> 1]
 ```
 
-<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 1}, {3, 3, 2}} -->
+<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 3, 4}, {4, 1, 4}} -->
 
 Twenty points give 42 edges, and ten uniform points give 15:
 
@@ -1733,7 +1733,7 @@ Twenty points give 42 edges, and ten uniform points give 15:
 {Length[HGEvolve[triangle, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1]], Length[HGEvolve[triangle, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 10, "RandomSeed" -> 1]]}
 ```
 
-<!-- => {42, 15} -->
+<!-- => {33, 23} -->
 
 ### Sprinkling options
 
@@ -1752,7 +1752,7 @@ sprinkle[opts___] := Length[HGEvolve[triangle, "Sprinkling", 0, "GlobalEdges", "
   "MaxEdgesPerVertex" -> sprinkle["SprinklingMaxEdgesPerVertex" -> 2]|>
 ```
 
-<!-- => <|"TimeExtent" -> 3, "SpatialExtent" -> 37, "SpatialDim 1" -> 34, "SpatialDim 3" -> 21, "LightconeAngle" -> 18, "AlexandrovCutoff" -> 12, "TransitivityReduction" -> 48, "MaxEdgesPerVertex" -> 23|> -->
+<!-- => <|"TimeExtent" -> 1, "SpatialExtent" -> 41, "SpatialDim 1" -> 33, "SpatialDim 3" -> 14, "LightconeAngle" -> 13, "AlexandrovCutoff" -> 10, "TransitivityReduction" -> 35, "MaxEdgesPerVertex" -> 21|> -->
 
 ### Brill-Lindquist options
 
@@ -1765,7 +1765,7 @@ bl[opts___] := Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "Sp
   "Separation" -> bl["BrillLindquistSeparation" -> 4.]|>
 ```
 
-<!-- => <|"Default" -> 26, "Mass1" -> 31, "Mass2" -> 33, "Separation" -> 18|> -->
+<!-- => <|"Default" -> 20, "Mass1" -> 19, "Mass2" -> 19, "Separation" -> 30|> -->
 
 `"BrillLindquistBoxX"` and `"BrillLindquistBoxY"` give the domain; with one of them at its default, the same points spread over a larger area:
 
@@ -1773,7 +1773,7 @@ bl[opts___] := Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "Sp
 {Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1, "BrillLindquistBoxX" -> {-5., 5.}]], Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1, "BrillLindquistBoxY" -> {-5., 5.}]]}
 ```
 
-<!-- => {12, 7} -->
+<!-- => {4, 8} -->
 
 `"BrillLindquistDimension" -> 3` places the points in a box whose z range is `"BrillLindquistBoxZ"`. With `"BrillLindquistPeriodic" -> True`, two points near opposite faces of the box are also joined:
 
@@ -1782,7 +1782,7 @@ bl[opts___] := Length[HGEvolve[triangle, "BrillLindquist", 0, "GlobalEdges", "Sp
   "Periodic box" -> bl["BrillLindquistDimension" -> 3, "BrillLindquistBoxZ" -> {-5., 5.}, "BrillLindquistPeriodic" -> True]|>
 ```
 
-<!-- => <|"Plane" -> 26, "Box" -> 14, "Periodic box" -> 17|> -->
+<!-- => <|"Plane" -> 20, "Box" -> 13, "Periodic box" -> 10|> -->
 
 The `"InitialCondition"` property gives the generated points. Each of the twenty vertices has a point in the plane, and the edges are the initial state's:
 
@@ -1791,7 +1791,7 @@ ic = HGEvolve[triangle, "BrillLindquist", 0, "InitialCondition", "SprinklingDens
 {Length[ic["VertexCoordinates"]], Dimensions[Values[ic["VertexCoordinates"]]], Length[ic["Edges"]]}
 ```
 
-<!-- => {20, {20, 2}, 26} -->
+<!-- => {20, {20, 2}, 20} -->
 
 Asked for with other properties, it is one more key of the result, and the evolution starts from the same edges:
 
@@ -1811,7 +1811,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 10, "RandomSeed" -> 1]
 ```
 
-<!-- => {{0, 0, 1}, {1, 2, 3}, {2, 4, 2}, {3, 5, 6}, {4, 0, 3}, {5, 3, 4}} -->
+<!-- => {{0, 0, 1}, {1, 1, 2}, {2, 0, 2}, {3, 2, 3}, {4, 4, 5}} -->
 
 A threshold of 3 on ten Poisson points and on ten uniform points:
 
@@ -1819,7 +1819,7 @@ A threshold of 3 on ten Poisson points and on ten uniform points:
 {Length[HGEvolve[triangle, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 10, "RandomSeed" -> 1, "EdgeThreshold" -> 3.]], Length[HGEvolve[triangle, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 10, "RandomSeed" -> 1, "EdgeThreshold" -> 3.]]}
 ```
 
-<!-- => {11, 9} -->
+<!-- => {9, 13} -->
 
 ### "PoissonMinDistance"
 
@@ -1830,7 +1830,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 Length[HGEvolve[triangle, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 10, "RandomSeed" -> 1, "PoissonMinDistance" -> 3.]]
 ```
 
-<!-- => 20 -->
+<!-- => 25 -->
 
 ## Applications
 
@@ -1841,29 +1841,29 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 0, "GlobalEdges"]
 ```
 
-<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 0, 3}, {3, 0, 4}, {4, 0, 5}, {5, 6, 1}, {6, 6, 2}, {7, 6, 3}, {8, 6, 4}, {9, 7, 4}, {10, 7, 5}, {11, 8, 3}, {12, 8, 4}, {13, 8, 5}, {14, 1, 9}, {15, 10, 4}, {16, 10, 5}, {17, 11, 9}} -->
+<!-- => {{0, 0, 1}, {1, 0, 2}, {2, 0, 3}, {3, 0, 4}, {4, 0, 5}, {5, 6, 7}, {6, 1, 7}, {7, 1, 8}, {8, 9, 4}, {9, 9, 8}, {10, 2, 8}, {11, 3, 8}} -->
 
-One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states:
+One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 25 states:
 
 ```wl
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "NumStates"]
 ```
 
-<!-- => 43 -->
+<!-- => 25 -->
 
 ```wl
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-168.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 25 states](../../images/HGEvolve/HGEvolve-168.png)
 
-Two steps reach 239 states up to isomorphism:
+Two steps reach 215 states up to isomorphism:
 
 ```wl
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 2, "NumStates", "CanonicalizeStates" -> Full]
 ```
 
-<!-- => 239 -->
+<!-- => 215 -->
 
 ## Properties and Relations
 

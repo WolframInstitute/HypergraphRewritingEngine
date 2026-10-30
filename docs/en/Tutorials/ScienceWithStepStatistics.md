@@ -482,7 +482,7 @@ merger = HGEvolve[ruleA, gorard[200, 1.25, 1], 105, {"StepStatistics", "CausalEd
 {Length[HGEvolve[ruleA, gorard[200, 1.25, 1], 0, "GlobalEdges"]], merger["NumEvents"]}
 ```
 
-<!-- => {877, 8829} -->
+<!-- => {780, 7159} -->
 
 The steps that reach 10 events per initial edge at each number of points, with c = 1.25 and seed 1:
 
@@ -522,7 +522,7 @@ pairs = DeleteDuplicates[Lookup[merger["CausalEdges"], {"From", "To"}]];
 With[{mm = myrheimMeyer[pairs, 30, 40, 1]}, {N[Round[100 mm["WholeSet"]]/100], mm["Intervals"], mm["IntervalMedian"]}]
 ```
 
-<!-- => {6.03, 30, 1.} -->
+<!-- => {5.84, 30, 1.} -->
 
 The Myrheim-Meyer formula holds for an interval. The whole causal graph of an evolution is not an interval, so its whole-set value of 6.03 is outside the calibration on sprinkled diamonds. The sampled intervals give a median of 1. The cone measure does not apply here, since it does not reproduce the dimension of sprinkled causal sets.
 
