@@ -204,6 +204,8 @@ TEST(InitialConditions, PointSetsAreSeededAndKeepTheirConstraints) {
     EXPECT_EQ(g.n_vertices, 300u);
     const ic::IcBlGeometry geo(bl);
     for (uint32_t i = 0; i < g.n_vertices; ++i) EXPECT_FALSE(geo.inside(&g.coords[3 * size_t(i)]));
+    EXPECT_EQ(g.horizon_centers, (std::vector<double>{5, 0, 0, -5, 0, 0}));
+    EXPECT_EQ(g.horizon_radii, (std::vector<double>{1.5, 1.5}));
 
     ic::IcSpec m;
     m.type = ic::IcType::MinkowskiSprinkling;

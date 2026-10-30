@@ -102,6 +102,8 @@ struct IcGraph {
     std::vector<double> spacetime;   // MinkowskiSprinkling: {t, x_1..x_d} per vertex, by t
     double threshold = 0;            // the edge threshold used (point sets)
     double dimension_estimate = 0;   // MinkowskiSprinkling
+    std::vector<double> horizon_centers;  // BrillLindquist: coord_dim values per horizon, 2 horizons
+    std::vector<double> horizon_radii;    // BrillLindquist: 2 values
     std::string error;               // non-empty: the spec is invalid and nothing was generated
 };
 
@@ -437,6 +439,10 @@ inline void ic_brill_lindquist_join(const IcSpec& s, const std::vector<double>& 
     const uint32_t d = geo.d;
     const uint32_t count = static_cast<uint32_t>(pts.size() / d);
     g.n_vertices = count; g.coord_dim = d; g.coords = pts;
+    for (uint32_t h = 0; h < 2; ++h) {
+        g.horizon_centers.insert(g.horizon_centers.end(), geo.centers[h], geo.centers[h] + d);
+        g.horizon_radii.push_back(geo.radii[h]);
+    }
     const double t = s.edge_threshold < 0 ? 2.0 : s.edge_threshold;
     g.threshold = t;
     std::vector<std::vector<uint32_t>> near;

@@ -19,7 +19,8 @@
 //
 // Reply: "Edges" {{a, b}, ...} over vertices 1..n, "VertexCount", "VertexCoordinates" {{x, y,
 // ...}, ...} in vertex order, and where the generator gives them "VertexCoordinates3D",
-// "SpacetimePoints" ({t, x...} per vertex), "EdgeThreshold" and "DimensionEstimate".
+// "SpacetimePoints" ({t, x...} per vertex), "EdgeThreshold", "DimensionEstimate", and for
+// "BrillLindquist" "HorizonCenters" ({x, y, ...} per horizon) and "HorizonRadii".
 
 #include <cmath>
 #include <stdexcept>
@@ -182,6 +183,12 @@ inline wxf::WXFValueAssociation initial_condition_reply(const hgcommon::IcGraph&
     if (g.threshold > 0) out.push_back({WXFValue("EdgeThreshold"), WXFValue(g.threshold)});
     if (g.dimension_estimate > 0)
         out.push_back({WXFValue("DimensionEstimate"), WXFValue(g.dimension_estimate)});
+    if (!g.horizon_radii.empty()) {
+        out.push_back({WXFValue("HorizonCenters"), WXFValue(rows(g.horizon_centers, g.coord_dim))});
+        WXFValueList radii;
+        for (double r : g.horizon_radii) radii.push_back(WXFValue(r));
+        out.push_back({WXFValue("HorizonRadii"), WXFValue(std::move(radii))});
+    }
     return out;
 }
 

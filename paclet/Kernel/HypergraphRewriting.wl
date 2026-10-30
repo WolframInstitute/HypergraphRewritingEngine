@@ -1105,7 +1105,7 @@ hgInitialCondition[initialSpec_Association, opts_List] := Module[
     <|"Edges" -> reply["Edges"], "VertexCoordinates" -> rows[reply["VertexCoordinates"]]|>,
     If[KeyExistsQ[reply, "VertexCoordinates3D"],
       <|"VertexCoordinates3D" -> rows[reply["VertexCoordinates3D"]]|>, <||>],
-    KeyTake[reply, {"SpacetimePoints", "EdgeThreshold", "DimensionEstimate"}],
+    KeyTake[reply, {"SpacetimePoints", "EdgeThreshold", "DimensionEstimate", "HorizonCenters", "HorizonRadii"}],
     <|"Type" -> type, "Seed" -> seed, "VertexCount" -> reply["VertexCount"],
       "EdgeCount" -> Length[reply["Edges"]]|>]
 ]

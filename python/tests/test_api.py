@@ -46,6 +46,7 @@ def test_generated_initial_conditions():
     a = hg.initial_condition({"Type": "BrillLindquist", "Density": 120, "Seed": 4})
     b = hg.initial_condition({"Type": "BrillLindquist", "Density": 120, "Seed": 4})
     assert a == b and a["VertexCount"] == 120 and len(a["VertexCoordinates"][0]) == 2
+    assert a["HorizonCenters"] == [[5.0, 0.0], [-5.0, 0.0]] and a["HorizonRadii"] == [1.5, 1.5]
     assert hg.initial_condition({"Type": "BrillLindquist", "Density": 120, "Seed": 5}) != a
     t = hg.initial_condition({"Type": "Torus", "Resolution": 4})
     assert t["VertexCount"] == 16 and len(t["Edges"]) == 32 and len(t["VertexCoordinates3D"]) == 16

@@ -1793,6 +1793,14 @@ ic = HGEvolve[triangle, "BrillLindquist", 0, "InitialCondition", "SprinklingDens
 
 <!-- => {20, {20, 2}, 20} -->
 
+A Brill-Lindquist initial condition also gives the centre and radius of each horizon:
+
+```wl
+{ic["HorizonCenters"], ic["HorizonRadii"]}
+```
+
+<!-- => {{{5., 0.}, {-5., 0.}}, {1.5, 1.5}} -->
+
 Asked for with other properties, it is one more key of the result, and the evolution starts from the same edges:
 
 ```wl
@@ -1855,7 +1863,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 25 states](../../images/HGEvolve/HGEvolve-172.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 25 states](../../images/HGEvolve/HGEvolve-173.png)
 
 Two steps reach 215 states up to isomorphism:
 
@@ -2009,7 +2017,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-188.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-189.png)
 
 ---
 

@@ -29,7 +29,7 @@ The WXF bytes of the job `evolve` runs, which `hg_evolve` reads on stdin. `graph
 
 ### `hg.initial_condition(spec)`
 
-The initial condition HGEvolve generates for `spec`: a type name or a dict with `"Type"` and the generator's keys ("Width", "Height", "Holes", "Resolution", "Radius", "Density", "MinDistance", "EdgeThreshold", "BoxX", "Mass1", "Seed", ...; paclet_source/initial_condition_job.hpp lists them). A key not given takes the default of the HGEvolve option it stands for, and "Seed" defaults to 0. Returns a dict: "Edges", "VertexCount", "VertexCoordinates" and, where the generator gives them, "VertexCoordinates3D", "SpacetimePoints", "EdgeThreshold" and "DimensionEstimate". An unknown type or key raises `ValueError`.
+The initial condition HGEvolve generates for `spec`: a type name or a dict with `"Type"` and the generator's keys ("Width", "Height", "Holes", "Resolution", "Radius", "Density", "MinDistance", "EdgeThreshold", "BoxX", "Mass1", "Seed", ...; paclet_source/initial_condition_job.hpp lists them). A key not given takes the default of the HGEvolve option it stands for, and "Seed" defaults to 0. Returns a dict: "Edges", "VertexCount", "VertexCoordinates" and, where the generator gives them, "VertexCoordinates3D", "SpacetimePoints", "EdgeThreshold", "DimensionEstimate", "HorizonCenters" and "HorizonRadii". An unknown type or key raises `ValueError`.
 
 ### `hg.build_stamp()`
 

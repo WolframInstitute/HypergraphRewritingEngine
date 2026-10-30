@@ -297,7 +297,8 @@ def initial_condition(spec):
     "Resolution", "Density", "Seed", ...); a key not given takes the engine's default, and
     "Seed" defaults to 0. Returns a dict: "Edges" (lists of two vertices numbered from 1),
     "VertexCount", "VertexCoordinates" (one list per vertex) and, where the generator gives
-    them, "VertexCoordinates3D", "SpacetimePoints", "EdgeThreshold" and "DimensionEstimate"."""
+    them, "VertexCoordinates3D", "SpacetimePoints", "EdgeThreshold", "DimensionEstimate",
+    "HorizonCenters" and "HorizonRadii"."""
     if isinstance(spec, str):
         spec = {"Type": spec}
     if not isinstance(spec, dict) or "Type" not in spec:
