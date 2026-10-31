@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A history under `"EventOrderingFunction"` runs on one worker whatever `"Threads"` says. It
+  applies one event at a time, each after the one before, and more workers only moved each event
+  between cores: on a 2,048-point synchronizer it ran at 28,258 events/s on one thread and
+  19,266 on four, and now at about 28,200 on both.
+
 - A GPU run with "MaxStatesPerStep" and "StateCost" sizes the device IR arena for its largest
   state before it starts. A 400-vertex cycle that ran out of device memory and returned a partial
   result now completes in one attempt with the CPU's states.

@@ -1427,10 +1427,17 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
                     "session " + std::to_string(req.session_handle) +
                     " is not held by this binary's engine");
         } else {
+            // An "EventOrderingFunction" history applies one event at a time, each after the
+            // one before (ordered_at_drain), so it runs on one worker: more workers only move
+            // each event between cores (synchronizer, 2,048 points: 28,258 events/s on one
+            // worker, 19,266 on four).
+            const bool sequential = req.event_ordering != 0 && !req.best_first;
             engine_holder =
                 std::make_unique<hgffi::CpuEngineHolder>(
                     /*continuable=*/opening_session,
-                    static_cast<unsigned>(req.tuning.get(hgcommon::Tune::Threads).value_or(0)));
+                    sequential ? 1u
+                               : static_cast<unsigned>(
+                                     req.tuning.get(hgcommon::Tune::Threads).value_or(0)));
             holder = engine_holder.get();
         }
         hypergraph::Hypergraph& hg = holder->hypergraph();
