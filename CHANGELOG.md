@@ -21,6 +21,15 @@
   `HGSessionClose`) issues `HGSessionStep::refused`. It issued `HGSessionOpen::refused`.
 - Without an `hg_evolve` binary, a job the in-process library refuses gives
   `HGEvolve::enginemsg` with the engine's reason. It gave `$Failed` with no message.
+- On the GPU, a run under `"MatchesPerStep"` (or `"MaxStatesPerStep"` under `None` states) sizes
+  its edge pool from every initial state. The paclet's jobs counted none, so an initial state of
+  more than about 4,096 edges made such a run fail before its first step.
+- On the GPU under `"MatchesPerStep"` with `None` states, identical initial states (one group of
+  equal lineage labels) leaked pool memory at every step, and their merge sorted on one thread in
+  quadratic time: two 2,048-edge tori made 362 events in 20 minutes. The merge frees its arrays
+  and merges the sets in linear time.
+- The GPU's held match pool counts in its memory estimate and under the operating-system limit,
+  and a step whose transitions exceed the match pool grows it and retries.
 - Python: a named initial condition takes the call's `random_seed`, `encode_job` asks for every
   step's branchial edges for an `EvolutionBranchialGraph` as `HGEvolve` does,
   `event_ordering_function="None"` is the same as None, and a `transition_cost` without
