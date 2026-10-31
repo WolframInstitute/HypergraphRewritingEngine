@@ -182,6 +182,48 @@ TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
            "output:\n" << out;
 }
 
+// A job refused on the in-process LibraryLink route gives HGEvolve::enginemsg with the engine's
+// reason (performRewritingError) and $Failed. The worker and the engine binary are blocked so the
+// call reaches the library; three bytes that are not WXF make the engine throw.
+TEST_F(PacletTest, ALibraryRefusalIssuesTheEnginesReason) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+
+    const std::string code =
+        "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
+        "<< \"HypergraphRewriting`\"; "
+        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"LIBERR_LOAD_FAIL\"]; Exit[0]]; "
+        "If[Head[HypergraphRewriting`Private`performRewriting] =!= LibraryFunction, "
+        "  Print[\"LIBERR_SKIP: no library for \", $SystemID]; Exit[0]]; "
+        "ed = Block[{HypergraphRewriting`Private`hgWorkerTry = ($Failed &), "
+        "            HypergraphRewriting`Private`$HypergraphEngineBinary = None}, "
+        "  EvaluationData[HypergraphRewriting`Private`hgCallEngine[ByteArray[{1, 2, 3}], \"CPU\"]]]; "
+        "text = StringRiffle[ed[\"MessagesText\"], \" | \"]; "
+        "If[ed[\"Result\"] === $Failed && "
+        "   StringContainsQ[text, \"HGEvolve::enginemsg\"] && "
+        "   StringContainsQ[text, \"Invalid WXF header\"] && !StringContainsQ[text, \"rterr\"], "
+        "  Print[\"LIBERR_OK\"], Print[\"LIBERR_FAIL: \", ed[\"Result\"], \" \", text]]";
+
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        const bool verdict = out.find("LIBERR_OK") != std::string::npos ||
+                             out.find("LIBERR_FAIL") != std::string::npos ||
+                             out.find("LIBERR_SKIP") != std::string::npos ||
+                             out.find("LIBERR_LOAD_FAIL") != std::string::npos;
+        if (verdict) break;
+    }
+
+    if (out.find("LIBERR_SKIP") != std::string::npos)
+        GTEST_SKIP() << "this build ships no library for this platform: " << out;
+    ASSERT_EQ(out.find("LIBERR_LOAD_FAIL"), std::string::npos)
+        << "the paclet did not load, so nothing below was exercised:\n" << out;
+    EXPECT_NE(out.find("LIBERR_OK"), std::string::npos)
+        << "the library route did not report the engine's reason. WolframScript output:\n" << out;
+}
+
 // NO CALL OPENS A SOCKET: on Windows, Wolfram 15.0 faults inside SocketConnect (libzeromqlink.dll)
 // in about 1 of 6 fresh kernels.
 // reference/no_socket_check.wl runs HGEvolve and every session verb on the CPU and on the GPU and

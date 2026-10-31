@@ -154,6 +154,20 @@ If[$HypergraphLibrary === $Failed,
 If[$HypergraphLibrary =!= $Failed,
   performRewriting = LibraryFunctionLoad[$HypergraphLibrary, "performRewriting",
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
+  performRewritingError = Quiet[LibraryFunctionLoad[$HypergraphLibrary, "performRewritingError",
+    {}, "UTF8String"]];
+];
+
+(* The in-process LibraryLink call. A LibraryFunctionError gives HGEvolve::enginemsg with the
+   reason from performRewritingError, as an engine binary's refusal does, and $Failed. *)
+hgRunLibrary[wxfBytes_] := Module[{r = Quiet[performRewriting[wxfBytes], LibraryFunction::rterr], reason},
+  If[Head[r] === LibraryFunctionError,
+    reason = If[Head[performRewritingError] === LibraryFunction,
+      Quiet[performRewritingError[]], $Failed];
+    If[!StringQ[reason] || reason === "", reason = "the engine library returned " <> ToString[r]];
+    Message[HGEvolve::enginemsg, reason];
+    Return[$Failed]];
+  r
 ];
 
 (* Standalone process-isolation engine binary, shipped beside the DLL. It reads
@@ -469,7 +483,7 @@ hgCallEngine[wxfBytes_, dev_:"CPU"] := Module[{r},
         r],
     StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
       hgRunEngineBinary[$HypergraphEngineBinary, wxfBytes],
-    True, performRewriting[wxfBytes]
+    True, hgRunLibrary[wxfBytes]
   ]
 ];
 

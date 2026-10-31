@@ -4,5 +4,6 @@
 ; viz split (board #18) unnoticed until the release matrix was actually built.
 EXPORTS
 performRewriting
+performRewritingError
 WolframLibrary_initialize
 WolframLibrary_uninitialize

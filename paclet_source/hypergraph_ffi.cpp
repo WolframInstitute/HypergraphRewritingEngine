@@ -123,11 +123,11 @@ static inline void core_progress(const HostBridge& host, const std::string& mess
 }
 
 #ifndef HG_STANDALONE_BINARY
-// Error handling
-static void handle_error(WolframLibraryData libData, const char* message) {
-    if (libData && libData->Message) {
-        libData->Message(message);
-    }
+// The reason for the last LIBRARY_FUNCTION_ERROR of performRewriting, read by
+// performRewritingError. libData->Message takes a message tag, so the text goes here.
+static std::string& library_last_error() {
+    static std::string message;
+    return message;
 }
 #endif  // HG_STANDALONE_BINARY
 
@@ -2659,16 +2659,18 @@ void release_job_memory(size_t keep_pooled_bytes) {
 // LibraryLink fallback adapter: unwrap the WXF ByteArray argument, run the core,
 // wrap the result ByteArray. The standalone binary is the primary path; this is
 // an in-process fallback with no progress or abort (abort is a process kill).
+// On LIBRARY_FUNCTION_ERROR the reason is returned by performRewritingError.
 EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+    library_last_error().clear();
     if (argc != 1) {
-        handle_error(libData, "performRewriting expects 1 argument: WXF ByteArray data");
+        library_last_error() = "performRewriting expects 1 argument: WXF ByteArray data";
         return LIBRARY_FUNCTION_ERROR;
     }
     try {
         MNumericArray wxf_array = MArgument_getMNumericArray(argv[0]);
         mint rank = libData->numericarrayLibraryFunctions->MNumericArray_getRank(wxf_array);
         if (rank != 1) {
-            handle_error(libData, "WXF ByteArray must be 1-dimensional");
+            library_last_error() = "WXF ByteArray must be 1-dimensional";
             return LIBRARY_FUNCTION_ERROR;
         }
         const mint* dims = libData->numericarrayLibraryFunctions->MNumericArray_getDimensions(wxf_array);
@@ -2686,6 +2688,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         MNumericArray result_array;
         int err = libData->numericarrayLibraryFunctions->MNumericArray_new(MNumericArray_Type_UBit8, 1, out_dims, &result_array);
         if (err != LIBRARY_NO_ERROR) {
+            library_last_error() = "the reply of " + std::to_string(out.size()) +
+                                   " bytes could not be allocated in the kernel";
             return err;
         }
         auto* result_data = static_cast<uint8_t*>(
@@ -2699,11 +2703,17 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         return LIBRARY_NO_ERROR;
 
     } catch (const std::exception& e) {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "HGEvolve error: %.200s", e.what());
-        handle_error(libData, err_msg);
+        library_last_error() = e.what();
         return LIBRARY_FUNCTION_ERROR;
     }
+}
+
+// The reason for the last LIBRARY_FUNCTION_ERROR of performRewriting; "" after a call that
+// succeeded. The string stays valid until the next call of performRewriting.
+EXTERN_C DLLEXPORT int performRewritingError(WolframLibraryData /* libData */, mint /* argc */,
+                                             MArgument* /* argv */, MArgument res) {
+    MArgument_setUTF8String(res, const_cast<char*>(library_last_error().c_str()));
+    return LIBRARY_NO_ERROR;
 }
 
 EXTERN_C DLLEXPORT int WolframLibrary_initialize(WolframLibraryData /* libData */) {
