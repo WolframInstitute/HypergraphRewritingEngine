@@ -311,8 +311,10 @@ public:
             // does -- so this is a DEBUG TRIPWIRE for a future caller, not the guarantee.
             //
             // The guarantee is the choice of sentinel: every value stored here is a state id,
-            // an event id, a `+1`-biased id or a presence marker, all bounded by a table
-            // capacity orders below 2^32, so all-ones is outside the domain by construction.
+            // an event id, a `+1`-biased id, a presence marker or a "StateCost" cost key. The
+            // ids and markers are bounded by a table capacity below 2^32. A cost key is never
+            // all-ones (hgcommon::state_cost_key maps NaN to infinity). All-ones is therefore
+            // outside the domain by construction.
             // -O3 -DNDEBUG compiles the assert out, which is why the domain argument has to
             // hold on its own.
             assert(value != UNPUBLISHED && "value collides with the UNPUBLISHED sentinel");

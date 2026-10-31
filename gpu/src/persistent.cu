@@ -545,8 +545,13 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
         }
         uint64_t total = 0;
         for (uint32_t b = 0; b < nb; ++b) total += c.sets[sel.idx[b]].order.size;
-        const uint32_t want = ds.max_states_per_step < total ? ds.max_states_per_step
-                                                             : static_cast<uint32_t>(total);
+        // sel.pos and sel.rank hold sel.cap entries, the match pool's records. A step that keeps
+        // more transitions records kMatchPoolFull, which grow-and-retry answers by growing the
+        // match pool and with it sel.cap.
+        const uint32_t asked = ds.max_states_per_step < total ? ds.max_states_per_step
+                                                              : static_cast<uint32_t>(total);
+        const uint32_t want = asked < sel.cap ? asked : sel.cap;
+        if (want < asked) ds.errors.record(ErrorKind::kMatchPoolFull);
         const uint32_t npos = hgcommon::step_positions(ds.sampling_seed, s + 1u, total, want,
                                                        sel.pos);
         // The kept transitions, (block << 32 | slot), in sel.rank.
@@ -643,7 +648,9 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
         Blocks view{c, sel, nb, &merge_failed, &merged_words};
         uint32_t kept = 0;
         hgcommon::step_select_blocks(view, sel.pos, npos, [&](uint32_t block, uint32_t slot) {
-            if (block < nb && kept < sel.cap) sel.rank[kept++] = (uint64_t{block} << 32) | slot;
+            if (block >= nb) return;
+            if (kept < sel.cap) sel.rank[kept++] = (uint64_t{block} << 32) | slot;
+            else ds.errors.record(ErrorKind::kMatchPoolFull);
         });
         view.release();
         if (merge_failed) ds.errors.record(ErrorKind::kHeldPoolFull);
@@ -3356,12 +3363,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     uint32_t max_lhs = 0;
     for (const DeviceRule& r : rules) max_lhs = std::max<uint32_t>(max_lhs, r.num_lhs_edges);
     dsk.held = 0u;
-    if (!session && dsk.edge_label != nullptr && dsk.max_states_per_step != 0u &&
+    // An engine without a held pool (config_from_input sets held_pool_words to 0 when the input
+    // has no "MatchesPerStep") matches each state in full.
+    const uint64_t words = engine.config().held_pool_words;
+    if (!session && words != 0u && dsk.edge_label != nullptr && dsk.max_states_per_step != 0u &&
         dsk.step_cap_counts_matches && max_lhs < kMaxPatternEdges &&
         hgcommon::held_matches_apply(true, step_costed(dsk), dsk.matches_per_state_rule,
                                      dsk.max_successor_states_per_parent,
                                      dsk.exploration_probability)) {
-        const uint64_t words = engine.config().held_pool_words;
         const uint64_t set_cap64 =
             2ull * (uint64_t{dsk.max_states_per_step} + roots.size()) + 16u;
         const uint32_t set_cap = set_cap64 > dsk.max_states ? dsk.max_states + 16u
@@ -3380,6 +3389,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         if (ps.held_set_cap < set_cap) {
             if (ps.held_sets) cudaFree(ps.held_sets);
             if (ps.held_free_sets) cudaFree(ps.held_free_sets);
+            ps.held_sets = nullptr;
+            ps.held_free_sets = nullptr;
+            ps.held_set_cap = 0;
             HG_CUDA_CHECK(cudaMalloc(&ps.held_sets, sizeof(DeviceHeldSet) * set_cap), "held sets");
             HG_CUDA_CHECK(cudaMalloc(&ps.held_free_sets, sizeof(uint32_t) * (set_cap + 1u)),
                           "held free sets");
@@ -3387,12 +3399,16 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         }
         if (ps.held_handoff_states < dsk.max_states) {
             if (ps.held_handoff) cudaFree(ps.held_handoff);
+            ps.held_handoff = nullptr;
+            ps.held_handoff_states = 0;
             HG_CUDA_CHECK(cudaMalloc(&ps.held_handoff, sizeof(uint32_t) * 2ull * dsk.max_states),
                           "held hand-on");
             ps.held_handoff_states = dsk.max_states;
         }
         if (ps.held_step_slots < dsk.step_slots) {
             if (ps.held_step_head) cudaFree(ps.held_step_head);
+            ps.held_step_head = nullptr;
+            ps.held_step_slots = 0;
             HG_CUDA_CHECK(cudaMalloc(&ps.held_step_head, sizeof(uint32_t) * dsk.step_slots),
                           "held step lists");
             ps.held_step_slots = dsk.step_slots;

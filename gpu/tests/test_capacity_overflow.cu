@@ -353,6 +353,62 @@ TEST(CapacityOverflow, TheEstimateCoversTheAllocation) {
     }
 }
 
+// The held match sets' pool is in the estimate when the input can hold sets ("MatchesPerStep"),
+// and its size is 0 otherwise. The OS-limit allowance after the engine is built is this estimate,
+// so a held pool outside it lets a run exceed the limit when the pool grows.
+TEST(CapacityOverflow, TheEstimateCountsTheHeldPool) {
+    hg_gpu::EvolveInput in = growing_input(3);
+    in.canonicalization = hg_gpu::CanonicalizationMode::None;
+    EXPECT_EQ(hg_gpu::config_from_input(in).held_pool_words, 0u);
+    in.max_states_per_step = 4;
+    EXPECT_EQ(hg_gpu::config_from_input(in).held_pool_words, 0u);
+    in.step_cap_counts_matches = true;
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    ASSERT_NE(cfg.held_pool_words, 0u);
+    hg_gpu::EngineConfig none = cfg;
+    none.held_pool_words = 0;
+    EXPECT_GE(hg_gpu::estimated_device_bytes(cfg) - hg_gpu::estimated_device_bytes(none),
+              cfg.held_pool_words * 4u);
+    hg_gpu::EngineConfig grown = cfg;
+    ASSERT_TRUE(hg_gpu::grow_config_for(grown, hg_gpu::ErrorKind::kHeldPoolFull));
+    EXPECT_GE(hg_gpu::estimated_device_bytes(grown) - hg_gpu::estimated_device_bytes(cfg),
+              cfg.held_pool_words * 4u);
+}
+
+// A step under held match sets that keeps more transitions than the selection arrays hold
+// (sel.cap, the match pool's records) records kMatchPoolFull and writes nothing past them, and
+// grow-and-retry from there reaches the result of a config that fits. Step 1 here has 20
+// transitions against a pool of 16 records. The out-of-bounds half is shown by compute-sanitizer
+// (see the top of this file).
+TEST(CapacityOverflow, AHeldStepPastTheSelectionArraysGrowsTheMatchPool) {
+    hg_gpu::EvolveInput in = growing_input(4);
+    in.canonicalization = hg_gpu::CanonicalizationMode::None;
+    in.max_states_per_step = 64;
+    in.step_cap_counts_matches = true;
+    const hg_gpu::EvolveResult want = hg_gpu::evolve(in);
+    ASSERT_TRUE(want.warnings.empty());
+
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    cfg.max_matches = 16;
+    bool overflowed = false;
+    hg_gpu::EvolveResult got;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        {
+            hg_gpu::Engine engine(cfg);
+            got = engine.run(in);
+        }
+        if (got.warnings.empty()) break;
+        for (const auto& w : got.warnings)
+            ASSERT_EQ(w.kind, hg_gpu::ErrorKind::kMatchPoolFull) << w.context;
+        overflowed = true;
+        ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kMatchPoolFull));
+    }
+    EXPECT_TRUE(overflowed) << "16 records held every kept transition";
+    ASSERT_TRUE(got.warnings.empty());
+    EXPECT_EQ(got.states.size(), want.states.size());
+    EXPECT_EQ(got.events.size(), want.events.size());
+}
+
 // A match pool overflow grows the match pool alone: the state, event, edge and vertex pools keep
 // their sizes.
 TEST(CapacityOverflow, TheMatchPoolGrowsAlone) {

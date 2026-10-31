@@ -217,6 +217,9 @@ EngineConfig config_from_input(const EvolveInput& in) {
         cfg.ir_arena_share_words = static_cast<uint32_t>(std::min<uint64_t>(
             std::max<uint64_t>(cfg.ir_arena_share_words, share), 1ull << 30));
     }
+    // Held match sets need "MatchesPerStep" (run_persistent_evolve); without it no held pool is
+    // allocated, and estimated_device_bytes counts none.
+    if (in.max_states_per_step == 0 || !in.step_cap_counts_matches) cfg.held_pool_words = 0;
     return cfg;
 }
 
@@ -1070,6 +1073,10 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap, bool ir_share = true) {
     sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_preds_nodes, 1u<<12);
     sc(cfg.canonical_form_words, 1u<<14);
     if (ir_share) sc(cfg.ir_arena_share_words, 1u<<16);
+    if (cfg.held_pool_words) {
+        const uint64_t v = static_cast<uint64_t>(static_cast<double>(cfg.held_pool_words) * r);
+        cfg.held_pool_words = std::max<uint64_t>(v, uint64_t{1} << 20);
+    }
     if (cfg.max_matches) {
         uint32_t m = match_pool_records(cfg);
         sc(m, 1u<<13);
@@ -1150,6 +1157,8 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.max_states)          * 8;          // the state record log (RecordEntry)
     // The IR arena (Engine::Impl allocates it with the engine).
     b += persistent_arena_words(cfg.ir_arena_share_words, persistent_grid_of(cfg)) * 4;
+    // The held match sets' pool, allocated by the run (run_persistent_evolve).
+    b += cfg.held_pool_words * 4;
 
     // The device stack: EngineState's constructor sets cudaLimitStackSize, and the driver
     // reserves that per-thread size for every thread the device can hold resident, not for the
