@@ -22,7 +22,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - The device is the one serving the session. A session opened with `"TargetDevice" -> "GPU"` where no GPU engine is bundled or the machine has no usable NVIDIA GPU issues the message `HGEvolve::gpudev` and is served, and shown, as `CPU`.
 - An [HGSessionObject]() is made only by [HGSessionOpen]().
 - No verb changes the expression: it addresses the same session before and after a step, and a copy addresses the same session.
-- After [HGSessionClose](), every verb on the object issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>. A handle is not reused.
+- After [HGSessionClose](), every verb on the object issues the message `HGSessionStep::refused` and gives <code>[$Failed]()</code>. A handle is not reused.
 - One session is open at a time for each device.
 - A verb given an expression that is not an [HGSessionObject]() issues the message `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
 
@@ -98,7 +98,7 @@ Head[s]
 HGSessionQuery[s]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 ## Possible Issues
 

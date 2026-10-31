@@ -38,6 +38,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
   - an association with an `"Edges"` key and no `"Type"` key, whose `"Edges"` is the hypergraph
 - *n* is a non-negative integer. The initial states are at step 0; step $k$ holds every state produced by an event applied to a state of step $k-1$.
 - The evolution runs in a separate engine process, and the result reaches the kernel when it finishes. If that process ends during an evaluation, the message `HGEvolve::workerlost` is issued, the result is `$Failed`, and the next evaluation starts a new process. Text the engine process writes outside its result, such as a library's warning, is issued as `HGEvolve::enginelog`.
+- When the engine process does not start, or does not answer its start-up check, the evaluation runs in a one-shot engine process, and the next evaluation tries to start the engine process again. After three such evaluations in a row, the evaluations on that device run in one-shot processes until [HGSessionOpen]() is evaluated for the device. A one-shot process that exits without a result issues `HGEvolve::enginefail`, and the result is `$Failed`.
+- A job refused by the engine, such as an `"EventOrderingFunction"` list that leaves two matches tied, issues `HGEvolve::enginemsg` with the engine's reason, and the result is `$Failed`.
 - The possible properties are:
 
 |   |   |
@@ -58,7 +60,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"NumStates"`, `"NumEvents"` | the number of states and of events |
 | `"NumCausalEdges"`, `"NumBranchialEdges"` | the number of causal and of branchial pairs |
 | `"GlobalEdges"` | every hyperedge the evolution created, each as its id followed by its vertices |
-| `"InitialCondition"` | the initial condition as an association: `"Edges"`, and for a generated one the generator's other keys, such as `"VertexCoordinates"` (each vertex's point, keyed by the vertex as the states name it) |
+| `"InitialCondition"` | the initial condition as an association: `"Edges"`, and for a generated one `"Type"`, `"Seed"`, `"VertexCount"`, `"EdgeCount"`, `"VertexCoordinates"` (each vertex's point, keyed by the vertex as the states name it) and, where the generator gives them, `"VertexCoordinates3D"` (each vertex's point on the embedded surface), `"SpacetimePoints"` (the time and space coordinates of each sprinkled point), `"EdgeThreshold"`, `"DimensionEstimate"`, `"HorizonCenters"` and `"HorizonRadii"` |
 | `"StateBitvectors"` | an association from each state id to the ids of the hyperedges the state holds |
 | `"StepStatistics"` | for each step, statistics of the states at that step |
 | `"Debug"` | an association of the four counts |
@@ -200,7 +202,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - `"CanonicalizeStates"` is applied while the evolution runs, so it also determines which states are expanded. `Automatic` identifies states whose edge lists are identical. This is finer than isomorphism: two isomorphic states with different vertex names stay separate. Initial states keep their own vertex names, so two initial states that differ only in vertex names are two states under `Automatic`.
 - `"CanonicalizeEvents"` builds an event's identity from isomorphism-invariant components. `Full` uses the canonical input and output states. `Automatic` also uses the step and the canonical positions of the consumed and produced edges within the state's isomorphism class; it needs `"CanonicalizeStates" -> Full`. `"Positional"` uses the same components with positions read from each state's own vertex labels, as the Wolfram Multicomputation paclet does. A list of any of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"` and `"ProducedEdges"` selects the components; in a list, `"ConsumedEdges"` is the input state with the consumed edges marked and `"ProducedEdges"` the output state with the produced edges marked, each up to isomorphism. A list runs on the CPU engine under `TargetDevice -> "GPU"`.
 - With `"ExploreFromCanonicalStatesOnly" -> True`, every property is the same as under full exploration; only the cost of the evolution changes. It needs `"CanonicalizeStates" -> Full`, and it is not applied with `"MaxStatesPerStep"` or with `"UniformRandom"` and `"MatchesPerStep"`.
-- `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, `"MatchesPerStateRule"`, `"TransitionRate"` and `"ExplorationProbability"` choose from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device. A transition a cap does not keep is not taken.
+- `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, `"MatchesPerStateRule"`, `"TransitionRate"` and `"ExplorationProbability"` choose from the identity of each transition or state together with `"RandomSeed"`. Under `"MaxStatesPerStep"`, under `"UniformRandom"` with `"MatchesPerStep"`, and under `"CanonicalizeStates"` `None` or `Automatic`, every rank and every draw also reads the step, so a history that returns to an isomorphic state draws its choice there again. Under `Full` without a step cap the ranks and draws read no step, so `"ExploreFromCanonicalStatesOnly"` keeps the same transitions as full exploration. The same seed keeps the same states at any thread count and on either device. A transition a cap does not keep is not taken.
 - Under `"CanonicalizeStates" -> Full`, a transition's identity uses the symmetry class of each matched hyperedge, so transitions related by a symmetry of the state are kept or dropped together.
 - `"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` count successor states as `"CanonicalizeStates"` identifies them: under `None` every transition makes its own state, under `Automatic` transitions that make identical edge lists make one state, and under `Full` transitions that make isomorphic states make one state. A successor state ranks by the lowest rank of the transitions into it, and every transition into a kept successor state is kept. `"MatchesPerStateRule"` and `"MatchesPerStep"` count transitions.
 - `"StateCost"` orders the successor states of `"MaxStatesPerStep"`, or the transitions of `"UniformRandom"` with `"MatchesPerStep"`, by the cost of the state each one makes, the rank ordering states of equal cost. The cost is a pure function of the `"Invariants"` names (`#VertexCount`, `#BallDimension`, ...) built from real numbers, `+`, `-`, `*`, `/`, `Abs`, `Min`, `Max`, `Sqrt`, `Log`, `Exp` and powers with a constant exponent; any other expression returns `$Failed` with the message `HGEvolve::statecost`. A state with no value for a name the cost reads, or whose cost is not a real number, has cost `Infinity`. The cost of a state is the same on both devices, so a cost-guided evolution keeps the same states at any thread count and on either device. Without a step cap the cost has no effect and the reply carries a warning.
@@ -210,8 +212,9 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - `"TransitionRate"` keeps a state's lowest-keyed transitions when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
 - Without a `"RandomSeed"` each call draws a new seed, as other random functions do; give `"RandomSeed"` or call `SeedRandom` first to repeat a sampled run.
 - `"Threads"` and `"Tuning"` change how fast an evolution runs and how much memory it takes; the states, events and relations are the same at every setting. `"Tuning"` takes an association of names and integers: `"CausalSetCapacity"` (the first table size, per shard, of the CPU engine's causal relation sets), `"ExpandChunk"` (the matches of one state rewritten per task on the CPU), `"GPUBlocks"` (the blocks of the GPU's persistent kernel), `"GPUBacklog"` (the waiting matches below which a GPU block takes one at a time), `"GPUMemoryLimit"` (the bytes of device memory a GPU evolution may use), `"GPUL2Persist"` (the bytes of L2 cache the GPU keeps for its state table; `0` keeps none) and `"MemoryLimit"` (the bytes of host memory an evolution may use). A name it does not list is skipped with the message `HGEvolve::warn`. The environment variables `HG_TUNE_THREADS`, `HG_TUNE_CAUSAL_SET_CAPACITY`, `HG_TUNE_EXPAND_CHUNK`, `HG_TUNE_GPU_BLOCKS`, `HG_TUNE_GPU_BACKLOG`, `HG_TUNE_GPU_MEMORY_LIMIT`, `HG_TUNE_GPU_L2_PERSIST` and `HG_TUNE_MEMORY_LIMIT` set the same values for every evolution of the engine process; an option given to [HGEvolve]() takes precedence.
-- `"TargetDevice" -> "GPU"` runs the evolution on the GPU engine bundled for the platform, which gives the same states, events and relations as the CPU. The GPU engine needs an NVIDIA GPU of compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 and NVIDIA driver 580 or newer. Where no GPU engine is bundled, or the machine has no usable NVIDIA GPU, the message `HGEvolve::gpudev` names the reason and the evolution runs on the CPU. The result is kept for the Wolfram Language session, so later GPU evaluations go to the CPU with the same message. `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead. An evolution whose result is partial, such as a GPU evolution that reaches a capacity limit, issues `HGEvolve::overflow` with the reason and gives the partial result.
-- A generated initial condition is named by *init*: `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` or `"Uniform"`. The same names go in the `"Type"` key of an association, where the other keys shape the instance and take precedence over the options below.
+- On the CPU, an evolution under `"EventOrderingFunction"` runs on one worker thread at every value of `"Threads"`. Its events are applied one at a time, each after the one before.
+- `"TargetDevice" -> "GPU"` runs the evolution on the GPU engine bundled for the platform, which gives the same states, events and relations as the CPU. The GPU engine needs an NVIDIA GPU of compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 and NVIDIA driver 580 or newer. Where no GPU engine is bundled, or the machine has no usable NVIDIA GPU, the message `HGEvolve::gpudev` names the reason and the evolution runs on the CPU. The result is kept for the Wolfram Language session, so later GPU evaluations go to the CPU with the same message. `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead. An evolution whose result is partial, such as a GPU evolution that reaches a capacity limit or an evolution on either device that reaches the `"MemoryLimit"` of `"Tuning"`, issues `HGEvolve::overflow` with the reason and gives the partial result.
+- A generated initial condition is named by *init*: `"Grid"` (also `"GridWithHoles"`), `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` or `"Uniform"`. The same names go in the `"Type"` key of an association, where the other keys shape the instance and take precedence over the options below. The association also takes keys with no option: `"RandomizeDirections"` (`True` by default, which reverses each edge of a grid, a surface or a `"BrillLindquist"`, `"Poisson"` or `"Uniform"` cloud with probability 1/2, and `False`, which gives the same edge directions for every seed), `"Diagonals"` (`False` by default, and `True`, which adds both diagonals of each cell of a `"Grid"`), `"Radius"` (the radius of a `"Cylinder"`, `"Sphere"`, `"Klein"` or `"Mobius"`, 1 by default and 2 for `"Mobius"`), `"MajorRadius"` and `"MinorRadius"` (the radii of a `"Torus"`, 3 and 1 by default). The radii change the coordinates of `"InitialCondition"` and not the edges.
 - The initial-condition options are:
 
 |   |   |   |
@@ -239,7 +242,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"PoissonMinDistance"` | `1.` | the least separation of the points of `"Poisson"` (key `"MinDistance"`) |
 
 - The seed of a generated initial condition is `"RandomSeed"` (key `"Seed"`).
-- Malformed input issues one message and gives <code>[$Failed]()</code>: `HGEvolve::badrule` for a rule, `HGEvolve::badinit` for *init*, `HGEvolve::steps` for *n*, `HGEvolve::unknownprop` for a property and `HGEvolve::unknownic` for an initial-condition name. A generated initial condition with no edges issues `HGEvolve::emptyic`. A platform whose paclet has no engine issues `HGEvolve::noengine`.
+- A grid, cylinder, torus, sphere, Klein bottle or Möbius strip of more than 2^31 (2,147,483,648) vertices is refused: the message `HGEvolve::enginemsg` names the vertex count, and the result is <code>[$Failed]()</code>.
+- Malformed input issues one message and gives <code>[$Failed]()</code>: `HGEvolve::badrule` for a rule, `HGEvolve::badinit` for *init*, `HGEvolve::steps` for *n*, `HGEvolve::unknownprop` for a property, `HGEvolve::unknownic` for an initial-condition name and `HGEvolve::evorder` for an `"EventOrderingFunction"` that is not `None`, `Automatic`, a string or a list of strings. A `"MultiedgeStyle"` other than `Automatic` or `"Merged"` issues `HGEvolve::badmultiedge`, and `Automatic` is used. A generated initial condition with no edges issues `HGEvolve::emptyic`. A platform whose paclet has no engine issues `HGEvolve::noengine`.
 - [HGSessionOpen]() takes the same arguments and options and opens an evolution that [HGSessionStep]() continues without running it again.
 
 ## Basic Examples
@@ -1361,6 +1365,14 @@ Lookup[Values @ HGEvolve[{{x, y}, {y, z}} -> {{x, z}}, {{1, 2}, {2, 3}, {3, 4}, 
 
 With the default order the events are those of `"Generational"`, one per step. The caps, `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"StateCost"` do not apply with it, and it cannot be combined with `"Generational"`.
 
+On the CPU each event is applied after the one before, so the evolution runs on one worker thread at every value of `"Threads"`. The `"Device"` property gives the number of worker threads of the evolution:
+
+```wl
+HGEvolve[{{x, y}, {y, z}} -> {{x, z}}, {{1, 2}, {2, 3}, {3, 4}, {4, 5}}, 3, "Device", "EventOrderingFunction" -> Automatic, "Threads" -> 4]["Threads"]
+```
+
+<!-- => UNRECORDED -->
+
 ### "UndirectedEdges"
 
 With `True`, a hyperedge of two vertices is an unordered pair. A left-hand edge `{x, y}` matches a hyperedge in either order, so the growth rule has two events on one hyperedge:
@@ -1618,7 +1630,7 @@ HGEvolve[chain, {{1, 2}}, 3, "Device", "Tuning" -> <|"CausalSetCapacity" -> 2048
 
 ---
 
-`"MemoryLimit"` is the bytes of host memory an evolution may use. The default is half of the physical memory, and a larger value is lowered to the physical memory. An evolution that reaches the limit stops and gives the states and events it has built, with the message `HGEvolve::overflow`. The `"Device"` property gives the limit:
+`"MemoryLimit"` is the bytes of host memory an evolution may use. The default is half of the physical memory, and a larger value is lowered to the physical memory. An evolution that reaches the limit stops and gives the states and events it has built, with the message `HGEvolve::overflow`. When the memory left cannot hold the whole result, the result has the four counts, and its states, events, relations and graphs are empty. The `"Device"` property gives the limit:
 
 ```wl
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
@@ -2080,3 +2092,19 @@ HGEvolve[chain, "Foo", 2, "NumStates"]
 ```
 
 <!-- => $Failed; the message HGEvolve::unknownic is issued -->
+
+An `"EventOrderingFunction"` that is not a name or a list of names:
+
+```wl
+HGEvolve[chain, {{1, 2}}, 2, "NumStates", "EventOrderingFunction" -> 3]
+```
+
+<!-- => $Failed; the message HGEvolve::evorder is issued -->
+
+A list of event ordering names that leaves two matches tied is refused by the engine. `{"OldestEdge"}` has no `"RuleOrdering"` or `"ReverseRuleOrdering"`:
+
+```wl
+HGEvolve[chain, {{1, 2}}, 2, "NumStates", "EventOrderingFunction" -> {"OldestEdge"}]
+```
+
+<!-- => UNRECORDED -->

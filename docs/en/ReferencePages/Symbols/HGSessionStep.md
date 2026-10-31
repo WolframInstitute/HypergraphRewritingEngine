@@ -32,10 +32,10 @@ RelatedTutorials: [Sessions, GettingStarted]
 | `"Delivery"` | `"Full"` | `"Full"` sends the whole result from the engine; `"Delta"` sends only what this session has not sent before |
 
 - With `"From"`, only the named frontier states are expanded; the others stay on the frontier, and a later step without `"From"` expands them up to the depth that step reaches.
-- A `"From"` naming a state that is not on the frontier issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; the session is unchanged.
+- A `"From"` naming a state that is not on the frontier issues the message `HGSessionStep::refused` and gives <code>[$Failed]()</code>; the session is unchanged.
 - With `"Delivery" -> "Delta"` the result is still the whole evolution; only the transfer from the engine is smaller.
 - A negative or non-integer *n* issues the message `HGSessionStep::negsteps` and gives <code>[$Failed]()</code>. A property [HGEvolve]() does not accept issues `HGEvolve::unknownprop` and gives <code>[$Failed]()</code>.
-- On a closed session it issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
+- On a closed session it issues the message `HGSessionStep::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
 - If the engine process that holds the session has ended (an aborted call ends it), it issues the message `HGSessionStep::expired` and gives <code>[$Failed]()</code>; open a new session.
 
 ## Basic Examples
@@ -195,7 +195,7 @@ HGSessionStep[s, 1];
 HGSessionStep[s, 1, "From" -> {0}]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 A number of steps that is not a non-negative integer:
 
@@ -221,7 +221,7 @@ HGSessionClose[s];
 HGSessionStep[s, 1]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 ```wl
 HGSessionStep[5, 1]

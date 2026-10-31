@@ -357,7 +357,9 @@ exact configuration. Sampling and capping options refine this as follows:
   (`HeldMatches::by_event_order`, ordered by the event order): the child drops the matches of
   the consumed edges and adds the matches of the produced edges, so a step costs the matching
   around one event and O(log M) for M held matches (`ordered_at_drain`). `Rewriter::apply`
-  applies the event, as it applies a multiway rewrite. On the device the block that matches a state
+  applies the event, as it applies a multiway rewrite. Each event depends on the one before, so
+  the host engine of such a job has one worker at every value of `Threads` (`run_job`, unless
+  `Search` is `"BestFirst"`). On the device the block that matches a state
   takes the first match in the order (`match_state_generation`, `greedy_disjoint` with limit 1)
   and emits a generation record of one match. The caps and draws do not apply with it. With the
   default order the events in creation order are those of `Generational`: a match on an edge of

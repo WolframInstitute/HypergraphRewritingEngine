@@ -16,7 +16,7 @@
 
 ### `hg.Session(rules, initial, *, data=None, **options)`
 
-`HGSessionOpen`. A process has at most one open session. A second open session raises `EngineError`. The identity options (`canonicalize_states`, `canonicalize_events`, `show_genesis_events`, `explore_from_canonical_states_only`) are fixed when the session opens.
+`HGSessionOpen`. A process has at most one open session. A second open session raises `EngineError`. The identity options (`canonicalize_states`, `canonicalize_events`, `show_genesis_events`, `explore_from_canonical_states_only`) are fixed when the session opens. A session with `search="BestFirst"` raises `EngineError`.
 
 - `s.step(steps=1, *, start=None, data=None)`: `HGSessionStep`. `start` is a list of frontier state ids to expand. The other frontier states stay on the frontier.
 - `s.query(*, data=None)`: `HGSessionQuery`.
@@ -106,7 +106,7 @@ Every array is a read-only NumPy view of the reply the engine built; nothing is 
 | `step_statistics_branchial` | `"StepStatisticsBranchial"` | `None`, `"Graph"`, `"Overlap"`, a list, or `"all"` |
 | `step_statistics_matrices` | `"StepStatisticsMatrices"` | `None`, a matrix name, a list, or `"all"` |
 | `step_statistics_matrix_limit` | `"StepStatisticsMatrixLimit"` | bytes; `None` is Automatic |
-| `threads` | `"Threads"` | int; `None` is Automatic (`HG_TUNE_THREADS`, else one per logical CPU) |
+| `threads` | `"Threads"` | int; `None` is Automatic (`HG_TUNE_THREADS`, else one per logical CPU). A job with `event_ordering_function` runs on one thread. |
 | `tuning` | `"Tuning"` | dict of tuning names to integers (docs/TUNING.md) |
 | `show_progress` | `"ShowProgress"` | bool; progress lines go to stderr |
 

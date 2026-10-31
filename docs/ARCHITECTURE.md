@@ -51,9 +51,9 @@ to start a worker again; after three such calls in a row the device's calls go t
 Start-up warnings arrive as log frames during the handshake and are issued with the first call's
 `HGEvolve::enginelog`. A crash or an Alt-. abort is a process
 kill, so it never takes down the notebook. The binary is
-shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the
-LibraryLink library remains only as a last-resort fallback and for the standalone
-analysis functions.
+shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms). The
+LibraryLink library (`performRewriting`) is the last fallback, used where no `hg_evolve`
+binary is present.
 
 The Python package `hgevolve` (python/) runs the same job code in the Python process. Its
 job is the paclet's envelope given as a `wxf::WXFValue`, which `parse_job` reads through
@@ -71,8 +71,8 @@ Core engine:
 - **`hypergraph/`** — the CPU engine (the heart). `ParallelEvolutionEngine`
   (`parallel_evolution.*`) drives the lock-free dataflow: match → rewrite → dedup as
   states are produced. `Hypergraph` (`hypergraph.*`) stores edges/states/events and
-  owns canonical-state dedup. Matching is a worst-case-optimal join
-  (`pattern_matcher.hpp`, `ancestry.hpp`, `signature.hpp`). Canonicalization under the exact
+  owns canonical-state dedup. Matching is an edge-at-a-time backtracking join
+  (`hgcommon/join_core.hpp`, `pattern_matcher.hpp`, `ancestry.hpp`, `signature.hpp`). Canonicalization under the exact
   mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
   state, per connected component when the state is disconnected and its refined partition has a
   cell of three or more vertices (`hgcommon/ir_core.hpp`); its hash selects the dedup key and its canonical form, stored once per canonical

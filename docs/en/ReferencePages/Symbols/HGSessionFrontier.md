@@ -22,7 +22,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - The frontier of a new session is its initial states. An empty frontier means every state has been expanded, so a further step adds nothing.
 - Some of the frontier's ids can be given to [HGSessionStep]() as `"From" -> {`*id*, ...`}` to expand only those states; the others stay on the frontier.
 - [HGSessionFrontier]() does not explore.
-- On a closed session it issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
+- On a closed session it issues the message `HGSessionStep::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
 - If the engine process that holds the session has ended (an aborted call ends it), it issues the message `HGSessionStep::expired` and gives <code>[$Failed]()</code>; open a new session.
 
 ## Basic Examples
@@ -156,7 +156,7 @@ HGSessionStep[s, 2];
 HGSessionStep[s, 1, "From" -> {0}]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 ```wl
 Sort[HGSessionFrontier[s]]
@@ -180,7 +180,7 @@ HGSessionClose[s];
 HGSessionFrontier[s]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 ```wl
 HGSessionFrontier[7]

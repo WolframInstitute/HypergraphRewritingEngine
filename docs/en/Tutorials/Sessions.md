@@ -72,7 +72,7 @@ A closed session cannot be read or stepped:
 HGSessionStep[session, 1]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 ## Expanding part of the frontier
 

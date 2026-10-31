@@ -45,7 +45,7 @@ Wolfram Physics Project*](paper/main.pdf). To cite it:
 - **Memory Limit**: `"Tuning" -> <|"MemoryLimit" -> bytes|>` (default half of physical memory). An evolution that reaches it stops and returns a partial result with `HGEvolve::overflow`.
 - **Brill-Lindquist Initial States**: points sprinkled in two or three dimensions with the Brill-Lindquist volume element of two black holes, optionally in a periodic box. The `"InitialCondition"` property returns the points with the edges.
 - **Python Client**: the `hgevolve` package ([python/](python/)) runs the CPU engine in-process with HGEvolve's options and returns NumPy arrays.
-- **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, per-step statistics (`"StepStatistics"`), and topology / initial-condition generators.
+- **Mathematica Paclet**: `HGEvolve` and the session functions, which run the engine in a worker process (`hg_evolve --serve`, over its standard input and output) and return the states, events, causal and branchial graphs, per-step statistics (`"StepStatistics"`) with dimension, curvature, geodesic and branchial measures, and generated initial conditions.
 
 ## Installation
 
@@ -86,11 +86,11 @@ init = {{1, 2}, {2, 3}, {3, 1}};
 result = HGEvolve[rule, init, 5, "All"];
 
 (* "All" returns an Association with these keys: *)
-result["NumStates"]      (* uint: number of states *)
-result["NumEvents"]      (* uint: number of events *)
-result["States"]         (* association State -> state edges *)
-result["Events"]         (* list of rewriting events *)
-result["CausalEdges"]    (* list of (producer, consumer) event pairs *)
+result["NumStates"]      (* integer: number of states *)
+result["NumEvents"]      (* integer: number of events *)
+result["States"]         (* association of state id -> state record *)
+result["Events"]         (* association of event id -> event record *)
+result["CausalEdges"]    (* list of records: producer and consumer event of each pair *)
 result["BranchialEdges"] (* event pairs that share an input state AND consume a
                             common edge -- two events out of one state that
                             consume disjoint edges are not branchially adjacent *)

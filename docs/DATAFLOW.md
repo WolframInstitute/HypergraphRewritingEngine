@@ -118,26 +118,18 @@ argument that licenses removing the GPU's per-step barrier.
 
 ## 4. CPU / GPU split
 
-Nine shared cores in `common/include/hgcommon/` are the single definition of everything that is
-not scheduling:
+The shared cores in `common/include/hgcommon/` (among them `ir_core`, `join_core`, `match_core`,
+`rewrite_core`, `event_core`, `signature_core`, `sampling_core` and `ring_core`) are the single
+definition of everything that is not scheduling.
 
-`core` · `event_core` · `ir_core` · `match_core` · `park` · `portable_intrinsics` ·
-`rewrite_core` · `signature_core` · `content_core`
+The `gpu/src/*.cu` files hold scheduling and device-specific layout. Both devices run the same
+IR canonicalizer, the same match binding, the same edge signatures, the same rewrite semantics
+and the same event identity from these cores.
 
-The eight `gpu/src/*.cu` files are scheduling and device-specific layout only. Both devices run
-the same exact canonicalizer, the same WL hash, the same match binding, the same edge
-signatures, the same rewrite semantics and the same event identity — so they agree by
-construction rather than by two maintained copies.
-
-**Two GPU schedulers exist on purpose.**
-
-| | role |
-|---|---|
-| persistent (`persistent.cu`) | DEFAULT. whole evolution in one launch, match + rewrite as roles over an MPMC ring, device-side quiescence, IR scratch from a device arena |
-| level-synchronous (`evolve.cu`) | the differential ORACLE the persistent path is checked against; `compute_state_dedup_keys` is the host twin of `state_key_device` |
-
-The level-synchronous loop is retained deliberately. Deleting it would delete the evidence that
-makes the persistent default defensible.
+**The GPU has one scheduler**, the persistent kernel (`persistent.cu`): the whole evolution in
+one launch, match and rewrite as roles over an MPMC ring, device-side quiescence, and IR scratch
+from a device arena. `compute_state_dedup_keys` on the host and `state_key_device` on the device
+compute the same state key.
 
 ---
 
@@ -145,29 +137,32 @@ makes the persistent default defensible.
 
 | # | invariant | upheld by | guarded? |
 |---|---|---|---|
-| I1 | no match is ever missed | forwarding + delta partition | gated by `test_match_completeness.cpp` (rate, with attribution). Batched 0/51 clean; eager has a residual race at <2% of runs (#76) |
-| I2 | no two distinct matches are conflated (CPU; the GPU cannot find one twice, see #78) | `seen_match_hashes_`, or step t's `MatchEpoch::seen` when match epochs are on (`parallel_evolution.hpp`), decided by `MatchRecord::operator==` | yes — `claim_match()` compares content on equal hash and probes on collision; gated by `test_match_dedup_exactness.cpp` |
-| I3 | isomorphic states share identity | canonical hash (IR exact / WL fast) | yes — oracle corpus + 204-row matrix |
-| I4 | WL is never a dedup key | IR on the exact path | yes on both: the GPU sizes its slot from the state's own counts and reports capacity as partial work with a warning; no path substitutes a coarser key (`gpu/include/hg_gpu/overflow.hpp`) |
-| I5 | output independent of worker count | canonical identity | partially — determinism gate fails ~1/30 (#65) |
-| I6 | CPU and GPU agree | differential corpus, both schedulers | yes for 8 of 9 identity cells; Automatic diverges (#66) |
-| I7 | causal/branchial exact under quotient | reconstruction from the skeleton | yes, verified edge-for-edge across 204 configs |
-| I8 | TR is order-independent | — | **NO** — force-disabled under quotient, blocked on a canonical slot tie-break |
+| I1 | no match is ever missed | forwarding + delta partition | yes: `test_match_completeness.cpp` runs every corpus case at 1, 2, 4, 8, 16 and 32 workers, twice, in the task-based, batched and eager submission modes, and requires zero matches unclaimed at their state's drain |
+| I2 | no two distinct matches are conflated (CPU; the GPU cannot find one twice, see #78) | `seen_match_hashes_`, or step t's `MatchEpoch::seen` when match epochs are on (`parallel_evolution.hpp`), decided by `MatchRecord::operator==` | yes: `claim_match()` compares content on equal hash and probes on collision; gated by `test_match_dedup_exactness.cpp` |
+| I3 | isomorphic states share identity | canonical hash (IR, `hgcommon/ir_core.hpp`) | yes: the oracle fuzz, `GoldenMatrix`, `test_ir_canonicalization.cpp` (including 1-WL-hard non-isomorphic pairs) |
+| I4 | no dedup key is coarser than the canonical hash | IR on every path | yes on both: the GPU sizes its slot from the state's own counts and reports capacity as partial work with a warning (`gpu/include/hg_gpu/overflow.hpp`) |
+| I5 | output independent of worker count | canonical identity | yes: `CausalDeterminism.*` at 1-32 threads, `OracleCorpus.DeterministicAcrossThreadCounts`, and the worker-count fuzz at 1, 4, 16, 32 and one count from 2 to 31 (docs/VERIFICATION_STATUS.md) |
+| I6 | CPU and GPU agree | the shared cores | yes: `reference/oracle_fuzz.wls` runs every case on both devices under every state and event identity mode, and the golden corpus gives 12 of 12 cases equal on CPU and GPU |
+| I7 | causal/branchial exact under quotient | reconstruction from the skeleton | yes: `cost_matrix` (oracle EXACT) and the golden corpus (docs/SPEC.md §5.5) |
+| I8 | TR is order-independent | the reduction of a DAG is unique: `hgcommon::redundant_producers` in the replay, `hgcommon::tr_reduce` on read | yes: `causal_tr_exactness_probe` and `CausalTrExactnessTest.*` at 1-64 workers (docs/SPEC.md §5.5) |
 
-**I1 is gated but not yet clean.** Every downstream artifact — states, events, causal edges, branchial
-edges, transitive reduction — is computed from the match set. A dropped or conflated match
-corrupts all of them silently and self-consistently: the run simply produces less and looks fine.
-Nothing else in this table can be trusted above them.
+Every downstream artifact (states, events, causal edges, branchial edges, transitive reduction)
+is computed from the match set, so I1 and I2 are the invariants the others depend on. A dropped
+or conflated match changes all of them consistently, so an end-to-end count cannot find it, and
+`test_match_completeness.cpp` checks each state's matches at its drain.
 
 ---
 
 ## 6. Known structural ceilings
 
-- **GPU occupancy** (#72): 32-thread blocks × SM-count grid ≈ 4096 resident threads, ~4% of a
-  4090, and one global `head_`/`tail_` pair every worker CASes. Measured to get WORSE past the SM
-  count, so it is a design ceiling, not a tuning parameter.
-- **Matching cost** (#21 + #49): the join has never been placed against the AGM bound. "Is
-  forwarding optimal" and "is the join worst-case-optimal" are the same question.
-- **Sampling** (#63, #64): fixed-rate thinning is a knife-edge (q = 1/8 and 1/4 go extinct at
-  depth 1, q = 1/2 accelerates) and no release gate checks that a sampled run's observables match
-  the unpruned run's.
+- **GPU occupancy**: the persistent grid is SMs x min(the blocks of `k_persistent_evolve` one SM
+  holds, 8) blocks of 32 threads (`default_persistent_grid`). On the RTX 4090 that is 1024
+  blocks, 256 of 1,536 thread slots per SM. The block-count sweep over 32 to 3072 blocks has its
+  minimum time at 1024 (docs/TUNING.md D1). One match queue (`RingBuffer`, one `head`/`tail`
+  pair) serves every block.
+- **Matching cost**: the join (`hgcommon/join_core.hpp`) binds one pattern edge at a time by
+  backtracking. Its cost has not been compared with the AGM bound.
+- **Sampling**: below the branching factor a fixed `TransitionRate` makes a sampled evolution go
+  extinct. The spine keeps a state's transitions of smallest seeded rank when every draw at the
+  state failed (docs/ARCHITECTURE.md, Sampling). No release gate compares a sampled run's
+  observables with the unpruned run's.

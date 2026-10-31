@@ -18,7 +18,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 
 - *session* is an [HGSessionObject]() given by [HGSessionOpen]().
 - [HGSessionClose]() gives [Null]().
-- Closing discards the session's evolution. [HGSessionStep](), [HGSessionQuery](), [HGSessionFrontier]() and [HGSessionClose]() on a closed session issue the message `HGSessionOpen::refused` and give <code>[$Failed]()</code>.
+- Closing discards the session's evolution. [HGSessionStep](), [HGSessionQuery](), [HGSessionFrontier]() and [HGSessionClose]() on a closed session issue the message `HGSessionStep::refused` and give <code>[$Failed]()</code>.
 - A session's handle is not reused, so a verb on a closed session is refused rather than answered from a session opened later.
 - One session is open at a time for each device. [HGSessionOpen]() is refused while another session is open, so a session that is no longer needed should be closed.
 - An expression that is not an [HGSessionObject]() issues the message `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
@@ -96,7 +96,7 @@ HGSessionClose[s];
 HGSessionQuery[s, "NumEvents"]
 ```
 
-<!-- => $Failed; the message HGSessionOpen::refused is issued -->
+<!-- => $Failed; the message HGSessionStep::refused is issued -->
 
 An expression that is not a session:
 

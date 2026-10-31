@@ -48,7 +48,7 @@ A generated initial condition is a type name or a spec dict, as in HGEvolve: `hg
 - **An engine crash ends the Python process.** The engine runs in the interpreter's process, so a segmentation fault or abort in the engine takes the interpreter with it, and no exception is raised. Work that may crash, or that should be stoppable from outside, belongs in a child process (`examples/parallel_sweep.py`).
 - A job the engine refuses raises `hg.EngineError` with the engine's message, and the reply's warnings are issued as `hg.EngineWarning`.
 - The engine's host memory limit applies in the Python process as in `hg_evolve`: `tuning={"MemoryLimit": bytes}` or `HG_TUNE_MEMORY_LIMIT`. An evolution that reaches it is truncated with a "memory exhausted" `EngineWarning`, and the reply holds what was built (`tests/test_memory_limit.py`). An address-space cap (`resource.setrlimit(resource.RLIMIT_AS, ...)` or `ulimit -v`) bounds the whole process in the same way. Under such a cap on a many-core machine, set `OPENBLAS_NUM_THREADS` before NumPy is imported, or NumPy's import stalls.
-- The engine uses `threads` worker threads, by default `HG_TUNE_THREADS` or one per logical CPU. One job runs at a time per process, with the GIL released while it runs. A process has at most one open `Session`.
+- The engine uses `threads` worker threads, by default `HG_TUNE_THREADS` or one per logical CPU. A job with `event_ordering_function` runs on one worker thread. One job runs at a time per process, with the GIL released while it runs. A process has at most one open `Session`.
 
 ## Examples
 

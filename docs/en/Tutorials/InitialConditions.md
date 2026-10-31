@@ -102,7 +102,7 @@ Two copies of one state are two states by default, and one under `"CanonicalizeS
 
 A family can be named in two ways. As a string, shaped by options of [HGEvolve](): <code>[HGEvolve]()[*rule*, "Grid", *n*, *prop*, "GridWidth" -> 4]</code>. Or as an association whose `"Type"` is the family and whose other keys shape it: <code>[HGEvolve]()[*rule*, <|"Type" -> "Grid", "Width" -> 4|>, *n*, *prop*]</code>. A key in the association takes precedence over the option; a key left out takes the option's value.
 
-The names are `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"` (also `"KleinBottle"`), `"Mobius"` (also `"MobiusStrip"`), `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` (also `"PoissonDisk"`) and `"Uniform"` (also `"UniformRandom"`). Any other name issues the message `HGEvolve::unknownic`.
+The names are `"Grid"` (also `"GridWithHoles"`), `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"` (also `"KleinBottle"`), `"Mobius"` (also `"MobiusStrip"`), `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` (also `"PoissonDisk"`) and `"Uniform"` (also `"UniformRandom"`). Any other name issues the message `HGEvolve::unknownic`.
 
 The association's `"Width"` takes precedence over `"GridWidth"`, so this is a 4 by 4 grid:
 
@@ -170,6 +170,32 @@ HGEvolve[rule, <|"Type" -> "Grid", "Width" -> 4, "Height" -> 3, "Seed" -> 1|>, 0
 
 <!-- => {{0, 0, 1}, {1, 0, 2}, {2, 3, 2}, {3, 4, 2}, {4, 4, 5}, {5, 1, 6}, {6, 1, 3}, {7, 7, 3}, {8, 3, 5}, {9, 8, 5}, {10, 6, 9}, {11, 7, 6}, {12, 7, 10}, {13, 8, 7}, {14, 11, 8}, {15, 9, 10}, {16, 10, 11}} -->
 
+Two keys have no option. The key `"Diagonals"` with value `True` adds both diagonals of each cell, so the 4 by 3 grid has 12 more edges:
+
+```wl
+Length[HGEvolve[rule, <|"Type" -> "Grid", "Width" -> 4, "Height" -> 3, "Diagonals" -> True, "Seed" -> 1|>, 0, "GlobalEdges"]]
+```
+
+<!-- => 29 -->
+
+The key `"RandomizeDirections"` with value `False` keeps every edge in the generator's own direction, so the seed has no effect on the grid:
+
+```wl
+SameQ @@ Table[HGEvolve[rule, <|"Type" -> "Grid", "Width" -> 4, "Height" -> 3, "RandomizeDirections" -> False, "Seed" -> s|>, 0, "GlobalEdges"], {s, 3}]
+```
+
+<!-- => True -->
+
+`"RandomizeDirections"` applies to the surfaces and to the `"BrillLindquist"`, `"Poisson"` and `"Uniform"` clouds as well.
+
+A lattice has at most 2^31 vertices. A larger grid, cylinder, torus, sphere, Klein bottle or Möbius strip is refused before it is generated:
+
+```wl
+HGEvolve[rule, <|"Type" -> "Grid", "Width" -> 50000, "Height" -> 50000|>, 0, "NumStates"]
+```
+
+<!-- => $Failed; the message HGEvolve::enginemsg is issued -->
+
 ## Surfaces
 
 Five families join the sides of a grid:
@@ -180,7 +206,7 @@ Five families join the sides of a grid:
 - `"Mobius"` joins two sides of a grid of `"Resolution"` columns and `"Width"` rows, with one side reversed.
 - `"Sphere"` has `"Resolution"` rings of latitude, with fewer vertices on the rings near the poles, and joins each vertex to the next on its ring and to the nearest vertex of the next ring.
 
-With options, the resolution is `"GridWidth"` and the height is `"GridHeight"`; the Möbius width is 5 unless the association gives `"Width"`. Edge directions are drawn from `"RandomSeed"`.
+With options, the resolution is `"GridWidth"` and the height is `"GridHeight"`; the Möbius width is 5 unless the association gives `"Width"`. Edge directions are drawn from `"RandomSeed"`. The association keys `"Radius"` (1 for the cylinder, sphere and Klein bottle, 2 for the Möbius strip) and `"MajorRadius"` and `"MinorRadius"` (3 and 1 for the torus) set the size of the surface in the coordinates of the `"InitialCondition"` property. They leave the edges unchanged.
 
 A torus of resolution 4 has 32 edges:
 
