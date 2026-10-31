@@ -550,64 +550,102 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
         const uint32_t npos = hgcommon::step_positions(ds.sampling_seed, s + 1u, total, want,
                                                        sel.pos);
         // The kept transitions, (block << 32 | slot), in sel.rank.
+        // A run whose arrays the pool could not hold has null arrays, distinct keys and
+        // kHeldNone blocks: the keep below skips its transitions, and kHeldPoolFull retries the
+        // run with a larger pool.
         struct Run {
             const HeldCtx& c;
             HeldEntry* entries;   // [size], sorted by key
             uint32_t*  blocks;
-            __device__ uint64_t key(uint64_t q) const { return entries[q].key; }
-            __device__ uint32_t block(uint64_t q) const { return blocks[q]; }
-            __device__ uint32_t value(uint64_t q) const { return entries[q].value; }
+            __device__ uint64_t key(uint64_t q) const { return blocks ? entries[q].key : q; }
+            __device__ uint32_t block(uint64_t q) const { return blocks ? blocks[q] : kHeldNone; }
+            __device__ uint32_t value(uint64_t q) const { return blocks ? entries[q].value : 0u; }
+        };
+        // The arrays of the last merged run, freed by the next merge and after the selection.
+        struct MergedWords {
+            HeldEntry* entries = nullptr;
+            uint32_t*  blocks = nullptr;
+            uint64_t   size = 0;
         };
         struct Blocks {
             const HeldCtx& c;
             const StepSelectScratch& sel;
             uint32_t nb;
             bool* failed;
+            MergedWords* words;
             __device__ uint32_t count() const { return nb; }
             __device__ uint64_t group(uint32_t i) const { return sel.group[i]; }
             __device__ uint64_t size(uint32_t i) const { return c.sets[sel.idx[i]].order.size; }
             __device__ uint32_t select(uint32_t i, uint64_t p, uint64_t* lo, uint64_t* hi) const {
                 return hgcommon::ko_select(c.sets[sel.idx[i]].order, p, lo, hi).value;
             }
-            // Equal groups (a lineage label collision): the blocks' entries merged by key, in
-            // pool words freed at the end of the selection.
+            __device__ void release() const {
+                held_free(c.pool, reinterpret_cast<uint32_t*>(words->entries), 4ull * words->size);
+                held_free(c.pool, words->blocks, words->size);
+                *words = MergedWords{};
+            }
+            // Equal groups (a lineage label collision): the blocks' entries merged by key, equal
+            // keys in block order and then in their block's order, in pool words freed by the
+            // next merge or by release(). Each block's entries are read in key order through a
+            // cursor (bucket, index) in at[2j], at[2j + 1]; each output entry is the first least
+            // key among the h - g cursors: O(size (h - g)).
             __device__ Run merged(uint32_t g, uint32_t h) const {
+                release();
+                const uint32_t k = h - g;
                 uint64_t size = 0;
                 for (uint32_t i = g; i < h; ++i) size += c.sets[sel.idx[i]].order.size;
                 HeldEntry* e = reinterpret_cast<HeldEntry*>(held_alloc(c.pool, 4ull * size));
                 uint32_t* blk = held_alloc(c.pool, size);
-                if (!e || !blk) {
+                *words = MergedWords{e, blk, size};
+                uint32_t* at = held_alloc(c.pool, 2ull * k);
+                if (!e || !blk || !at) {
+                    held_free(c.pool, at, 2ull * k);
                     *failed = true;
-                    return Run{c, e, blk};
+                    return Run{c, nullptr, nullptr};
                 }
-                uint64_t w = 0;
-                for (uint32_t i = g; i < h; ++i)
-                    hgcommon::ko_for_each(c.sets[sel.idx[i]].order, [&](const HeldEntry& x) {
-                        e[w] = x;
-                        blk[w] = i;
-                        ++w;
-                    });
-                for (uint64_t a = 1; a < size; ++a) {
-                    const HeldEntry x = e[a];
-                    const uint32_t xb = blk[a];
-                    uint64_t j = a;
-                    while (j > 0 && e[j - 1].key > x.key) {
-                        e[j] = e[j - 1];
-                        blk[j] = blk[j - 1];
-                        --j;
+                // Moves cursor j past empty buckets; at[2j] is 2^bits when block g + j is done.
+                auto settle = [&](uint32_t j) {
+                    const DeviceKeyOrder& o = c.sets[sel.idx[g + j]].order;
+                    const uint32_t nbk = hgcommon::ko_buckets(o.bits);
+                    while (at[2u * j] < nbk && at[2u * j + 1u] == o.count(at[2u * j])) {
+                        ++at[2u * j];
+                        at[2u * j + 1u] = 0;
                     }
-                    e[j] = x;
-                    blk[j] = xb;
+                };
+                for (uint32_t j = 0; j < k; ++j) {
+                    at[2u * j] = 0;
+                    at[2u * j + 1u] = 0;
+                    settle(j);
                 }
+                for (uint64_t w = 0; w < size; ++w) {
+                    uint32_t best = k;
+                    HeldEntry x{};
+                    for (uint32_t j = 0; j < k; ++j) {
+                        const DeviceKeyOrder& o = c.sets[sel.idx[g + j]].order;
+                        if (at[2u * j] == hgcommon::ko_buckets(o.bits)) continue;
+                        const HeldEntry& y = o.run(at[2u * j])[at[2u * j + 1u]];
+                        if (best == k || y.key < x.key) {
+                            best = j;
+                            x = y;
+                        }
+                    }
+                    e[w] = x;
+                    blk[w] = g + best;
+                    ++at[2u * best + 1u];
+                    settle(best);
+                }
+                held_free(c.pool, at, 2ull * k);
                 return Run{c, e, blk};
             }
         };
         bool merge_failed = false;
-        Blocks view{c, sel, nb, &merge_failed};
+        MergedWords merged_words;
+        Blocks view{c, sel, nb, &merge_failed, &merged_words};
         uint32_t kept = 0;
         hgcommon::step_select_blocks(view, sel.pos, npos, [&](uint32_t block, uint32_t slot) {
-            if (kept < sel.cap) sel.rank[kept++] = (uint64_t{block} << 32) | slot;
+            if (block < nb && kept < sel.cap) sel.rank[kept++] = (uint64_t{block} << 32) | slot;
         });
+        view.release();
         if (merge_failed) ds.errors.record(ErrorKind::kHeldPoolFull);
         step_book(ds, s + 1u, kept);
         // How many kept transitions each block hands its set to, in the group's position word.
@@ -662,10 +700,13 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
             rec.matched_edges[kHeldRecordWord] = static_cast<uint32_t>(sel.pos[k]);
             publish_match(rec);
         }
-        // A block no transition takes: its set is freed.
+        // A block whose set no published transition takes: its set is freed. A block whose last
+        // kept transition found the rewrite pool full handed only copies on.
         for (uint32_t b = 0; b < nb; ++b) {
             bool taken = false;
-            for (uint32_t k = 0; k < kept && !taken; ++k) taken = (sel.rank[k] >> 32) == b;
+            for (uint32_t k = 0; k < kept && !taken; ++k)
+                taken = sel.pos[k] != kNoSet && (sel.rank[k] >> 32) == b &&
+                        static_cast<uint32_t>(sel.pos[k]) == sel.idx[b];
             if (!taken) held_free_set(c, sel.idx[b]);
         }
     }

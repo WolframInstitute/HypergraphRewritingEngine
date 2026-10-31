@@ -14,7 +14,7 @@
 //
 // Storage comes from a pool of words in power-of-two size classes (HeldPoolView): a freed array
 // goes on its class's stack and the next claim of that class takes it, so the live memory follows
-// the live sets. One thread updates a set at a time: a set belongs to one state of one step.
+// the live sets. One block updates a set at a time: a set belongs to one state of one step.
 
 #include <cstdint>
 
@@ -702,8 +702,9 @@ __device__ inline bool held_update_block(const HeldCtx& c, uint32_t h, StateId c
                           if (s_ok) s_ok = held_add(c, s, r, e, n);
                       });
         s.state = child;
-        held_free(c.pool, buf, buf_words);
     }
+    // The buffer goes back to the pool whether or not the set could grow for the matches.
+    if (lane == 0) held_free(c.pool, buf, buf_words);
     __syncthreads();
     return s_ok;
 }

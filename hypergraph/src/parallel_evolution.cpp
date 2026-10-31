@@ -1238,8 +1238,8 @@ void ParallelEvolutionEngine::select_positions(uint32_t step, DepthExtra& x) {
                 b[i].set->order.for_each([&](const KeyOrderIndex<uint32_t>::Entry& e) {
                     run.entries.push_back(Merged{e.key, i, e.value});
                 });
-            std::sort(run.entries.begin(), run.entries.end(),
-                      [](const Merged& x, const Merged& y) { return x.key < y.key; });
+            std::stable_sort(run.entries.begin(), run.entries.end(),
+                             [](const Merged& x, const Merged& y) { return x.key < y.key; });
             return run;
         }
     } view{blocks};
