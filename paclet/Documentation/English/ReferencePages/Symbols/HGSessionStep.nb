@@ -10,10 +10,10 @@
 NotebookFileLineBreakTest
 NotebookFileLineBreakTest
 NotebookDataPosition[       154,          7]
-NotebookDataLength[     85627,       2283]
-NotebookOptionsPosition[     70527,       1969]
-NotebookOutlinePosition[     71705,       2003]
-CellTagsIndexPosition[     71625,       1998]
+NotebookDataLength[     85629,       2283]
+NotebookOptionsPosition[     70529,       1969]
+NotebookOutlinePosition[     71707,       2003]
+CellTagsIndexPosition[     71627,       1998]
 WindowFrame->Normal*)
 
 (* Beginning of Notebook Content *)
@@ -305,7 +305,7 @@ Cell[TextData[{
   "134534fb-1061-d656-417a-ada5a115bcbc"],
  " naming a state that is not on the frontier issues the message ",
  Cell[BoxData[
-  RowBox[{"HGSessionOpen", "::", "refused"}]], "InlineFormula",
+  RowBox[{"HGSessionStep", "::", "refused"}]], "InlineFormula",
   FontSize->0.9 Inherited,ExpressionUUID->
   "2cd98fd2-34e7-e188-54e6-269cbc93b3d2"],
  " and gives ",
@@ -381,7 +381,7 @@ Cell[TextData[{
 Cell[TextData[{
  "On a closed session it issues the message ",
  Cell[BoxData[
-  RowBox[{"HGSessionOpen", "::", "refused"}]], "InlineFormula",
+  RowBox[{"HGSessionStep", "::", "refused"}]], "InlineFormula",
   FontSize->0.9 Inherited,ExpressionUUID->
   "7b6211f5-475c-1194-2911-88bf72e963fe"],
  " and gives ",
@@ -840,7 +840,7 @@ Cell[BoxData[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
      Graph[{0, 1, 2, 3, 4, 5, 6, 7, 8, 
-      9}, {{{1, 2}, {2, 3}, {2, 4}, {4, 5}, {4, 6}, {4, 7}, {3, 8}, {3, 9}, {
+      9}, {{{1, 2}, {2, 3}, {2, 4}, {4, 5}, {3, 6}, {4, 7}, {4, 8}, {3, 9}, {
        3, 10}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
@@ -860,11 +860,11 @@ Cell[BoxData[
            Row[{"Event ", 5}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
-         DirectedEdge[2, 7, <|"EventId" -> 6|>] -> Placed[
-           Row[{"Event ", 6}], Tooltip], 
-         DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Placed[
-           Row[{"Event ", 4}], Tooltip]}, 
-       EdgeStyle -> {DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Directive[
+         DirectedEdge[2, 5, <|"EventId" -> 4|>] -> Placed[
+           Row[{"Event ", 4}], Tooltip], 
+         DirectedEdge[3, 7, <|"EventId" -> 6|>] -> Placed[
+           Row[{"Event ", 6}], Tooltip]}, 
+       EdgeStyle -> {DirectedEdge[3, 7, <|"EventId" -> 6|>] -> Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
          Directive[
@@ -878,10 +878,10 @@ Cell[BoxData[
            Arrowheads[Small]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[2, 8, <|"EventId" -> 7|>] -> 
+           Arrowheads[Small]], DirectedEdge[2, 5, <|"EventId" -> 4|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[2, 7, <|"EventId" -> 6|>] -> 
+           Arrowheads[Small]], DirectedEdge[2, 8, <|"EventId" -> 7|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[1, 2, <|"EventId" -> 1|>] -> 
@@ -1020,9 +1020,9 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 1.}, {-1., 0.}}, 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "6"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 6}], "Tooltip"]& ], 
+          Row[{"Event ", 4}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
@@ -1048,16 +1048,16 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{-3., 1.}, {-3., 0.}}, 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 4}], "Tooltip"]& ], 
+          Row[{"Event ", 5}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{-3., 1.}, {-2., 0.}}, 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "6"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 5}], "Tooltip"]& ]}, 
+          Row[{"Event ", 6}], "Tooltip"]& ]}, 
        {Hue[0.6, 0.5, 1.], EdgeForm[{GrayLevel[0], Opacity[0.7]}], 
         TagBox[
          TooltipBox[
@@ -1207,7 +1207,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-3., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-1., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1236,7 +1236,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-2., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-3., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1265,7 +1265,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-1., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-2., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1724,10 +1724,10 @@ Cell[BoxData[{
 Cell[BoxData[
  RowBox[{
   StyleBox[
-   RowBox[{"HGSessionOpen", "::", "refused"}], "MessageName"], 
+   RowBox[{"HGSessionStep", "::", "refused"}], "MessageName"], 
   RowBox[{":", " "}], 
   RowBox[{"The", " ", "engine", " ", "refused", " ", "this", " ", "session", " ", 
-   RowBox[{"job", ":", " "}]}], 
+   RowBox[{"verb", ":", " "}]}], 
   RowBox[{
    RowBox[{"Step", ":", " ", 
     RowBox[{
@@ -1832,12 +1832,12 @@ Cell[BoxData[{
 Cell[BoxData[
  RowBox[{
   StyleBox[
-   RowBox[{"HGSessionOpen", "::", "refused"}], "MessageName"], 
+   RowBox[{"HGSessionStep", "::", "refused"}], "MessageName"], 
   RowBox[{":", " "}], 
   RowBox[{"The", " ", "engine", " ", "refused", " ", "this", " ", "session", " ", 
-   RowBox[{"job", ":", " "}]}], 
+   RowBox[{"verb", ":", " "}]}], 
   RowBox[{
-  "session", " ", "3999918637447762919", " ", "is", " ", "not", " ", "this", " ", 
+  "session", " ", "4313071316490143925", " ", "is", " ", "not", " ", "this", " ", 
    RowBox[{"worker", "'"}], "s", " ", "live", " ", "session"}]}]], "Message", \
 "MSG",
  CellID->1516831433,ExpressionUUID->"6f6ad260-8ee1-565a-1569-d44a2a943ca0"],
@@ -1997,7 +1997,7 @@ CellTagsIndex->{
 *)
 (*CellTagsIndex
 CellTagsIndex->{
- {"ExtendedExamples", 71431, 1991}
+ {"ExtendedExamples", 71433, 1991}
  }
 *)
 (*NotebookFileOutline
@@ -2208,80 +2208,80 @@ Cell[60998, 1683, 314, 6, 70, "ExampleText",ExpressionUUID->"60049622-f570-0e0e-
 Cell[CellGroupData[{
 Cell[61331, 1693, 1011, 28, 70, "Input",ExpressionUUID->"40ea559d-da93-7842-70ea-4cc6df264aa8",
  CellID->185668621],
-Cell[62317, 1723, 873, 19, 70, "Message",ExpressionUUID->"23ccc6ee-92c0-e596-51f3-dfc8277acffc",
+Cell[62317, 1723, 874, 19, 70, "Message",ExpressionUUID->"23ccc6ee-92c0-e596-51f3-dfc8277acffc",
  CellID->2064602208],
-Cell[63174, 1744, 135, 2, 70, "Output",ExpressionUUID->"114d8d02-b276-9c05-4772-256fc700e76f",
+Cell[63175, 1744, 135, 2, 70, "Output",ExpressionUUID->"114d8d02-b276-9c05-4772-256fc700e76f",
  CellID->489176174]
 }, Open  ]],
-Cell[63322, 1749, 153, 1, 70, "ExampleText",ExpressionUUID->"2dc22b63-32d1-862f-5bf1-c34d4765ed75",
+Cell[63323, 1749, 153, 1, 70, "ExampleText",ExpressionUUID->"2dc22b63-32d1-862f-5bf1-c34d4765ed75",
  CellID->1202300457],
 Cell[CellGroupData[{
-Cell[63499, 1754, 199, 4, 70, "Input",ExpressionUUID->"36ea7e2c-072a-2221-5eea-7076b2df710b",
+Cell[63500, 1754, 199, 4, 70, "Input",ExpressionUUID->"36ea7e2c-072a-2221-5eea-7076b2df710b",
  CellID->497123094],
-Cell[63697, 1760, 675, 17, 70, "Message",ExpressionUUID->"5b23761c-2477-64e8-0ad1-68464d024e32",
+Cell[63698, 1760, 675, 17, 70, "Message",ExpressionUUID->"5b23761c-2477-64e8-0ad1-68464d024e32",
  CellID->1847341574],
-Cell[64358, 1779, 135, 2, 70, "Output",ExpressionUUID->"73216bcf-7cf1-61ac-22de-82a9748433f6",
+Cell[64359, 1779, 135, 2, 70, "Output",ExpressionUUID->"73216bcf-7cf1-61ac-22de-82a9748433f6",
  CellID->247880487]
 }, Open  ]],
-Cell[64506, 1784, 170, 3, 70, "Input",ExpressionUUID->"69fa63e8-c0ca-4913-1f9a-7ab5f17f1879",
+Cell[64507, 1784, 170, 3, 70, "Input",ExpressionUUID->"69fa63e8-c0ca-4913-1f9a-7ab5f17f1879",
  CellID->1281425352],
 Cell[CellGroupData[{
-Cell[64698, 1791, 248, 5, 70, "ExampleDelimiter",ExpressionUUID->"409bca18-cbd6-e54d-70b8-ec45ee60cf97",
+Cell[64699, 1791, 248, 5, 70, "ExampleDelimiter",ExpressionUUID->"409bca18-cbd6-e54d-70b8-ec45ee60cf97",
  CellID->1260025646],
-Cell[64944, 1798, 161, 2, 70, "ExampleText",ExpressionUUID->"10b62b5f-1d3f-f012-404d-c31994cbc378",
+Cell[64945, 1798, 161, 2, 70, "ExampleText",ExpressionUUID->"10b62b5f-1d3f-f012-404d-c31994cbc378",
  CellID->1157431214],
 Cell[CellGroupData[{
-Cell[65128, 1804, 895, 25, 70, "Input",ExpressionUUID->"79984792-c453-565a-2fb8-5edfede63ca0",
+Cell[65129, 1804, 895, 25, 70, "Input",ExpressionUUID->"79984792-c453-565a-2fb8-5edfede63ca0",
  CellID->1682938841],
-Cell[66001, 1831, 506, 11, 70, "Message",ExpressionUUID->"1d45428e-8fa1-6801-4b7b-5be82a543b6b",
+Cell[66002, 1831, 507, 11, 70, "Message",ExpressionUUID->"1d45428e-8fa1-6801-4b7b-5be82a543b6b",
  CellID->1516831433],
-Cell[66499, 1844, 136, 2, 70, "Output",ExpressionUUID->"604bb87d-3174-a116-1048-32274006f07c",
+Cell[66501, 1844, 136, 2, 70, "Output",ExpressionUUID->"604bb87d-3174-a116-1048-32274006f07c",
  CellID->1460348235]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[66670, 1851, 198, 4, 70, "Input",ExpressionUUID->"763191a2-6f8b-197a-1fce-080c0a3e6840",
+Cell[66672, 1851, 198, 4, 70, "Input",ExpressionUUID->"763191a2-6f8b-197a-1fce-080c0a3e6840",
  CellID->1569596213],
-Cell[66867, 1857, 339, 8, 70, "Message",ExpressionUUID->"635fdfdb-2856-deda-1164-d68549e0a420",
+Cell[66869, 1857, 339, 8, 70, "Message",ExpressionUUID->"635fdfdb-2856-deda-1164-d68549e0a420",
  CellID->1134507591],
-Cell[67201, 1867, 136, 2, 70, "Output",ExpressionUUID->"0f6eb37a-d9e9-6713-3515-2b27df9c4a79",
+Cell[67203, 1867, 136, 2, 70, "Output",ExpressionUUID->"0f6eb37a-d9e9-6713-3515-2b27df9c4a79",
  CellID->1263158083]
 }, Open  ]]
 }, Open  ]]
 }, Open  ]],
-Cell[67374, 1874, 262, 5, 70, "ExampleSection",ExpressionUUID->"5c8469dd-bfc7-2a7a-04bb-80873a727940",
+Cell[67376, 1874, 262, 5, 70, "ExampleSection",ExpressionUUID->"5c8469dd-bfc7-2a7a-04bb-80873a727940",
  CellID->1653164318],
-Cell[67634, 1881, 254, 5, 70, "ExampleSection",ExpressionUUID->"182ee0c1-720e-fc83-49d5-f9ab07b8c6e9",
+Cell[67636, 1881, 254, 5, 70, "ExampleSection",ExpressionUUID->"182ee0c1-720e-fc83-49d5-f9ab07b8c6e9",
  CellID->589267740]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[67920, 1891, 111, 1, 70, "MetadataSection",ExpressionUUID->"3921e4bb-f5e4-3596-68de-fde483969ffc",
+Cell[67922, 1891, 111, 1, 70, "MetadataSection",ExpressionUUID->"3921e4bb-f5e4-3596-68de-fde483969ffc",
  CellID->311882160],
-Cell[68033, 1894, 488, 12, 70, "History",ExpressionUUID->"13db9173-5387-1c16-41f8-093d6632677c",
+Cell[68035, 1894, 488, 12, 70, "History",ExpressionUUID->"13db9173-5387-1c16-41f8-093d6632677c",
  CellID->341476719],
 Cell[CellGroupData[{
-Cell[68534, 1910, 498, 13, 70, "CategorizationSection",ExpressionUUID->"6804c0ab-fd16-b7db-183b-d9f4f4a01d21",
+Cell[68536, 1910, 498, 13, 70, "CategorizationSection",ExpressionUUID->"6804c0ab-fd16-b7db-183b-d9f4f4a01d21",
  CellID->1755438392],
-Cell[69022, 1925, 136, 2, 70, "Categorization",ExpressionUUID->"77076ae4-09e5-8344-1d3c-83ceaf91d1ae",
+Cell[69024, 1925, 136, 2, 70, "Categorization",ExpressionUUID->"77076ae4-09e5-8344-1d3c-83ceaf91d1ae",
  CellID->686433507],
-Cell[69159, 1929, 170, 2, 70, "Categorization",ExpressionUUID->"4289b0c6-8043-1b93-72b6-29a031f669f9",
+Cell[69161, 1929, 170, 2, 70, "Categorization",ExpressionUUID->"4289b0c6-8043-1b93-72b6-29a031f669f9",
  CellID->605800465],
-Cell[69330, 1933, 146, 2, 70, "Categorization",ExpressionUUID->"070f3e08-556d-9d60-2d34-b0525c19e44a",
+Cell[69332, 1933, 146, 2, 70, "Categorization",ExpressionUUID->"070f3e08-556d-9d60-2d34-b0525c19e44a",
  CellID->468444828],
-Cell[69477, 1937, 184, 3, 70, "Categorization",ExpressionUUID->"6d593b15-c37a-9c59-1b66-b35ef60ce6a3",
+Cell[69479, 1937, 184, 3, 70, "Categorization",ExpressionUUID->"6d593b15-c37a-9c59-1b66-b35ef60ce6a3",
  CellID->1030425846]
 }, Closed]],
-Cell[69673, 1943, 111, 1, 70, "KeywordsSection",ExpressionUUID->"4140e475-1e41-1f16-777f-fe3f9bf4627c",
+Cell[69675, 1943, 111, 1, 70, "KeywordsSection",ExpressionUUID->"4140e475-1e41-1f16-777f-fe3f9bf4627c",
  CellID->477174294],
 Cell[CellGroupData[{
-Cell[69808, 1948, 121, 1, 70, "TemplatesSection",ExpressionUUID->"67f13035-938c-831a-0d8e-aa7f263eee60",
+Cell[69810, 1948, 121, 1, 70, "TemplatesSection",ExpressionUUID->"67f13035-938c-831a-0d8e-aa7f263eee60",
  CellID->1872225408],
-Cell[69931, 1951, 151, 2, 70, "Template",ExpressionUUID->"16b44e14-0404-e868-3e4c-605eadb6bab2",
+Cell[69933, 1951, 151, 2, 70, "Template",ExpressionUUID->"16b44e14-0404-e868-3e4c-605eadb6bab2",
  CellID->1562036412],
-Cell[70083, 1955, 139, 2, 70, "Template",ExpressionUUID->"70bc3c38-1a7f-2cd8-2043-b6629f0a7622",
+Cell[70085, 1955, 139, 2, 70, "Template",ExpressionUUID->"70bc3c38-1a7f-2cd8-2043-b6629f0a7622",
  CellID->158391909],
-Cell[70223, 1959, 138, 2, 70, "Template",ExpressionUUID->"7e10bd94-ae42-3b4d-262f-34d1cbf48997",
+Cell[70225, 1959, 138, 2, 70, "Template",ExpressionUUID->"7e10bd94-ae42-3b4d-262f-34d1cbf48997",
  CellID->1360575930],
-Cell[70362, 1963, 139, 2, 70, "Template",ExpressionUUID->"5fdf5ac0-01aa-1326-05e5-53aab05f7e0c",
+Cell[70364, 1963, 139, 2, 70, "Template",ExpressionUUID->"5fdf5ac0-01aa-1326-05e5-53aab05f7e0c",
  CellID->793782254]
 }, Closed]]
 }, Open  ]]
