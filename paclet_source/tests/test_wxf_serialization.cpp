@@ -51,6 +51,7 @@
 #include "hgcommon/affinity.hpp"
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/core.hpp"
+#include "hgcommon/tuning.hpp"
 #include "paclet_source/graph_marshal.hpp"
 #include "job_system/job_system.hpp"
 #include "reference/oracle_corpus.hpp"
@@ -6974,6 +6975,28 @@ TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
         [&](wxf::Writer& w) { put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"}); },
         1), host);
     EXPECT_EQ(read_int_key(out, "NumStates"), read_int_key(plain, "NumStates"));
+}
+
+// A worker count above hgcommon::kMaxThreads (1024) is lowered to it, and a count below 1 is
+// refused. Both "Threads" and HG_TUNE_THREADS pass through TuningOverrides::set. 2^32 + 3 is
+// read as 3 workers by a plain cast to unsigned.
+TEST(WxfSerializationPin, ThreadsAboveTheMaximumAreLowered) {
+    using hgcommon::Tune;
+    hgcommon::TuningOverrides t;
+    EXPECT_FALSE(t.set(Tune::Threads, hgcommon::kMaxThreads));
+    EXPECT_EQ(t.get(Tune::Threads).value_or(0), hgcommon::kMaxThreads);
+    EXPECT_TRUE(t.set(Tune::Threads, (int64_t{1} << 32) + 3));
+    EXPECT_EQ(t.get(Tune::Threads).value_or(0), hgcommon::kMaxThreads);
+    EXPECT_TRUE(t.set(Tune::Threads, std::numeric_limits<int64_t>::max()));
+    EXPECT_EQ(t.get(Tune::Threads).value_or(0), hgcommon::kMaxThreads);
+    EXPECT_THROW(t.set(Tune::Threads, -5), std::invalid_argument);
+    EXPECT_THROW(t.set(Tune::Threads, 0), std::invalid_argument);
+    EXPECT_EQ(t.get(Tune::Threads).value_or(0), hgcommon::kMaxThreads);
+    // The other names have no maximum.
+    EXPECT_FALSE(t.set(Tune::MemoryLimit, std::numeric_limits<int64_t>::max()));
+    EXPECT_EQ(t.get(Tune::MemoryLimit).value_or(0), std::numeric_limits<int64_t>::max());
+    EXPECT_EQ(hgcommon::TuningOverrides::lowered_message(Tune::Threads, 5000),
+              "Threads 5000 is above the maximum 1024 and was lowered to it");
 }
 
 // =============================================================================

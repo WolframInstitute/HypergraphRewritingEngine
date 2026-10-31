@@ -47,17 +47,24 @@ struct TuneInfo {
     const char* option;   // the key in "Tuning"
     const char* env;      // the environment variable
     int64_t min;          // the smallest value accepted
+    int64_t max;          // a larger value is lowered to this
 };
 
+// The largest worker count: four times the 256 private arena slots (MAX_ARENA_WORKERS) and above
+// the logical CPU count of current two-socket servers (768 on two 192-core EPYC parts with SMT).
+inline constexpr int64_t kMaxThreads = 1024;
+
+inline constexpr int64_t kNoTuneMax = INT64_MAX;
+
 inline constexpr std::array<TuneInfo, static_cast<size_t>(Tune::kCount)> kTuneInfo{{
-    {"Threads", "HG_TUNE_THREADS", 1},
-    {"CausalSetCapacity", "HG_TUNE_CAUSAL_SET_CAPACITY", 1},
-    {"ExpandChunk", "HG_TUNE_EXPAND_CHUNK", 1},
-    {"GPUBlocks", "HG_TUNE_GPU_BLOCKS", 1},
-    {"GPUBacklog", "HG_TUNE_GPU_BACKLOG", 1},
-    {"GPUMemoryLimit", "HG_TUNE_GPU_MEMORY_LIMIT", 1},
-    {"GPUL2Persist", "HG_TUNE_GPU_L2_PERSIST", 0},
-    {"MemoryLimit", "HG_TUNE_MEMORY_LIMIT", int64_t{1} << 20},
+    {"Threads", "HG_TUNE_THREADS", 1, kMaxThreads},
+    {"CausalSetCapacity", "HG_TUNE_CAUSAL_SET_CAPACITY", 1, kNoTuneMax},
+    {"ExpandChunk", "HG_TUNE_EXPAND_CHUNK", 1, kNoTuneMax},
+    {"GPUBlocks", "HG_TUNE_GPU_BLOCKS", 1, kNoTuneMax},
+    {"GPUBacklog", "HG_TUNE_GPU_BACKLOG", 1, kNoTuneMax},
+    {"GPUMemoryLimit", "HG_TUNE_GPU_MEMORY_LIMIT", 1, kNoTuneMax},
+    {"GPUL2Persist", "HG_TUNE_GPU_L2_PERSIST", 0, kNoTuneMax},
+    {"MemoryLimit", "HG_TUNE_MEMORY_LIMIT", int64_t{1} << 20, kNoTuneMax},
 }};
 
 inline const TuneInfo& tune_info(Tune t) { return kTuneInfo[static_cast<size_t>(t)]; }
@@ -69,14 +76,23 @@ public:
         if (!has_[i]) return std::nullopt;
         return value_[i];
     }
-    // Throws std::invalid_argument for a value below the name's minimum.
-    void set(Tune t, int64_t v) {
+    // Throws std::invalid_argument for a value below the name's minimum. A value above the name's
+    // maximum is stored as the maximum, and the call returns true.
+    bool set(Tune t, int64_t v) {
         if (v < tune_info(t).min)
             throw std::invalid_argument(std::string(tune_info(t).option) + " must be at least " +
                                         std::to_string(tune_info(t).min) + ", got " +
                                         std::to_string(v));
-        value_[static_cast<size_t>(t)] = v;
+        const bool lowered = v > tune_info(t).max;
+        value_[static_cast<size_t>(t)] = lowered ? tune_info(t).max : v;
         has_[static_cast<size_t>(t)] = true;
+        return lowered;
+    }
+    // The warning text for a value of `t` lowered from `requested` by set().
+    static std::string lowered_message(Tune t, int64_t requested) {
+        return std::string(tune_info(t).option) + " " + std::to_string(requested) +
+               " is above the maximum " + std::to_string(tune_info(t).max) +
+               " and was lowered to it";
     }
     bool empty() const {
         for (bool h : has_) if (h) return false;
@@ -103,7 +119,8 @@ private:
 };
 
 // The HG_TUNE_* environment, read on the first call. A variable that does not parse as an
-// integer at or above the name's minimum is ignored.
+// integer at or above the name's minimum is ignored. A value above the name's maximum is lowered
+// to the maximum.
 inline const TuningOverrides& tuning_env() {
     static const TuningOverrides env = [] {
         TuningOverrides o;

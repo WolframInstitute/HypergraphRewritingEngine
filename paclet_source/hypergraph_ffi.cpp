@@ -229,7 +229,11 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                         } else if (option_key == "Threads") {
                             // 0 is Automatic: HG_TUNE_THREADS or the derived count.
                             const int64_t n = option_parser.template read<int64_t>();
-                            if (n != 0) req.tuning.set(hgcommon::Tune::Threads, n);
+                            if (n != 0 && req.tuning.set(hgcommon::Tune::Threads, n))
+                                req.ffi_warnings.push_back(
+                                    {"OptionLowered", 1,
+                                     hgcommon::TuningOverrides::lowered_message(
+                                         hgcommon::Tune::Threads, n)});
                         } else if (option_key == "Tuning") {
                             // Each key is read on its own, so one bad entry is skipped with a
                             // warning and the others apply.
@@ -243,7 +247,11 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                                             "'" + name + "' is not a tuning name; the names are " +
                                             hgcommon::TuningOverrides::option_names(
                                                 hgcommon::Tune::Threads));
-                                    req.tuning.set(*t, p.template read<int64_t>());
+                                    const int64_t v = p.template read<int64_t>();
+                                    if (req.tuning.set(*t, v))
+                                        req.ffi_warnings.push_back(
+                                            {"OptionLowered", 1,
+                                             hgcommon::TuningOverrides::lowered_message(*t, v)});
                                 } catch (const std::exception& e) {
                                     p.seek(at);
                                     p.skip_value();
