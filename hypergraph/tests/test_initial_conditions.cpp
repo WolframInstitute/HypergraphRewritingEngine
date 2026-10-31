@@ -253,6 +253,15 @@ TEST(InitialConditions, TheJobSpecReadsEveryKeyAndRefusesUnknownOnes) {
                  std::runtime_error);
     EXPECT_THROW(spec_of({{WXFValue("Type"), WXFValue("Torus")}, {WXFValue("BoxX"), WXFValue(WXFValueList{WXFValue(1.0)})}}),
                  std::runtime_error);
+    // A "Seed" that is not an integer is refused and named.
+    for (const WXFValue& seed : {WXFValue(1.5), WXFValue("seven"), WXFValue(wxf::Symbol{"Automatic"})}) {
+        try {
+            spec_of({{WXFValue("Type"), WXFValue("Torus")}, {WXFValue("Seed"), seed}});
+            ADD_FAILURE() << "a non-integer Seed was read";
+        } catch (const std::runtime_error& e) {
+            EXPECT_STREQ(e.what(), "\"Seed\" is not an integer");
+        }
+    }
 }
 
 // The generators number a lattice's vertices in uint32_t: a spec above 2^31 vertices is refused

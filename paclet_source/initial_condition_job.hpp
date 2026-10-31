@@ -100,9 +100,16 @@ hgcommon::IcSpec read_initial_condition_spec(Parser& parser) {
         out[0] = v[0];
         out[1] = v[1];
     };
+    auto integer = [](Parser& vp, const std::string& key) {
+        try {
+            return vp.template read<int64_t>();
+        } catch (const std::exception&) {
+            throw std::runtime_error("\"" + key + "\" is not an integer");
+        }
+    };
     parser.read_association([&](const std::string& key, Parser& vp) {
         if (key == "Type") vp.skip_value();
-        else if (key == "Seed") s.seed = static_cast<uint64_t>(vp.template read<int64_t>());
+        else if (key == "Seed") s.seed = static_cast<uint64_t>(integer(vp, key));
         else if (key == "RandomizeDirections") s.randomize_directions = flag(vp, key);
         else if (key == "Diagonals") s.diagonals = flag(vp, key);
         else if (key == "Periodic") s.periodic = flag(vp, key);

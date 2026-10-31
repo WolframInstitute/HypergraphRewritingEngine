@@ -9,7 +9,7 @@ import pytest
 
 import hgevolve as hg
 from hgevolve._cost import state_cost_program
-from hgevolve._options import initial_states, rules_association
+from hgevolve._options import initial_states, job_options, rules_association
 
 CHAIN = ([[1, 2]], [[1, 2], [2, 3]])
 LOOPS = ([[1, 1]], [[1, 1], [1, 1]])
@@ -87,6 +87,20 @@ def test_engine_refusal_is_an_engine_error():
 def test_engine_warnings_are_python_warnings():
     with pytest.warns(hg.EngineWarning, match="QuotientNeedsFull"):
         hg.evolve(CHAIN, [[1, 2]], 1, explore_from_canonical_states_only=True)
+
+
+def test_input_errors_are_named():
+    # "None" is the symbol None, as HGEvolve's "EventOrderingFunction" -> None.
+    assert job_options({"event_ordering_function": "None"}, None)["EventOrderingFunction"] == []
+    a = hg.evolve(CHAIN, [[1, 2]], 3, data=["num_states"], event_ordering_function="None")
+    b = hg.evolve(CHAIN, [[1, 2]], 3, data=["num_states"], event_ordering_function=None)
+    assert a.num_states == b.num_states == 10
+    with pytest.raises(ValueError, match='needs a "Field" key'):
+        hg.evolve(CHAIN, [[1, 2]], 1, transition_cost={})
+    with pytest.raises(ValueError, match='needs a "Field" key'):
+        hg.evolve(CHAIN, [[1, 2]], 1, transition_cost={"TimeStep": 0.1})
+    with pytest.raises(ValueError, match='"Seed" is not an integer'):
+        hg.initial_condition({"Type": "Torus", "Resolution": 4, "Seed": 1.5})
 
 
 def test_generational_and_event_ordering():

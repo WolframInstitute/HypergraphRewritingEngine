@@ -367,6 +367,47 @@ TEST_F(PacletTest, TheWorkerTransportAgainstFakeWorkers) {
     EXPECT_NE(out.find("TRANSPORT_OK"), std::string::npos) << "WolframScript output:\n" << out;
 }
 
+// An initial-condition spec with a "Seed" that is not an integer is refused with
+// HGEvolve::enginemsg and gives $Failed; an integer "Seed" gives one result each time.
+TEST_F(PacletTest, AnInitialConditionSeedThatIsNotAnIntegerIsRefused) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+
+    const std::string code =
+        "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
+        "<< \"HypergraphRewriting`\"; "
+        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"ICSEED_LOAD_FAIL\"]; Exit[0]]; "
+        "rule = {{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}; "
+        "ed = EvaluationData[HypergraphRewriting`HGEvolve[rule, "
+        "  <|\"Type\" -> \"Torus\", \"Resolution\" -> 3, \"Seed\" -> 1.5|>, 1, \"NumStates\"]]; "
+        "text = StringRiffle[ed[\"MessagesText\"], \" | \"]; "
+        "ic = HypergraphRewriting`HGEvolve[rule, "
+        "  <|\"Type\" -> \"Torus\", \"Resolution\" -> 3, \"Seed\" -> 7|>, 0, \"InitialCondition\"]; "
+        "ic2 = HypergraphRewriting`HGEvolve[rule, "
+        "  <|\"Type\" -> \"Torus\", \"Resolution\" -> 3, \"Seed\" -> 7|>, 0, \"InitialCondition\"]; "
+        "If[ed[\"Result\"] === $Failed && "
+        "   StringContainsQ[text, \"HGEvolve::enginemsg\"] && "
+        "   StringContainsQ[text, \"Seed\"] && StringContainsQ[text, \"is not an integer\"] && "
+        "   AssociationQ[ic] && ic[\"Seed\"] === 7 && ic === ic2, "
+        "  Print[\"ICSEED_OK\"], Print[\"ICSEED_FAIL: \", ed[\"Result\"], \" \", text, \" \", ic]]";
+
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        const bool verdict = out.find("ICSEED_OK") != std::string::npos ||
+                             out.find("ICSEED_FAIL") != std::string::npos ||
+                             out.find("ICSEED_LOAD_FAIL") != std::string::npos;
+        if (verdict) break;
+    }
+
+    ASSERT_EQ(out.find("ICSEED_LOAD_FAIL"), std::string::npos)
+        << "the paclet did not load, so nothing below was exercised:\n" << out;
+    EXPECT_NE(out.find("ICSEED_OK"), std::string::npos)
+        << "a non-integer initial-condition Seed was not refused. WolframScript output:\n" << out;
+}
+
 #else
 
 TEST_F(PacletTest, SkipPacletTests) {

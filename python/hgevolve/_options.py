@@ -90,7 +90,8 @@ def _canonicalize_events(value, option):
 
 
 def _event_ordering(value, option):
-    if value is None:
+    # "None" is the symbol None, as in the other options.
+    if value is None or value == "None":
         return []
     if value == "Automatic":
         return Symbol("Automatic")
@@ -117,6 +118,8 @@ def _transition_cost(value, option):
     if callable(value):
         return {"Field": "Function"}
     if isinstance(value, dict):
+        if "Field" not in value:
+            raise ValueError(f"{option} needs a \"Field\" key, got {value!r}")
         out = {"Field": str(value["Field"])}
         if "TimeStep" in value:
             out["TimeStep"] = float(value["TimeStep"])

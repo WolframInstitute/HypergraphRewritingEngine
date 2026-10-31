@@ -1075,7 +1075,8 @@ hgInitialCondition[other_, _List] /; !AssociationQ[other] := (Message[HGEvolve::
 (* A spec association with "Type": the engine generates the initial condition (the
    "InitialCondition" job, paclet_source/initial_condition_job.hpp, on the CPU worker). The spec's
    own keys override the values taken from the options; "Seed" defaults to "RandomSeed", and an
-   Automatic seed draws one from the kernel's generator. *)
+   Automatic seed draws one from the kernel's generator. The engine refuses a "Seed" that is not
+   an integer, with HGEvolve::enginemsg. *)
 hgInitialCondition[initialSpec_Association, opts_List] := Module[
   {type, ov, spec, seed, reply, rows},
   type = Replace[Lookup[initialSpec, "Type", "Grid"], "Minkowski" -> "Sprinkling"];
@@ -1108,8 +1109,8 @@ hgInitialCondition[initialSpec_Association, opts_List] := Module[
       <|"Density" -> ov["SprinklingDensity"], "EdgeThreshold" -> ov["EdgeThreshold"]|>,
     _, Message[HGEvolve::unknownic, type]; Return[$Failed]];
   spec = Join[spec, KeyDrop[initialSpec, {"Type", "Seed"}]];
-  seed = Lookup[initialSpec, "Seed", ov["RandomSeed"]];
-  If[!IntegerQ[seed], seed = RandomInteger[{0, 2^62}]];
+  seed = Lookup[initialSpec, "Seed", Replace[ov["RandomSeed"], Except[_Integer] -> Automatic]];
+  If[seed === Automatic, seed = RandomInteger[{0, 2^62}]];
   spec = Join[<|"Type" -> type, "Seed" -> seed|>,
     hgIcWire /@ DeleteCases[spec, Automatic | None | {}]];
   reply = hgSendJob[<|"Op" -> "InitialCondition", "InitialCondition" -> spec|>, "CPU", False];
