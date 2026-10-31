@@ -63,7 +63,8 @@ ConcurrentHeterogeneousArena::ConcurrentHeterogeneousArena(size_t block_size,
 
 // Bytes held by every live ConcurrentHeterogeneousArena block. Bumped where blocks are created
 // and freed, which is once per 1 MB rather than once per allocation, so nothing on the hot path
-// touches it. Relaxed throughout: it is read for reporting, never to decide anything.
+// touches it. Relaxed throughout. Block::create reads it for the arenas' memory limit check, and
+// the fetch_add there keeps concurrent maps from passing the limit together.
 static std::atomic<size_t> g_arena_block_bytes{0};
 // The largest the live total has been: what the arenas contributed to the resident set's
 // high-water mark, which a count at the end of a run (blocks already freed) cannot say.
@@ -231,8 +232,9 @@ void ConcurrentHeterogeneousArena::reset() {
 // afresh per arena was 118k page faults against 83k and 5% of the wall, all of it the
 // sub-huge-page ramp blocks re-faulted under the mm lock). One Treiber stack per power-of-two
 // class of mapping length, heads tagged against ABA (16-bit tag above a 48-bit pointer,
-// which is every user-space pointer on the platforms built); a pooled block is never
-// unmapped, so reading its link after the head is loaded is always a read of mapped memory.
+// which is every user-space pointer on the platforms built); a pooled block is
+// unmapped only by trim_block_pool, which runs while no arena takes or returns a block, so
+// reading its link after the head is loaded is always a read of mapped memory.
 // A block's dirty_end travels with it, so what the pool hands back is zero exactly where
 // its previous life never wrote. Absent under HG_VERIFICATION, where a block is operator new.
 namespace {
@@ -616,8 +618,11 @@ void* ConcurrentHeterogeneousArena::allocate_shared(size_t size, size_t alignmen
 ConcurrentHeterogeneousArena::Block*
 ConcurrentHeterogeneousArena::grab_block(size_t cap) {
     Block* new_block = Block::create(cap);
-    if (recycle_) note_block_grab(g_scratch_block_bytes, g_scratch_block_bytes_high_water, sizeof(Block) + cap);
-    block_bytes_.fetch_add(sizeof(Block) + cap, std::memory_order_relaxed);
+    // The block's own capacity, which the destructor subtracts: a pooled block or a huge-page
+    // block holds more than `cap`.
+    const size_t bytes = sizeof(Block) + new_block->capacity;
+    if (recycle_) note_block_grab(g_scratch_block_bytes, g_scratch_block_bytes_high_water, bytes);
+    block_bytes_.fetch_add(bytes, std::memory_order_relaxed);
 
     Block* old_head = head_.load(std::memory_order_acquire);
     do {

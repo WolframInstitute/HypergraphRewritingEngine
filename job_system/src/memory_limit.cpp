@@ -141,7 +141,16 @@ uint64_t process_memory_overhead() { return g_overhead.load(std::memory_order_re
 
 uint64_t process_memory_limit_in_effect() {
     const uint64_t installed = g_installed.load(std::memory_order_relaxed);
-    return installed ? saturating_add(installed, g_overhead.load(std::memory_order_relaxed)) : 0;
+    if (!installed) return 0;
+    const uint64_t sum = saturating_add(installed, g_overhead.load(std::memory_order_relaxed));
+#if !defined(HG_VERIFICATION) && defined(__linux__)
+    // apply_rlimit_data lowers a request above the hard limit to the hard limit.
+    rlimit r{};
+    if (getrlimit(RLIMIT_DATA, &r) == 0 && r.rlim_cur != RLIM_INFINITY &&
+        uint64_t(r.rlim_cur) < sum)
+        return uint64_t(r.rlim_cur);
+#endif
+    return sum;
 }
 
 uint64_t process_committed_bytes() {
