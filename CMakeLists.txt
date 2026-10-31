@@ -329,7 +329,10 @@ add_subdirectory(wxf)
 
 # Unified test suite
 option(BUILD_TESTS "Build unified test suite" ON)
-if(BUILD_TESTS)
+# The engine suites read the diagnostic counters, which exist only with HG_ENGINE_STATS=ON.
+if(BUILD_TESTS AND NOT HG_ENGINE_STATS)
+    message(STATUS "Engine test suites not built: they need HG_ENGINE_STATS=ON")
+elseif(BUILD_TESTS)
     add_subdirectory(testing)
 endif()
 
@@ -349,9 +352,12 @@ add_executable(event_key_decomposition_probe tools/event_key_decomposition_probe
 target_include_directories(event_key_decomposition_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(event_key_decomposition_probe PRIVATE hypergraph)
 
-add_executable(thinning_mode_probe tools/thinning_mode_probe.cpp)
-target_include_directories(thinning_mode_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(thinning_mode_probe PRIVATE hypergraph)
+# Reads the engine's draw counters, which exist only in stats builds.
+if(HG_ENGINE_STATS)
+    add_executable(thinning_mode_probe tools/thinning_mode_probe.cpp)
+    target_include_directories(thinning_mode_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(thinning_mode_probe PRIVATE hypergraph)
+endif()
 
 # ---------------------------------------------------------------------------------------------
 # EVERY REMAINING tools/ PROGRAM, REGISTERED.
@@ -558,9 +564,12 @@ target_link_libraries(event_signature_stability_probe PRIVATE hypergraph)
 # A gate that answers pass/fail cannot tell "fixed" from "did not fire this time", which is the
 # whole question for a defect observed once in ~90 runs. --load runs background threads, since
 # the one observation came from inside a full suite run.
-add_executable(quotient_determinism_rate_probe tools/quotient_determinism_rate_probe.cpp)
-target_include_directories(quotient_determinism_rate_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(quotient_determinism_rate_probe PRIVATE hypergraph)
+# Reads the quotient capture counters, which exist only in stats builds.
+if(HG_ENGINE_STATS)
+    add_executable(quotient_determinism_rate_probe tools/quotient_determinism_rate_probe.cpp)
+    target_include_directories(quotient_determinism_rate_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(quotient_determinism_rate_probe PRIVATE hypergraph)
+endif()
 
 # Host counterpart of gpu_rank_order_probe: separates a stable presentation order from an
 # order-independent rank rule as the reason the CPU's event identities do not move.

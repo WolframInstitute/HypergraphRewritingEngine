@@ -554,6 +554,7 @@ TEST(JobSystemSingleWorker, RunsEveryJobIncludingNestedSubmissions) {
 // a nested fan-out on 8 workers: every job is counted once, a failed steal is a subset of the
 // attempts, nothing runs inline with queues this size, and the searcher high-water mark is a
 // worker count.
+#if HG_ENGINE_STATS
 TEST(JobSystemCounters, SchedulerCountersAreConsistent) {
     job_system::JobSystem<TestJobType> js(8);
     js.start();
@@ -583,6 +584,7 @@ TEST(JobSystemCounters, SchedulerCountersAreConsistent) {
     EXPECT_LE(c.workers_with_jobs, 8u);
     EXPECT_GE(c.busiest_worker_jobs, c.idlest_worker_jobs);
 }
+#endif
 
 // The park domains of workers bound to CPUs split each cache by tier: two SMT siblings never
 // share a park word, and every worker's submits wake from the domain of its cache that holds the
