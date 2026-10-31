@@ -255,14 +255,18 @@ def rules_association(rules):
     return out
 
 
-def initial_states(initial):
+def initial_states(initial, seed=None):
     """The initial states as lists of edges of integers. One hypergraph is one state; a list of
     hypergraphs is several. Vertices that are not all integers are numbered from 0 by first
     appearance across the states, as HGEvolve's normalizeInitialStates numbers them. A name
     ("Grid") or a spec dict ({"Type": "BrillLindquist", "Density": 400, ...}) is a generated
-    initial condition: its edges (initial_condition)."""
+    initial condition: its edges (initial_condition). A spec without "Seed" takes `seed`, as
+    HGEvolve's takes "RandomSeed"; None draws one."""
     if isinstance(initial, (dict, str)):
-        return [initial_condition(initial)["Edges"]]
+        spec = {"Type": initial} if isinstance(initial, str) else dict(initial)
+        if "Seed" not in spec:
+            spec["Seed"] = _seed(seed, "random_seed")
+        return [initial_condition(spec)["Edges"]]
     initial = _as_list(initial)
     if not isinstance(initial, (list, tuple)) or not initial:
         raise ValueError(_INITIAL)
@@ -313,7 +317,7 @@ def initial_condition(spec):
         wire[str(k)] = v
     try:
         values = _core.run({"Op": "InitialCondition", "InitialCondition": wire,
-                            "Options": {"Op": "InitialCondition"}}).values()
+                            "Options": {}}).values()
     except RuntimeError as e:
         raise ValueError(str(e)) from None
     if not values.get("Edges"):

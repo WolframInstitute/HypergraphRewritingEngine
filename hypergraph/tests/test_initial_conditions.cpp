@@ -254,3 +254,21 @@ TEST(InitialConditions, TheJobSpecReadsEveryKeyAndRefusesUnknownOnes) {
     EXPECT_THROW(spec_of({{WXFValue("Type"), WXFValue("Torus")}, {WXFValue("BoxX"), WXFValue(WXFValueList{WXFValue(1.0)})}}),
                  std::runtime_error);
 }
+
+// The generators number a lattice's vertices in uint32_t: a spec above 2^31 vertices is refused
+// when it is read, before anything is generated.
+TEST(InitialConditions, ALatticeAboveTwoToTheThirtyOneVerticesIsRefused) {
+    using wxf::WXFValue;
+    auto spec_of = [](wxf::WXFValueAssociation a) {
+        const WXFValue v(std::move(a));
+        wxf::ValueParser p(v);
+        return hg::ffi::read_initial_condition_spec(p);
+    };
+    EXPECT_THROW(spec_of({{WXFValue("Type"), WXFValue("Grid")},
+                          {WXFValue("Width"), WXFValue(int64_t{65536})},
+                          {WXFValue("Height"), WXFValue(int64_t{65537})}}),
+                 std::runtime_error);
+    EXPECT_NO_THROW(spec_of({{WXFValue("Type"), WXFValue("Grid")},
+                             {WXFValue("Width"), WXFValue(int64_t{65536})},
+                             {WXFValue("Height"), WXFValue(int64_t{32768})}}));
+}

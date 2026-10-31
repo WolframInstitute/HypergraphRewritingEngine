@@ -23,6 +23,7 @@
 // "BrillLindquist" "HorizonCenters" ({x, y, ...} per horizon) and "HorizonRadii".
 
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -149,6 +150,22 @@ hgcommon::IcSpec read_initial_condition_spec(Parser& parser) {
         }
     });
     if (s.type == hgcommon::IcType::Grid && !s.holes.empty()) s.type = hgcommon::IcType::GridWithHoles;
+    // The generators number a lattice's vertices in uint32_t, so a lattice above 2^31 vertices is
+    // refused. Each factor is at most 2^30, so the products fit in 64 bits.
+    {
+        using T = hgcommon::IcType;
+        const uint64_t res = s.resolution;
+        uint64_t vertices = s.n;
+        if (s.type == T::Grid || s.type == T::GridWithHoles) vertices = uint64_t{s.width} * s.height;
+        else if (s.type == T::Cylinder || s.type == T::KleinBottle) vertices = res * s.height;
+        else if (s.type == T::MobiusStrip) vertices = res * s.width;
+        else if (s.type == T::Torus) vertices = res * res;
+        else if (s.type == T::Sphere) vertices = res * (2 * res + 1);
+        if (vertices > (uint64_t{1} << 31))
+            throw std::runtime_error("the \"" + type_name + "\" initial condition has " +
+                                     std::to_string(vertices) +
+                                     " vertices; the limit is 2147483648");
+    }
     return s;
 }
 

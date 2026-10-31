@@ -4,8 +4,8 @@
 //   one-shot (default): read a WXF job from stdin, run, write the WXF result to
 //     stdout. Progress on stderr. Exit 0 on success, 1 on a caught exception.
 //   worker  (--serve):  stay alive and process a stream of length-prefixed jobs.
-//     Each request/response frame is [8-byte little-endian length][payload]. A
-//     zero-length response frame signals that job errored (detail on stderr).
+//     Each job frame is [8-byte little-endian length][payload]; the replies are the
+//     frames of frame_writer.hpp (progress, error, log and reply frames).
 //     The loop ends on stdin EOF. This amortises expensive per-process setup —
 //     for the GPU backend, the CUDA context is created once and reused across
 //     jobs instead of ~700 ms per invocation.
@@ -15,7 +15,7 @@
 // worker modes, a stderr line and exit code kNoUsableDeviceExit in the one-shot mode.
 //
 // `--version` prints the build stamp (hgcommon/build_stamp.hpp) and exits, ahead of any transport
-// setup, so it answers on a machine with no GPU and no peer.
+// setup, so it answers on a machine with no GPU.
 //
 // Abort is a process kill by the parent (no cooperative abort). Compiled with
 // -DHG_STANDALONE_BINARY, so it links no Wolfram SDK.

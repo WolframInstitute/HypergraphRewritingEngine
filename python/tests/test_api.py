@@ -187,3 +187,20 @@ def test_every_option_and_data_name_is_documented():
 
 def test_build_stamp_names_the_module():
     assert "variant=python" in hg.build_stamp()
+
+
+def test_a_named_initial_condition_takes_the_random_seed():
+    """A generated initial condition without "Seed" takes the job's random_seed, as HGEvolve's
+    takes "RandomSeed"."""
+    assert initial_states("Grid", 7) == initial_states({"Type": "Grid", "Seed": 7})
+    assert initial_states("Grid", 7) != initial_states("Grid", 8)
+
+
+def test_an_evolution_branchial_graph_asks_for_every_step(monkeypatch):
+    """encode_job sends BranchialStep 0 for an Evolution...Branchial graph, as HGEvolve's
+    Automatic does, and the default -1 otherwise."""
+    monkeypatch.setattr(hg._core, "encode", lambda job: job)
+    job = hg.encode_job(CHAIN, [[1, 2]], 2, graph_properties=["EvolutionBranchialGraph"])
+    assert job["Options"]["BranchialStep"] == 0
+    job = hg.encode_job(CHAIN, [[1, 2]], 2, graph_properties=["StatesGraph"])
+    assert job["Options"]["BranchialStep"] == -1

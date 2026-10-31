@@ -10,6 +10,7 @@ process: a crash of the engine ends the Python process. Run work that may crash,
 parallel, in worker processes (examples/parallel_sweep.py).
 """
 
+import fnmatch
 import warnings as _warnings
 
 from . import _core
@@ -39,7 +40,8 @@ def build_stamp():
 def _job(rules, initial, steps, data, options):
     if isinstance(steps, bool) or int(steps) != steps or steps < 0:
         raise ValueError(f"steps must be a non-negative integer, got {steps!r}")
-    return {"InitialStates": initial_states(initial), "Rules": rules_association(rules),
+    return {"InitialStates": initial_states(initial, options.get("random_seed")),
+            "Rules": rules_association(rules),
             "Steps": int(steps), "Options": job_options(options, data)}
 
 
@@ -90,7 +92,12 @@ def encode_job(rules, initial, steps, *, data=None, graph_properties=None, **opt
     its graphs from to hg_evolve's reply; evolve() builds no graphs."""
     job = _job(rules, initial, steps, data, options)
     if graph_properties:
-        job["Options"]["GraphProperties"] = [str(p) for p in graph_properties]
+        props = [str(p) for p in graph_properties]
+        job["Options"]["GraphProperties"] = props
+        # HGEvolve's BranchialStep -> Automatic: every step when the first graph property is an
+        # Evolution...Branchial graph (hgBranchialStepValue).
+        if "branchial_step" not in options and fnmatch.fnmatchcase(props[0], "*Evolution*Branchial*"):
+            job["Options"]["BranchialStep"] = 0
     return _core.encode(job)
 
 
@@ -143,7 +150,7 @@ class Session:
             return
         handle, self.handle = self.handle, None
         try:
-            _core.run({"Op": "Close", "Session": handle, "Options": {"Op": "Close"}})
+            _core.run({"Op": "Close", "Session": handle, "Options": {}})
         except RuntimeError as e:
             raise EngineError(str(e)) from None
 

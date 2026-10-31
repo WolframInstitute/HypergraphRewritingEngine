@@ -48,7 +48,7 @@ Options[HGEvolve] = {
   "UndirectedEdges" -> False,  (* True: every edge of two vertices is an unordered pair {u, v}. A rule's left edge {x, y} matches an edge in either order, matches that consume the same edges and differ by a symmetry of the rule count once, and the canonical hash does not depend on the order within an edge. Edges of three or more vertices are refused. Provisional name. *)
   "EventOrderingFunction" -> None,  (* None, Automatic, or one of SetReplace's event ordering names or a list of them in priority order: one history from each initial state, and each step applies the state's one match first in that order, as SetReplace's WolframModel does. Automatic is SetReplace's default {"LeastRecentEdge", "RuleOrdering", "RuleIndex"}. The caps and draws do not apply with it. *)
   "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps a state's transitions regardless of rule, and "MaxStatesPerStep" a step's. Applies on both devices. *)
-  "TransitionCost" -> None,  (* None, or <|"Field" -> "Degree" | "Curvature" | "LoopCount" | "EdgeMultiplicity", "TimeStep" -> dt|>: a transition costs the heat residual of the field from parent to child (docs/TRANSITION_COST.md), plus the child's "StateCost". Read by "MaxStatesPerStep" and by "Search" -> "BestFirst". Runs on the CPU engine. *)
+  "TransitionCost" -> None,  (* None, or <|"Field" -> "Degree" | "Curvature" | "LoopCount" | "EdgeMultiplicity", "TimeStep" -> dt|>: a transition costs the heat residual of the field from parent to child (docs/TRANSITION_COST.md), plus the child's "StateCost". Read by "MaxStatesPerStep" and by "Search" -> "BestFirst". *)
   "Search" -> Automatic,  (* Automatic, or "BestFirst": take the transition of lowest path cost next, one at a time, until "SearchBudget" states are created; the "PathCosts" property gives each state's path cost. Runs on the CPU engine. *)
   "SearchBudget" -> 1000,  (* The states a best-first search creates after the initial states. *)
   "BeamCost" -> "Transition",  (* "Transition", or "Path": with "MaxStatesPerStep" and a cost, the step keeps its successors of lowest path cost (the parent's path cost plus the transition's cost), one transition into each; the "PathCosts" property gives each state's path cost. Both devices. *)
@@ -121,6 +121,7 @@ HGSessionOpen::noworker =
 HGSessionOpen::nohandle =
   "The engine answered the Open but returned no session handle, so there is nothing to continue.";
 HGSessionOpen::refused = "The engine refused this session job: `1`";
+HGSessionStep::refused = "The engine refused this session verb: `1`";
 HGSessionStep::badsession =
   "`1` is not an HGSessionObject.";
 HGSessionStep::expired =
@@ -1293,8 +1294,7 @@ $hgLastReplyBytes = 0;
 
 (* `worker` is the $hgWorkerGeneration number of the worker holding the session, or None for an
    Open and for HGEvolve. A held session's verb goes only to that worker: a new worker does not
-   hold the session, and its own session handles count from the same start, so a held handle
-   could name a different session there. *)
+   hold the session. *)
 hgSendJob[inputData_Association, device_, sessionQ_, worker_ : None] := Module[{wxfBytes, resultBytes, wxfData, t0},
   t0 = AbsoluteTime[];
   wxfBytes = BinarySerialize[inputData];
@@ -1305,7 +1305,7 @@ hgSendJob[inputData_Association, device_, sessionQ_, worker_ : None] := Module[{
           || Quiet[ProcessStatus[$hgWorkerProc[dev]]] =!= "Running",
         Message[HGSessionStep::expired]; Return[$Failed]];
       r = hgWorkerTry[dev, wxfBytes];
-      If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];
+      If[MatchQ[r, hgEngineError[_String]], Message[HGSessionStep::refused, First[r]]; Return[$Failed]];
       If[!ByteArrayQ[r], Message[HGSessionStep::expired]; Return[$Failed]];
       r],
    If[TrueQ[sessionQ],
@@ -1659,10 +1659,9 @@ hgSessionVerbRun[d_Association, op_String, steps_Integer, props_List, wasList_, 
   (* The session's options, with only what this call may vary. A held verb carries NO rules: the
      engine rejects a job that does, because applying them would answer about a different system. *)
   options = d["Options"];
-  (* `Op` belongs to the JOB ENVELOPE, not to the option map: the engine parses it beside
-     `Session` and `Steps` (hypergraph_ffi.cpp:357) and its option validator has never known the
-     name, so a copy here is rejected as unrecognised and warns on EVERY session verb. It made
-     three documentation examples report $Failed while returning correct numbers. *)
+  (* `Op` belongs to the job envelope beside `Session` and `Steps` (parse_job in
+     hypergraph_ffi.cpp). The engine warns of an "Op" key in the option map as an unrecognised
+     option. *)
   options["RequestedData"] = requiredData;
   options["GraphProperties"] = graphProperties;
   options["BranchialStep"] = hgBranchialStepValue[
@@ -1724,8 +1723,8 @@ HGSessionQuery[other_, ___] := (Message[HGSessionStep::badsession, other]; $Fail
 
 HGSessionClose[HGSessionObject[d_Association]] := Module[{reply},
   hgForgetSessionGraphData[d["Handle"]];
-  reply = hgSendJob[<|"Op" -> "Close", "Session" -> d["Handle"],
-                      "Options" -> <|"Op" -> "Close"|>|>, d["Device"], True, d["View"]["Worker"]];
+  reply = hgSendJob[<|"Op" -> "Close", "Session" -> d["Handle"], "Options" -> <||>|>,
+                    d["Device"], True, d["View"]["Worker"]];
   If[AssociationQ[reply], Null, $Failed]
 ];
 HGSessionClose[other_] := (Message[HGSessionStep::badsession, other]; $Failed);
