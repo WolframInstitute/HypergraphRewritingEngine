@@ -12,7 +12,8 @@ name the pages DID use was correct.
 Each list is read from the place that DECIDES it, not from a copy: the properties from
 propertyRequirementsBase, whose Keys computeRequiredData validates against before the engine is
 called at all; the options from the Options[...] declarations; the initial-condition types from
-the Switch that generates them.
+ic_type_from_name in hgcommon/initial_condition_core.hpp, the table the engine resolves a
+type name with.
 
 Reads sources only; no build.
 """
@@ -22,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WL = ROOT / "paclet/Kernel/HypergraphRewriting.wl"
+IC = ROOT / "common/include/hgcommon/initial_condition_core.hpp"
 SRC = ROOT / "docs/en"
 
 # Stated once in the prose and true of every *Graph property, so the variants are not each
@@ -103,23 +105,17 @@ def main():
     findings += [("option", o) for o in sorted(opts) if not described(o)]
 
     # INITIAL-CONDITION TYPES -- alternative spellings of one type share an entry, so a type is
-    # described when ANY of its spellings is.
-    # Anchored on the Switch that dispatches on icType, not on the first "Grid" in the file --
-    # that one is in an option declaration far above it.
-    n = -1
-    for m in re.finditer(r"Switch\[", wl):
-        if "icType" in wl[m.end():m.end() + 80]:
-            n = m.end()
-            break
-    if n < 0:
-        print("FAIL: the initial-condition Switch was not found.")
+    # described when ANY of its spellings is. The names are the entries {"Name", IcType::T} of
+    # ic_type_from_name; the names of one IcType are spellings of one type.
+    ic = IC.read_text()
+    m = re.search(r"ic_type_from_name\b[^{]*\{(.*?)\n\}", ic, re.S)
+    if not m:
+        print(f"FAIL: ic_type_from_name not found in {IC.relative_to(ROOT)}.")
         return 1
-    groups = []
-    for m in re.finditer(r'^\s+("(?:[A-Za-z]+)"(?:\s*\|\s*"[A-Za-z]+")*)\s*,\s*$',
-                         wl[n:n + 12000], re.M):
-        names = re.findall(r'"([A-Za-z]+)"', m.group(1))
-        if names:
-            groups.append(names)
+    by_type = {}
+    for name, t in re.findall(r'\{\s*"([A-Za-z]+)"\s*,\s*IcType::([A-Za-z]+)\s*\}', m.group(1)):
+        by_type.setdefault(t, []).append(name)
+    groups = list(by_type.values())
     if len(groups) < 5:
         print(f"FAIL: only {len(groups)} initial-condition types parsed.")
         return 1

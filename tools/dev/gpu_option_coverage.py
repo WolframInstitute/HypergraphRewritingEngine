@@ -37,6 +37,21 @@ EXEMPT = {
     "GraphProperties",
 }
 
+# Options that reach the device, or are kept off it, by a route the field check does not follow.
+# Each is listed with that route, so the exemption is auditable.
+COVERED = {
+    # The parser writes the names; parse_event_ordering turns them into req.event_ordering, which
+    # run_gpu_job carries as job.event_ordering and the backend reads.
+    "EventOrderingFunction": "converted to req.event_ordering, carried as job.event_ordering",
+    # run_job sends a best-first job to the CPU engine (on_cpu) with an "Engine" warning.
+    "Search": "a best-first job runs on the CPU engine, with a warning",
+    "SearchBudget": "read only by a best-first job, which runs on the CPU engine",
+    # Both write req.tuning; run_gpu_job reads Threads, GpuBlocks, GpuBacklog, GpuL2Persist and
+    # GpuMemoryLimit from it into the GpuJob.
+    "Threads": "req.tuning Threads, carried as job.threads",
+    "Tuning": "req.tuning, read by run_gpu_job into the GpuJob",
+}
+
 BACKEND = ROOT / "paclet_source/hg_gpu_backend.cpp"
 # A component emitted by the SHARED marshaller is emitted by both engines by construction, so
 # its key is looked for there as well as in the backend -- that is the whole point of the rule
@@ -108,7 +123,7 @@ def main():
               f"reads must have changed shape.")
         return 1
 
-    start = ffi.index("static std::vector<uint8_t> run_gpu_job(")
+    start = ffi.index("static wxf::Pieces run_gpu_job(")
     end = ffi.index("\nstatic ", start + 10)
     gpu = ffi[start:end]
 
@@ -116,7 +131,7 @@ def main():
 
     uncovered = []
     for name, fields in sorted(opts.items()):
-        if name in EXEMPT:
+        if name in EXEMPT or name in COVERED:
             continue
         warned = f"'{name}'" in gpu
         honoured = False
@@ -164,9 +179,10 @@ def main():
                   "or push an OptionSkipped warning naming it.")
         return 1
 
-    print(f"OK: all {len(opts) - len(EXEMPT & opts.keys())} device-relevant options and "
+    covered = len(COVERED.keys() & opts.keys())
+    print(f"OK: all {len(opts) - len(EXEMPT & opts.keys()) - covered} device-relevant options and "
           f"{len(components) - len(EXEMPT_COMPONENTS)} requested-data components are carried to "
-          f"the device or warned about.")
+          f"the device or warned about; {covered} more are covered by the routes in COVERED.")
     return 0
 
 
