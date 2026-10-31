@@ -99,7 +99,11 @@ static size_t max_state_edges(size_t largest_root, const std::vector<RewriteRule
 
 EngineConfig config_from_input(const EvolveInput& in) {
     EngineConfig cfg;
-    size_t n_init   = in.initial_state.size();
+    // The edges the engine uploads: every initial state, or the single initial_state when
+    // initial_states is empty (the roots of persistent_evolve).
+    size_t n_init = 0;
+    if (in.initial_states.empty()) n_init = in.initial_state.size();
+    for (const auto& s : in.initial_states) n_init += s.size();
     uint32_t steps  = in.num_steps;
 
     // Estimate growth per step. A typical Wolfram-style rule produces 2–4
@@ -138,7 +142,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
         for (const auto& r : in.rules) rhs = std::max<uint64_t>(rhs, r.rhs.size());
         expected_states = std::min(expected_states, bound);
         expected_edges = std::min(expected_edges,
-                                  std::max<uint64_t>(1u << 12, 2u * (n_init * roots + events * rhs)));
+                                  std::max<uint64_t>(1u << 12, 2u * (n_init + events * rhs)));
     }
 
     cfg.max_edges              = field(expected_edges);

@@ -2408,6 +2408,59 @@ TEST(Sampling, HeldMatchSetsKeepTheSameHistoryOnBothEngines) {
             }
 }
 
+// Two identical initial states share a lineage label, so their held match sets form one group
+// and the step's selection merges them (Blocks::merged, persistent.cu) at every step. The device
+// keeps the CPU's history for one and three transitions per step at three seeds, and a 3,000-step
+// history of two 4,096-edge cycles completes with no pool warning.
+TEST(Sampling, HeldMatchSetsOfMergedLineagesKeepTheSameHistoryOnBothEngines) {
+    std::vector<std::vector<hg_gpu::VertexId>> torus;
+    for (hg_gpu::VertexId r = 0; r < 4; ++r)
+        for (hg_gpu::VertexId c = 0; c < 4; ++c) {
+            torus.push_back({r * 4 + c, r * 4 + (c + 1) % 4});
+            torus.push_back({r * 4 + c, ((r + 1) % 4) * 4 + c});
+        }
+    const hg_gpu::RewriteRule r4 = rule({{0, 1}, {1, 2}, {2, 3}, {3, 4}}, {{1, 5}, {5, 4}, {3, 0}, {0, 5}});
+    for (uint32_t n : {1u, 3u})
+        for (uint64_t seed : {uint64_t(5), uint64_t(1), uint64_t(12345)}) {
+            Workload w;
+            w.name = "two tori n " + std::to_string(n) + " seed " + std::to_string(seed);
+            w.rules = {r4};
+            w.initial_states = {torus, torus};
+            w.num_steps = 40;
+            w.canon_mode = hg_gpu::CanonicalizationMode::None;
+            w.random_seed = seed;
+            w.max_states_per_step = n;
+            w.step_cap_counts_matches = true;
+            const NormalizedResult cpu = run_cpu(w);
+            const NormalizedResult gpu = run_gpu(w);
+            EXPECT_GT(cpu.raw_events, 0u) << w.name;
+            EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
+            EXPECT_EQ(gpu.event_keys, cpu.event_keys) << w.name;
+            EXPECT_EQ(gpu.raw_states, cpu.raw_states) << w.name;
+            EXPECT_EQ(gpu.raw_events, cpu.raw_events) << w.name;
+        }
+    // Each step's merge takes pool words for every held match of the group: 40,960 words for two
+    // 4,096-edge cycles under an edge-reversing rule, whose match count stays 4,096 per state.
+    // Over 3,000 steps that is about 123M words against the 2^26-word pool, so arrays the
+    // selection does not give back fill the pool after about 1,600 steps.
+    std::vector<std::vector<hg_gpu::VertexId>> cycle;
+    for (hg_gpu::VertexId v = 0; v < 4096; ++v) cycle.push_back({v, (v + 1) % 4096});
+    Workload w;
+    w.name = "two 4096-edge cycles, 3000 steps";
+    w.rules = {rule({{0, 1}}, {{1, 0}})};
+    w.initial_states = {cycle, cycle};
+    w.num_steps = 3000;
+    w.canon_mode = hg_gpu::CanonicalizationMode::None;
+    w.random_seed = 7;
+    w.max_states_per_step = 1;
+    w.step_cap_counts_matches = true;
+    const auto result = hg_gpu::evolve(make_input(w));
+    EXPECT_TRUE(result.warnings.empty())
+        << (result.warnings.empty() ? std::string() : result.warnings.front().context);
+    const NormalizedResult cpu = run_cpu(w);
+    EXPECT_EQ(result.events.size(), cpu.raw_events);
+}
+
 // Under MaxStatesPerStep the reconstruction keeps one expansion per (class, depth)
 // (hgcommon::qc_expansion_key), on both engines: Full states, Automatic events, rules whose
 // classes recur at several depths, caps 1, 2, 3 and 5 over 5 steps. The host's reconstruction
