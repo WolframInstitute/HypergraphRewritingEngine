@@ -235,8 +235,9 @@ void ParallelEvolutionEngine::evolve(
 
     // Single synchronization point at the end
     job_system_->wait_for_completion();
-    raise_worker_error();
+    // run_best_first stops at a worker error, so the error is reported once, here.
     if (best_first_) run_best_first();
+    raise_worker_error();
 
     finalize_evolution();
 }
@@ -276,8 +277,9 @@ void ParallelEvolutionEngine::evolve(
 
     // Single synchronization point at the end
     job_system_->wait_for_completion();
-    raise_worker_error();
+    // run_best_first stops at a worker error, so the error is reported once, here.
     if (best_first_) run_best_first();
+    raise_worker_error();
 
     finalize_evolution();
 }
@@ -696,8 +698,8 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
         return;
     }
 
-    // Best-first search: the child of the popped transition is matched on the driver thread, and
-    // the tasks its matching spawns run on the workers (run_best_first).
+    // Best-first search: the child of the popped transition is matched on the driver thread
+    // (run_best_first).
     if (best_first_inline()) {
         best_first_inline() = false;
         note_match_task_pushed(state);
@@ -849,8 +851,7 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
 
-    // Best-first search: the expansions of the state its driver matches run on the driver; a
-    // wide state's completed matches split across the workers (dispatch_expansion).
+    // Best-first search: the expansions of the state its driver matches run on the driver.
     if (best_first_driver()) {
         note_match_task_pushed(data.state);
         note_depth_task_pushed(data.step);
@@ -1469,77 +1470,92 @@ void ParallelEvolutionEngine::cost_best_first(std::vector<BfCandidate>& fresh) {
 }
 
 // THE BEST-FIRST DRIVER. One transition at a time: the frontier's first in (path cost, rank,
-// parent's path key), then a wait for the rewrite and the child's matching, whose drain adds the
-// child's transitions. A transition into a state the search already created is dropped. The
-// order is a function of the transitions alone, so the states created do not depend on the
-// thread count.
+// parent's path key, source state, rule, matched edges), then a wait for the rewrite and the
+// child's matching, whose drain adds the child's transitions. A transition into a state the
+// search already created is dropped. The order is a function of the transitions alone, so the
+// states created do not depend on the thread count.
 void ParallelEvolutionEngine::run_best_first() {
     const auto after = [](const BfCandidate& a, const BfCandidate& b) {
         if (a.cost_key != b.cost_key) return a.cost_key > b.cost_key;
         if (a.rank != b.rank) return a.rank > b.rank;
-        return a.parent_path > b.parent_path;
+        if (a.parent_path != b.parent_path) return a.parent_path > b.parent_path;
+        // Transitions related by an automorphism of their state share a rank under an orbit
+        // table. The search creates states and edges one at a time, so their raw ids, and the
+        // match itself, order the tie at every thread count.
+        if (a.match.source_state != b.match.source_state)
+            return a.match.source_state > b.match.source_state;
+        if (a.match.rule_index() != b.match.rule_index())
+            return a.match.rule_index() > b.match.rule_index();
+        return std::lexicographical_compare(b.match.matched_edges(),
+                                            b.match.matched_edges() + b.match.num_edges(),
+                                            a.match.matched_edges(),
+                                            a.match.matched_edges() + a.match.num_edges());
     };
-    std::vector<BfCandidate> heap;
-    std::unordered_set<uint64_t> reached;
-    // The initial states' identities, by the successor identity of a rewrite that consumes and
-    // produces nothing, so a transition back into an initial state's class is dropped.
-    const StateCanonicalizationMode mode = hg_->state_canonicalization_mode();
-    const RewriteRule nothing{};
-    for (const auto& [root, cost] : bf_path_cost_) {
-        if (mode == StateCanonicalizationMode::Full)
-            reached.insert(hg_->successor_canonical_hash(root, nullptr, 0, nothing, nullptr));
-        else if (mode == StateCanonicalizationMode::Automatic)
-            reached.insert(hg_->successor_content_hash(root, nullptr, 0, nothing, nullptr));
-    }
-    size_t created = 0;
-    std::vector<BfCandidate> fresh;
-    for (;;) {
-        if (created >= search_budget_ || should_stop_.load(std::memory_order_relaxed) ||
-            last_error() != job_system::ErrorType::None)
-            break;
-        fresh.clear();
-        bf_pending_.for_each([&](const BfCandidate& c) { fresh.push_back(c); });
-        bf_pending_.reset();
-        cost_best_first(fresh);
-        if (last_error() != job_system::ErrorType::None) break;
-        for (const BfCandidate& c : fresh) {
-            heap.push_back(c);
-            std::push_heap(heap.begin(), heap.end(), after);
+    // An exception on this thread (an allocation over "MemoryLimit" while costing, rewriting or
+    // matching) is handed to the job system in a job, which records it as a worker's would be,
+    // and the search stops there.
+    try {
+        std::vector<BfCandidate> heap;
+        std::unordered_set<uint64_t> reached;
+        // The initial states' identities, by the successor identity of a rewrite that consumes and
+        // produces nothing, so a transition back into an initial state's class is dropped.
+        const StateCanonicalizationMode mode = hg_->state_canonicalization_mode();
+        const RewriteRule nothing{};
+        for (const auto& [root, cost] : bf_path_cost_) {
+            if (mode == StateCanonicalizationMode::Full)
+                reached.insert(hg_->successor_canonical_hash(root, nullptr, 0, nothing, nullptr));
+            else if (mode == StateCanonicalizationMode::Automatic)
+                reached.insert(hg_->successor_content_hash(root, nullptr, 0, nothing, nullptr));
         }
-        bool found = false;
-        BfCandidate next{};
-        while (!heap.empty()) {
-            std::pop_heap(heap.begin(), heap.end(), after);
-            next = heap.back();
-            heap.pop_back();
-            if (next.succ.unique == 0 && !reached.insert(next.succ.key).second) continue;
-            found = true;
-            break;
-        }
-        if (!found) break;
-        bf_next_ = BfNode{next.path_cost, hgcommon::splitmix64(next.parent_path ^ next.rank)};
-        // The rewrite and the child's matching run on this thread, so a small state costs no
-        // hand-off to a worker; the tasks the matching spawns run on the workers. An exception
-        // is handed to the job system in a job, which records it as a worker's would be.
-        try {
+        size_t created = 0;
+        std::vector<BfCandidate> fresh;
+        for (;;) {
+            if (created >= search_budget_ || should_stop_.load(std::memory_order_relaxed) ||
+                last_error() != job_system::ErrorType::None)
+                break;
+            fresh.clear();
+            bf_pending_.for_each([&](const BfCandidate& c) { fresh.push_back(c); });
+            bf_pending_.reset();
+            cost_best_first(fresh);
+            if (last_error() != job_system::ErrorType::None) break;
+            for (const BfCandidate& c : fresh) {
+                heap.push_back(c);
+                std::push_heap(heap.begin(), heap.end(), after);
+            }
+            bool found = false;
+            BfCandidate next{};
+            while (!heap.empty()) {
+                std::pop_heap(heap.begin(), heap.end(), after);
+                next = heap.back();
+                heap.pop_back();
+                if (next.succ.unique == 0 && !reached.insert(next.succ.key).second) continue;
+                found = true;
+                break;
+            }
+            if (!found) break;
+            bf_next_ = BfNode{next.path_cost, hgcommon::splitmix64(next.parent_path ^ next.rank)};
+            // The rewrite, the child's matching and its scan and expand tasks run on this thread
+            // (submit_match_task_with_context, submit_scan_task, submit_expand_task).
             best_first_inline() = true;
             best_first_driver() = true;
-            note_depth_task_pushed(next.step);
-            DepthTaskGuard depth_guard(*this, next.step);
-            execute_rewrite_task(next.match, next.step, nullptr);
-        } catch (...) {
+            {
+                note_depth_task_pushed(next.step);
+                DepthTaskGuard depth_guard(*this, next.step);
+                execute_rewrite_task(next.match, next.step, nullptr);
+            }
             best_first_inline() = false;
             best_first_driver() = false;
-            job_system_->submit(job_system::make_job<EvolutionJobType>(
-                [e = std::current_exception()]() { std::rethrow_exception(e); },
-                EvolutionJobType::REWRITE));
+            job_system_->wait_for_completion();
+            ++created;
         }
+    } catch (...) {
         best_first_inline() = false;
         best_first_driver() = false;
+        job_system_->submit(job_system::make_job<EvolutionJobType>(
+            [e = std::current_exception()]() { std::rethrow_exception(e); },
+            EvolutionJobType::REWRITE));
         job_system_->wait_for_completion();
-        ++created;
     }
-    raise_worker_error();
 }
 
 double ParallelEvolutionEngine::beam_path_of(StateId state) const {

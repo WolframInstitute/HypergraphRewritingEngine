@@ -247,6 +247,57 @@ TEST(BestFirst, ResultDoesNotDependOnThreadCount) {
     }
 }
 
+// Under Full states with Automatic events, transitions related by an automorphism of their state
+// share a rank. The search still takes the same one at any thread count, so each created state's
+// raw edges, in creation order, do not depend on the thread count.
+TEST(BestFirst, AutomorphicTransitionsAreTakenInTheSameOrderAtEveryThreadCount) {
+    auto raw = [](size_t threads) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build());
+        hgcommon::TransitionCostSpec spec;
+        spec.field = hgcommon::TC_FIELD_DEGREE;
+        spec.dt = 0.3;
+        e.set_transition_cost(spec);
+        e.set_best_first(true, 40);
+        e.evolve(std::vector<std::vector<std::vector<VertexId>>>{
+                     {{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 1}}},
+                 6);
+        std::vector<std::vector<std::vector<VertexId>>> out;
+        for (StateId s = 0; s < hg.num_states(); ++s) out.push_back(edges_of(hg, s));
+        return out;
+    };
+    const auto one = raw(1);
+    ASSERT_GE(one.size(), 5u);
+    for (int round = 0; round < 5; ++round)
+        for (size_t threads : {size_t(4), size_t(16)})
+            EXPECT_EQ(raw(threads), one) << threads << " workers, round " << round;
+}
+
+// A transition cost that runs out of memory on the search's own thread stops the search with the
+// "memory exhausted" warning, once, and the states built so far stay.
+TEST(BestFirst, AnAllocationFailureWhileCostingIsAPartialResult) {
+    Hypergraph hg;
+    ParallelEvolutionEngine e(&hg, 2);
+    e.add_rule(loop_move());
+    int calls = 0;
+    e.set_transition_cost(hgcommon::TransitionCostSpec{},
+                          [&](const hgcommon::TcEdges&, const hgcommon::TcEdges&) -> double {
+                              if (++calls > 3) throw std::bad_alloc();
+                              return 1.0;
+                          });
+    e.set_best_first(true, 20);
+    EXPECT_NO_THROW(e.evolve(std::vector<std::vector<std::vector<VertexId>>>{
+                                 {{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 1}, {1, 1}}},
+                             4));
+    size_t exhausted = 0;
+    for (const auto& w : e.warnings()) exhausted += w.find("memory exhausted") != std::string::npos;
+    EXPECT_EQ(exhausted, 1u);
+    EXPECT_GE(hg.num_states(), 1u);
+}
+
 // The search creates states one at a time, so the raw ids are the creation order. Under None
 // each state has one history: its path cost is the sum of the residuals along it, recomputed
 // here from the stored states, and the path costs never decrease in creation order.
