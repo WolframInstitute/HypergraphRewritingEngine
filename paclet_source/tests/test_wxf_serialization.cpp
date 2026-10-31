@@ -2239,6 +2239,44 @@ TEST(WxfSerializationPin, StepStatisticsMatricesOptions) {
     EXPECT_TRUE(reply_mentions(bad, "StepStatisticsMatrices 'Overlap'"));
 }
 
+// "All" in "StepStatisticsMeasures" and "StepStatisticsMatrices" gives the reply of the full name
+// lists hg::stats::kMeasureNames and kMatrixNames. HGEvolve sends All as "All".
+TEST(WxfSerializationPin, StepStatisticsAllIsEveryName) {
+    auto run = [](const char* option, std::vector<std::string> names) {
+        auto opts = [=](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"StepStatistics"});
+            put_str_option(w, "CanonicalizeStates", "None");
+            put_str_list_option(w, option, names);
+        };
+        HostBridge host;
+        return run_rewriting_core(branch_job(3, "Evolve", 0, opts, 3), host);
+    };
+    std::vector<std::string> measures;
+    for (const auto& m : hg::stats::kMeasureNames) measures.push_back(m.name);
+    const auto measures_all = run("StepStatisticsMeasures", {"All"});
+    EXPECT_FALSE(reply_mentions(measures_all, "OptionSkipped"));
+    EXPECT_EQ(measures_all, run("StepStatisticsMeasures", measures));
+    std::vector<std::string> matrices(std::begin(hg::stats::kMatrixNames),
+                                      std::end(hg::stats::kMatrixNames));
+    const auto matrices_all = run("StepStatisticsMatrices", {"All"});
+    EXPECT_FALSE(reply_mentions(matrices_all, "OptionSkipped"));
+    // State ids are run-local under None, so two runs can number a step's states in different
+    // orders and permute the matrices' rows: the replies have the same size and every matrix.
+    const auto matrices_list = run("StepStatisticsMatrices", matrices);
+    EXPECT_EQ(matrices_all.size(), matrices_list.size());
+    for (const auto& m : matrices) {
+        EXPECT_TRUE(reply_mentions(matrices_all, m)) << m;
+        EXPECT_TRUE(reply_mentions(matrices_list, m)) << m;
+    }
+    // The refusal names every measure.
+    const auto bad = run("StepStatisticsMeasures", {"Curvature"});
+    EXPECT_TRUE(reply_mentions(bad, "StepStatisticsMeasures 'Curvature' is not one of "
+                                    "VolumeGrowth, Geodesics, EdgeCurvature, Combinatorial, "
+                                    "Particles, DimensionGradient, Topology, MetricTensor, "
+                                    "Holonomy, BranchAlignment, Equilibrium, GeodesicAnalysis, "
+                                    "WaveFront, Branchial"));
+}
+
 // {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at 12 steps under quotient exploration: NumEvents is
 // 3,002,019,319,241,196,638 and the branchial count passes 2^63 - 1. A CountSaturated warning is
 // given for a saturated count the job asked for, and it names that count.

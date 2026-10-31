@@ -1210,15 +1210,14 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "IncludeVertexCurvature" -> ov["IncludeVertexCurvature"],
     "StepStatisticsWeighting" -> ov["StepStatisticsWeighting"],
     "StatisticsGraph" -> ov["StatisticsGraph"],
+    (* All is sent as "All": parse_job in hypergraph_ffi.cpp expands it to every name of stats::kMeasureNames. *)
     "StepStatisticsMeasures" -> Flatten[{Replace[ov["StepStatisticsMeasures"],
-      {Automatic -> {}, All -> {"VolumeGrowth", "Geodesics", "EdgeCurvature", "Combinatorial",
-        "Particles", "DimensionGradient", "Topology", "MetricTensor", "Holonomy",
-        "Equilibrium", "BranchAlignment", "GeodesicAnalysis", "WaveFront", "Branchial"}}]}],
+      {Automatic -> {}, All -> {"All"}}]}],
     "StepStatisticsBranchial" -> Flatten[{Replace[ov["StepStatisticsBranchial"],
       {None -> {}, All -> {"Graph", "Overlap"}}]}],
+    (* All is sent as "All": parse_job in hypergraph_ffi.cpp expands it to every name of stats::kMatrixNames. *)
     "StepStatisticsMatrices" -> Flatten[{Replace[ov["StepStatisticsMatrices"],
-      {None -> {}, All -> {"StateOverlap", "StateCosineSimilarity", "StateMutualInformation",
-        "StateEdgeOverlap", "StateEdgeCosineSimilarity", "StateEdgeMutualInformation"}}]}],
+      {None -> {}, All -> {"All"}}]}],
     "StepStatisticsMatrixLimit" -> Replace[ov["StepStatisticsMatrixLimit"], Automatic -> 0],
     "RequestedData" -> requiredData,
     "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)

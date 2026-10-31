@@ -395,17 +395,22 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                             else throw std::runtime_error(
                                 "StatisticsGraph '" + w + "' is not Consecutive or AllPairs");
                         } else if (option_key == "StepStatisticsMeasures") {
-                            // Automatic is the empty list and All every name.
+                            // Automatic is the empty list. "All" is every name of
+                            // hg::stats::kMeasureNames.
                             uint32_t bits = 0;
                             for (const auto& k : option_parser.template read<std::vector<std::string>>()) {
+                                if (k == "All") {
+                                    for (const auto& m : hg::stats::kMeasureNames) bits |= m.bits;
+                                    continue;
+                                }
                                 const uint32_t bit = hg::stats::measure_bits(k);
-                                if (!bit)
-                                    throw std::runtime_error(
-                                        "StepStatisticsMeasures '" + k + "' is not one of "
-                                        "VolumeGrowth, Geodesics, EdgeCurvature, Combinatorial, "
-                                        "Particles, DimensionGradient, Topology, MetricTensor, Holonomy, "
-                                        "BranchAlignment, Equilibrium, GeodesicAnalysis, WaveFront, "
-                                        "Branchial");
+                                if (!bit) {
+                                    std::string names;
+                                    for (const auto& m : hg::stats::kMeasureNames)
+                                        names += (names.empty() ? "" : ", ") + std::string(m.name);
+                                    throw std::runtime_error("StepStatisticsMeasures '" + k +
+                                                             "' is not one of " + names);
+                                }
                                 bits |= bit;
                             }
                             req.statistics_measures = bits;
@@ -438,15 +443,22 @@ static void parse_job(P& parser, hgffi::ParsedJob& req) {
                             req.step_statistics_branchial =
                                 (req.step_statistics_branchial & hg::stats::kBranchialMatrices) | bits;
                         } else if (option_key == "StepStatisticsMatrices") {
+                            // "All" is every name of hg::stats::kMatrixNames.
                             uint32_t bits = 0;
                             for (const auto& k : option_parser.template read<std::vector<std::string>>()) {
+                                if (k == "All") {
+                                    for (const char* n : hg::stats::kMatrixNames)
+                                        bits |= hg::stats::matrix_bit(n);
+                                    continue;
+                                }
                                 const uint32_t bit = hg::stats::matrix_bit(k);
-                                if (!bit)
-                                    throw std::runtime_error(
-                                        "StepStatisticsMatrices '" + k + "' is not one of "
-                                        "StateOverlap, StateCosineSimilarity, "
-                                        "StateMutualInformation, StateEdgeOverlap, "
-                                        "StateEdgeCosineSimilarity, StateEdgeMutualInformation");
+                                if (!bit) {
+                                    std::string names;
+                                    for (const char* n : hg::stats::kMatrixNames)
+                                        names += (names.empty() ? "" : ", ") + std::string(n);
+                                    throw std::runtime_error("StepStatisticsMatrices '" + k +
+                                                             "' is not one of " + names);
+                                }
                                 bits |= bit;
                             }
                             req.step_statistics_branchial =
