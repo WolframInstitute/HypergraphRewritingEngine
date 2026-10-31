@@ -220,7 +220,7 @@ Length[HGEvolve[rule, "Torus", 0, "GlobalEdges", "GridWidth" -> 4, "RandomSeed" 
 initialStateGraph[HGEvolve[rule, "Torus", 0, "GlobalEdges", "GridWidth" -> 4, "RandomSeed" -> 1]]
 ```
 
-![A torus of resolution 4 has 32 edges](../images/InitialConditions/InitialConditions-21.png)
+![A torus of resolution 4 has 32 edges](../images/InitialConditions/InitialConditions-24.png)
 
 The same seed gives the same torus, and another seed reverses some of its edges:
 
@@ -238,7 +238,7 @@ A cylinder of 6 columns and 3 rows:
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Cylinder", "Resolution" -> 6, "Height" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
-![A cylinder of 6 columns and 3 rows](../images/InitialConditions/InitialConditions-23.png)
+![A cylinder of 6 columns and 3 rows](../images/InitialConditions/InitialConditions-26.png)
 
 A sphere of resolution 4:
 
@@ -246,7 +246,7 @@ A sphere of resolution 4:
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Sphere", "Resolution" -> 4, "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
-![A sphere of resolution 4](../images/InitialConditions/InitialConditions-24.png)
+![A sphere of resolution 4](../images/InitialConditions/InitialConditions-27.png)
 
 A Klein bottle of 5 columns and 3 rows:
 
@@ -254,7 +254,7 @@ A Klein bottle of 5 columns and 3 rows:
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Klein", "Resolution" -> 5, "Height" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
-![A Klein bottle of 5 columns and 3 rows](../images/InitialConditions/InitialConditions-25.png)
+![A Klein bottle of 5 columns and 3 rows](../images/InitialConditions/InitialConditions-28.png)
 
 A Möbius strip of 6 columns and 3 rows:
 
@@ -262,7 +262,7 @@ A Möbius strip of 6 columns and 3 rows:
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Mobius", "Resolution" -> 6, "Width" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"], GraphLayout -> "SpringElectricalEmbedding"]
 ```
 
-![A Möbius strip of 6 columns and 3 rows](../images/InitialConditions/InitialConditions-26.png)
+![A Möbius strip of 6 columns and 3 rows](../images/InitialConditions/InitialConditions-29.png)
 
 ---
 
@@ -286,7 +286,7 @@ A sprinkling of 24 points, with time running down the page:
 initialStateGraph[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "RandomSeed" -> 1], GraphLayout -> "LayeredDigraphEmbedding", ImageSize -> 420]
 ```
 
-![A sprinkling of 24 points, with time running down the page](../images/InitialConditions/InitialConditions-28.png)
+![A sprinkling of 24 points, with time running down the page](../images/InitialConditions/InitialConditions-31.png)
 
 `"Sprinkling"` and `"Minkowski"` give the same result:
 
@@ -336,7 +336,7 @@ At most one link from each point gives a forest:
 initialStateGraph[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "SprinklingMaxEdgesPerVertex" -> 1, "RandomSeed" -> 1], GraphLayout -> "LayeredDigraphEmbedding"]
 ```
 
-![At most one link from each point gives a forest](../images/InitialConditions/InitialConditions-34.png)
+![At most one link from each point gives a forest](../images/InitialConditions/InitialConditions-37.png)
 
 ---
 
@@ -374,7 +374,7 @@ A smaller box and a threshold of 4 join the points into one piece:
 initialStateGraph[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 30, "BrillLindquistBoxX" -> {-8., 8.}, "BrillLindquistBoxY" -> {-8., 8.}, "EdgeThreshold" -> 4., "RandomSeed" -> 1]]
 ```
 
-![A smaller box and a threshold of 4 join the points into one piece](../images/InitialConditions/InitialConditions-38.png)
+![A smaller box and a threshold of 4 join the points into one piece](../images/InitialConditions/InitialConditions-41.png)
 
 A point with no edge is not in the hypergraph. Here each of the 30 points has an edge:
 
@@ -471,7 +471,7 @@ Thirty points requested with a minimum distance of 2:
 initialStateGraph[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "PoissonMinDistance" -> 2., "RandomSeed" -> 1]]
 ```
 
-![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-48.png)
+![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-51.png)
 
 22 points are kept:
 
@@ -515,7 +515,7 @@ Twenty points:
 initialStateGraph[HGEvolve[rule, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1]]
 ```
 
-![Twenty points](../images/InitialConditions/InitialConditions-53.png)
+![Twenty points](../images/InitialConditions/InitialConditions-56.png)
 
 The number of edges at thresholds 2, 3 and 4:
 
