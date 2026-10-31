@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- An allocation that fails on a worker thread outside a job body (the first use of the thread's
+  scratch arena after memory runs out, or the job pool) gives the "memory exhausted" partial
+  result. It ended the process with `std::bad_alloc` ("terminate called"), depending on which
+  worker reached it first.
+- `"Search" -> "BestFirst"` creates the same states with the same raw edges at any thread count.
+  Under `Full` states with `"CanonicalizeEvents" -> Automatic`, transitions related by an
+  automorphism tied and were taken in the order the workers delivered them. An allocation failure
+  during the search gives a partial result with one `HGEvolve::overflow` warning, where the call
+  failed or warned twice.
+- A generated point set with a small `"EdgeThreshold"` bins its points by their number as well as
+  by the box: a 3D `"BrillLindquist"` with `"EdgeThreshold" -> 0.01` asked for 1024^3 bins.
+- A generated lattice above 2^31 vertices is refused. An initial-condition `"Seed"` that is not an
+  integer is refused; it was replaced by a random seed.
+- `"Threads"` and `HG_TUNE_THREADS` above 1024 are lowered to 1024, with an `OptionLowered`
+  warning for the option.
+- A refused held-session verb (`HGSessionStep`, `HGSessionQuery`, `HGSessionFrontier`,
+  `HGSessionClose`) issues `HGSessionStep::refused`. It issued `HGSessionOpen::refused`.
+- Without an `hg_evolve` binary, a job the in-process library refuses gives
+  `HGEvolve::enginemsg` with the engine's reason. It gave `$Failed` with no message.
+- Python: a named initial condition takes the call's `random_seed`, `encode_job` asks for every
+  step's branchial edges for an `EvolutionBranchialGraph` as `HGEvolve` does,
+  `event_ordering_function="None"` is the same as None, and a `transition_cost` without
+  `"Field"` raises `ValueError`.
+
 - A history under `"EventOrderingFunction"` runs on one worker whatever `"Threads"` says. It
   applies one event at a time, each after the one before, and more workers only moved each event
   between cores: on a 2,048-point synchronizer it ran at 28,258 events/s on one thread and
