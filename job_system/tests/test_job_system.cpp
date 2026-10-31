@@ -912,6 +912,60 @@ TEST(JobSystemErrors, AnOrdinaryExceptionIsStillAGenericException) {
     js.shutdown();
 }
 
+// on_job_complete_ runs on a worker after the job body. The engine's hook calls
+// worker_scratch(), whose first call on a thread maps a block and can throw std::bad_alloc. The
+// throw is latched as OutOfMemory. Escaping the worker's thread, it calls std::terminate.
+TEST(JobSystemErrors, AJobCompleteHookThatRunsOutOfMemoryIsLatched) {
+    using namespace job_system;
+    JobSystem<TestJobType> js(2);
+    std::atomic<bool> thrown{false};
+    js.set_on_job_complete([&] {
+        if (!thrown.exchange(true)) throw std::bad_alloc();
+    });
+    js.start();
+    std::atomic<int> ran{0};
+    js.submit(make_job<TestJobType>([&] { ran.fetch_add(1); }, TestJobType::PHYSICS));
+    js.wait_for_completion();
+    EXPECT_EQ(ran.load(), 1);
+    EXPECT_TRUE(thrown.load());
+    EXPECT_EQ(js.get_error_type(), ErrorType::OutOfMemory);
+    js.shutdown();
+}
+
+// on_inline_begin_ runs on the submitting thread before a job that found the injector full. A
+// throw from it is latched as OutOfMemory, the job is discarded and booked complete, and
+// on_inline_end_ is not called, since no mark was pushed.
+TEST(JobSystemErrors, AnInlineBeginThatRunsOutOfMemoryIsLatched) {
+    using namespace job_system;
+    JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
+    int begins = 0, ends = 0;
+    js.set_on_inline_job(
+        [&] {
+            ++begins;
+            throw std::bad_alloc();
+        },
+        [&] { ++ends; });
+    js.start();
+    // Nothing drains a serial injector before wait_for_completion, so the first submit that
+    // finds it full runs its job on this thread.
+    int queued_ran = 0;
+    bool inline_ran = false;
+    const size_t most = 2 * static_cast<size_t>(HG_JOB_INJECTOR_CAPACITY);
+    for (size_t i = 0; i < most && begins == 0; ++i) {
+        EXPECT_NO_THROW(js.submit(make_job<TestJobType>([&] {
+            if (begins) inline_ran = true;
+            else ++queued_ran;
+        }, TestJobType::PHYSICS)));
+    }
+    EXPECT_EQ(begins, 1) << "the injector never filled, so no job ran on this thread";
+    EXPECT_EQ(ends, 0);
+    EXPECT_FALSE(inline_ran);
+    EXPECT_EQ(js.get_error_type(), ErrorType::OutOfMemory);
+    js.wait_for_completion();
+    EXPECT_EQ(queued_ran, 0) << "queued jobs ran after the error was latched";
+    js.shutdown();
+}
+
 // ---------------------------------------------------------------------------
 // Worker affinity
 // ---------------------------------------------------------------------------

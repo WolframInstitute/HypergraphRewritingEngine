@@ -3398,10 +3398,10 @@ size_t ParallelEvolutionEngine::dedup_allocs_wasted() const {
 
 ParallelEvolutionEngine::DepthTaskGuard::DepthTaskGuard(ParallelEvolutionEngine& engine,
                                                         uint32_t depth)
-    : engine_(engine), depth_(depth) {}
+    : engine_(engine), depth_(depth), uncaught_at_entry_(std::uncaught_exceptions()) {}
 
-ParallelEvolutionEngine::DepthTaskGuard::~DepthTaskGuard() {
-    engine_.note_depth_task_done(depth_);
+ParallelEvolutionEngine::DepthTaskGuard::~DepthTaskGuard() noexcept(false) {
+    if (std::uncaught_exceptions() == uncaught_at_entry_) engine_.note_depth_task_done(depth_);
 }
 
 ParallelEvolutionEngine::ParallelEvolutionEngine() : hg_(nullptr), rewriter_(nullptr) {}

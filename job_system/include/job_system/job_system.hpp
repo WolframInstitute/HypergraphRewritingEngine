@@ -692,14 +692,14 @@ private:
     // returns.
     // `data` is null when a non-worker submitter runs an overflowed job on its own thread;
     // the per-worker counters simply do not apply to it.
-    void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
-        HG_STAT(if (job->runs.fetch_add(1, std::memory_order_acq_rel) != 0)
-                    double_executions_.fetch_add(1, std::memory_order_relaxed));
-        if (data) data->jobs_executing.fetch_add(1);
+    // Runs `f` and latches the kind of any exception it throws. Every call the scheduler makes
+    // into job or hook code goes through here: an exception that leaves a worker's thread calls
+    // std::terminate. on_job_complete_ and on_inline_begin_ can throw std::bad_alloc, because
+    // the first call to worker_scratch() on a thread maps the arena's first block.
+    template <class F>
+    void run_latched(F&& f) noexcept {
         try {
-            // After an error the job is discarded unrun, so the queues drain without running the
-            // jobs they hold or the children those would submit.
-            if (error_type_.load(std::memory_order_acquire) == ErrorType::None) job->execute();
+            f();
         } catch (const hgcommon::CapacityExhausted& e) {
             record_error_message(e.what());
             latch_error(ErrorType::CapacityExhausted);
@@ -714,8 +714,19 @@ private:
             record_error_message("non-std exception");
             latch_error(ErrorType::Unhandled);
         }
+    }
+
+    void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
+        HG_STAT(if (job->runs.fetch_add(1, std::memory_order_acq_rel) != 0)
+                    double_executions_.fetch_add(1, std::memory_order_relaxed));
+        if (data) data->jobs_executing.fetch_add(1);
+        // After an error the job is discarded unrun, so the queues drain without running the
+        // jobs they hold or the children those would submit.
+        run_latched([&] {
+            if (error_type_.load(std::memory_order_acquire) == ErrorType::None) job->execute();
+        });
         delete job;
-        if (recycle_scratch && on_job_complete_) on_job_complete_();  // recycle per-worker scratch
+        if (recycle_scratch && on_job_complete_) run_latched(on_job_complete_);  // recycle per-worker scratch
         if (data) {
             data->jobs_executing.fetch_sub(1);
             HG_STAT(data->jobs_executed.fetch_add(1, std::memory_order_relaxed));
@@ -911,10 +922,17 @@ private:
         t_inline_pending_ = outer_pending;
     }
 
+    // A failed on_inline_begin_ pushed no mark, so on_inline_end_ is skipped and the submitter's
+    // mark stays on the stack. The failure is latched, and run_job then discards the job and
+    // books it complete.
     void run_inline_one_(WorkerData* data, JobRaw raw) {
-        if (on_inline_begin_) on_inline_begin_();
+        bool marked = true;
+        if (on_inline_begin_) {
+            marked = false;
+            run_latched([&] { on_inline_begin_(); marked = true; });
+        }
         run_job(data, raw, /*recycle_scratch=*/false);
-        if (on_inline_end_) on_inline_end_();
+        if (marked && on_inline_end_) run_latched(on_inline_end_);
     }
 
     // Route a job to the current worker's own deque (nested submit) or the injector.

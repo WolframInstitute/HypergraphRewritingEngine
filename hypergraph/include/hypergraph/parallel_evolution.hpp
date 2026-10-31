@@ -1136,16 +1136,20 @@ private:
     void note_depth_task_done(uint32_t depth);
     void try_complete_depth(uint32_t depth);
 
-    // Books one task against its depth however its function exits.
+    // Books one task against its depth when its function returns. Booking can settle the depth,
+    // and depth_settled submits jobs (MaxStatesPerStep) and calls on_depth_complete_, so it can
+    // throw std::bad_alloc; the destructor lets that reach run_job's catch, as MatchTaskGuard
+    // does. A task already unwinding has latched its own error, so its completion is not booked.
     class DepthTaskGuard {
     public:
         DepthTaskGuard(ParallelEvolutionEngine& engine, uint32_t depth);
-        ~DepthTaskGuard();
+        ~DepthTaskGuard() noexcept(false);
         DepthTaskGuard(const DepthTaskGuard&) = delete;
         DepthTaskGuard& operator=(const DepthTaskGuard&) = delete;
     private:
         ParallelEvolutionEngine& engine_;
         uint32_t depth_;
+        int uncaught_at_entry_;
     };
 
     // Statistics (atomics for thread-safety)

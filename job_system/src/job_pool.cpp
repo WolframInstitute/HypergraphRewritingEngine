@@ -9,6 +9,7 @@ namespace jobs {
 void* JobSlotPool::allocate(std::size_t size) {
     if (size > kSlotSize) {
         char* base = static_cast<char*>(std::malloc(kHeaderSize + size));
+        if (base == nullptr) return nullptr;          // out of memory: the caller throws bad_alloc
         header(base + kHeaderSize)->owner = nullptr;  // heap-fallback marker
         return base + kHeaderSize;
     }
