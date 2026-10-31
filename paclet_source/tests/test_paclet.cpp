@@ -8,14 +8,60 @@
  * testing the full pipeline: WXF serialization → FFI → hypergraph evolution → WXF deserialization
  */
 
+#include <filesystem>
+
+namespace {
+
+// The newest source the paclet's binaries are built from, and the paclet binaries the tests'
+// wolframscript loads (the Windows ones when that wolframscript is a Windows .exe reached from
+// WSL), with the first binary older than that source. An empty string when every binary is newer.
+[[maybe_unused]] std::string stale_paclet_binary() {
+    namespace fs = std::filesystem;
+    const fs::path root(HG_SOURCE_DIR);
+    fs::file_time_type newest = fs::file_time_type::min();
+    fs::path newest_source;
+    for (const char* dir : {"common", "hypergraph", "job_system", "lockfree_deque", "wxf",
+                            "paclet_source"}) {
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(root / dir, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const fs::path& p = it->path();
+            const std::string ext = p.extension().string();
+            if (p.string().find("/tests/") != std::string::npos) continue;
+            if (ext != ".cpp" && ext != ".hpp" && ext != ".h" && ext != ".cu" && ext != ".def")
+                continue;
+            const auto t = fs::last_write_time(p, ec);
+            if (!ec && t > newest) { newest = t; newest_source = p; }
+        }
+    }
+    const fs::path probe = root / "paclet";
+    const bool windows = test_utils::hostVisiblePath(probe.string()) != probe.string();
+    const fs::path lib = root / "paclet" / "LibraryResources" /
+                         (windows ? "Windows-x86-64" : "Linux-x86-64");
+    const std::vector<std::string> names =
+        windows ? std::vector<std::string>{"HypergraphRewriting.dll", "hg_evolve.exe"}
+                : std::vector<std::string>{"libHypergraphRewriting.so", "hg_evolve"};
+    for (const auto& name : names) {
+        std::error_code ec;
+        const auto t = fs::last_write_time(lib / name, ec);
+        if (ec || t < newest)
+            return (lib / name).string() + " is older than " + newest_source.string() +
+                   ". Rebuild it before running these tests: " +
+                   (windows ? "./build_windows_msvc.sh cpu" : "build_linux, installed into paclet/");
+    }
+    return {};
+}
+
+}  // namespace
+
+// Every test here runs the paclet's prebuilt binaries, not the sources this binary was compiled
+// from, so a binary older than a source answers for code that no longer exists. SetUp refuses to
+// run a test against one.
 class PacletTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Test setup if needed
-    }
-
-    void TearDown() override {
-        // Test cleanup if needed
+        static const std::string stale = stale_paclet_binary();
+        if (!stale.empty()) GTEST_FAIL() << "stale paclet binary: " << stale;
     }
 };
 
