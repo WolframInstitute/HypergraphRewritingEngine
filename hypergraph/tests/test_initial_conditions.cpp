@@ -272,3 +272,24 @@ TEST(InitialConditions, ALatticeAboveTwoToTheThirtyOneVerticesIsRefused) {
                              {WXFValue("Width"), WXFValue(int64_t{65536})},
                              {WXFValue("Height"), WXFValue(int64_t{32768})}}));
 }
+
+// The join's cell grid is sized by the point count as well as by the box over the threshold: a
+// 3D Brill-Lindquist join of 150 points with a threshold of 0.01 in a box 30 wide asked for 1024^3
+// cells (8 GB of bins) and now takes at most 150. A threshold that small joins nothing.
+TEST(InitialConditions, ASmallThresholdBinsByThePointCount) {
+    const Case& c = cases().at("brill_lindquist_150_d3");
+    ic::IcSpec s;
+    s.type = ic::IcType::BrillLindquist;
+    s.dimension = 3;
+    s.mass1 = 3.0; s.mass2 = 2.0; s.separation = 10.0;
+    for (auto& b : s.box) { b[0] = -15.0; b[1] = 15.0; }
+    s.edge_threshold = 0.01;
+    s.randomize_directions = false;
+    ic::IcGraph g;
+    ic::IcRng rng(0);
+    ic::ic_brill_lindquist_join(s, c.points, rng, g);
+    EXPECT_TRUE(g.edges.empty());
+    uint32_t cells[3];
+    ic::ic_cell_counts(3, s.box, s.edge_threshold, 150, cells);
+    EXPECT_LE(uint64_t{cells[0]} * cells[1] * cells[2], 150u);
+}

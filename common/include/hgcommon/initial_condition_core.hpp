@@ -297,22 +297,38 @@ inline IcGraph ic_twisted(const IcSpec& s, bool mobius) {
     return g;
 }
 
+// Cells per axis of a grid over the box for `n` points, each cell of side at least `t` (1 per
+// axis for t <= 0), at most 1024 per axis and at most max(n, 1) in all: the axis with the most
+// cells halves, rounding up, until the product fits.
+inline void ic_cell_counts(uint32_t d, const double (*box)[2], double t, uint64_t n,
+                           uint32_t cells[3]) {
+    cells[0] = cells[1] = cells[2] = 1;
+    for (uint32_t a = 0; a < d; ++a) {
+        const double len = box[a][1] - box[a][0];
+        const double c = t > 0 ? std::floor(len / t) : 1;
+        cells[a] = static_cast<uint32_t>(std::max(1.0, std::min(c, 1024.0)));
+    }
+    const uint64_t limit = n > 0 ? n : 1;
+    while (uint64_t{cells[0]} * cells[1] * cells[2] > limit) {
+        uint32_t a = 0;
+        for (uint32_t b = 1; b < 3; ++b)
+            if (cells[b] > cells[a]) a = b;
+        cells[a] = (cells[a] + 1) / 2;
+    }
+}
+
 // Candidate pairs (i, j), i < j, of points closer than `t`, for i ascending and j ascending
-// within i. Points are binned into cells of side at least t, so a pair is found by scanning the
-// 3^d cells around a point: O(n + pairs) for a box at least 3 cells wide per axis. `delta`
-// returns the displacement used (periodic or not); `cell_of` bins a coordinate.
+// within i. Points are binned into cells of side at least t (ic_cell_counts), so a pair is found
+// by scanning the 3^d cells around a point: O(n + pairs) for a box at least 3 cells wide per
+// axis. `delta` returns the displacement used (periodic or not).
 template <class Delta>
 inline void ic_near_pairs(const std::vector<double>& pts, uint32_t d, const double (*box)[2],
                           bool periodic, double t, Delta delta,
                           std::vector<std::vector<uint32_t>>& out) {
     const uint32_t n = static_cast<uint32_t>(pts.size() / d);
     out.assign(n, {});
-    uint32_t cells[3] = {1, 1, 1};
-    for (uint32_t a = 0; a < d; ++a) {
-        const double len = box[a][1] - box[a][0];
-        const double c = t > 0 ? std::floor(len / t) : 1;
-        cells[a] = static_cast<uint32_t>(std::max(1.0, std::min(c, 1024.0)));
-    }
+    uint32_t cells[3];
+    ic_cell_counts(d, box, t, n, cells);
     auto cell = [&](uint32_t p, uint32_t a) {
         const double len = box[a][1] - box[a][0];
         double f = len > 0 ? (pts[size_t(p) * d + a] - box[a][0]) / len : 0;
@@ -517,14 +533,15 @@ inline void ic_join_planar(IcGraph& g, IcRng& rng, const IcSpec& s, const std::v
 }
 
 // Dart throwing: up to 100 n candidates, each kept when no kept point is closer than
-// min_distance. Kept points are binned by cells of side min_distance.
+// min_distance. Kept points are binned by cells of side at least min_distance (ic_cell_counts).
 inline IcGraph ic_poisson_disk(const IcSpec& s) {
     IcGraph g; IcRng rng(s.seed);
     const double md = s.min_distance, md2 = md * md;
     const double x0 = s.box[0][0], y0 = s.box[1][0];
     const double lx = s.box[0][1] - x0, ly = s.box[1][1] - y0;
-    const uint32_t cx = static_cast<uint32_t>(std::max(1.0, std::min(md > 0 ? std::floor(lx / md) : 1, 4096.0)));
-    const uint32_t cy = static_cast<uint32_t>(std::max(1.0, std::min(md > 0 ? std::floor(ly / md) : 1, 4096.0)));
+    uint32_t cells[3];
+    ic_cell_counts(2, s.box, md, s.n, cells);
+    const uint32_t cx = cells[0], cy = cells[1];
     std::vector<std::vector<uint32_t>> bins(size_t(cx) * cy);
     auto bin = [](double v, double o, double l, uint32_t c) {
         long long k = l > 0 ? static_cast<long long>(std::floor((v - o) / l * c)) : 0;
