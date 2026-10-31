@@ -16,7 +16,18 @@
 # thread_atexit_records_nothing. uninit_heap_read_reported pins the report's wording. The
 # weak_cas_spurious_* reproducers pin that every spurious failure of a weak CAS is explored, and
 # that --weak-cas-spurious-bound=N (N failures in a row) and --weak-cas-spurious-total=M (M per
-# execution) explore up to the bound and no further, and refuse 0.
+# execution) explore up to the bound and no further, and refuse 0. Measured on the v0.17.0 fork
+# build of 2026-10-07, which has none of the fixes found on v0.19.0: fp_intrinsics_lowered and
+# fma_lowered stop on "Code generator does not support intrinsic function",
+# fp_constant_in_spin_annotation on "Only integer and null constants currently allowed in
+# assume() expressions", zero_size_global and external_global_declaration on "Internal check
+# failed: size != 0" (with only the zero-size fix, external_global_declaration stops on a
+# segmentation fault), fneg_unary_operator on a segmentation fault, and static_mixed_size_read
+# reports "Assertion violation: hi == 7". Measured on a v0.19.0 build without the two
+# LoopJumpThreadingPass fixes: loop_header_value_used_after_loop reports "Assertion violation:
+# done && cap == 2" and loop_body_phi_from_preheader stops on a segmentation fault. The
+# weak_cas_spurious_concurrent_only_* reproducers pin --weak-cas-spurious-concurrent-only, and
+# weak_cas_setup_cas_sites pins the "HG-SETUP-CAS" line printed under HG_GENMC_SETUP_CAS_SITES.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GENMC="${GENMC:-$HOME/genmc-019/build/bin/genmc}"

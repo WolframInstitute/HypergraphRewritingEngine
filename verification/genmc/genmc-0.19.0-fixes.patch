@@ -28,7 +28,7 @@ index a159773..1aef410 100644
  }
  
 diff --git a/genmc/genmc/Execution/ExecutionGraph.cpp b/genmc/genmc/Execution/ExecutionGraph.cpp
-index e0c21c9..db8d665 100644
+index e0c21c9..dbad373 100644
 --- a/genmc/genmc/Execution/ExecutionGraph.cpp
 +++ b/genmc/genmc/Execution/ExecutionGraph.cpp
 @@ -15,6 +15,7 @@
@@ -39,7 +39,7 @@ index e0c21c9..db8d665 100644
  #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
  #include "genmc/Execution/EventLabel.hpp"
  #include "genmc/Execution/Stamp.hpp"
-@@ -51,8 +52,39 @@ static constexpr uint64_t BYTE_MASK = 0xFF;
+@@ -51,8 +52,70 @@ static constexpr uint64_t BYTE_MASK = 0xFF;
  
  	/* Special case for initializer */
  	if (lab->getPos().isInitializer()) {
@@ -77,6 +77,37 @@ index e0c21c9..db8d665 100644
 +					     "The write is a copy promoted at alignment width; see "
 +					     "PromoteMemIntrinsicPass.\n";
 +			ERROR("Read of uninitialised heap memory during value resolution\n");
++		}
++		/* A static location read from the initializer while a write in the graph overlaps it
++		 * at another address or width: the value would be the initializer's, not the
++		 * write's. Non-atomic labels resolve a read against writes to its exact address and
++		 * width, so a mixed-size access is reported, where the initializer was returned. */
++		if (haveNAs_ && !access.addr.isDynamic() && !pruned_) {
++			const WriteLabel *overlap = nullptr;
++			for (auto d = 1U; d < 16U && !overlap; ++d) {
++				auto it = coherence.find(access.addr - ASize(d));
++				if (it == coherence.end())
++					continue;
++				for (const auto &w : it->second)
++					if (w.getSize().get() > d) { overlap = &w; break; }
++			}
++			for (auto d = 0U; d < access.size.get() && !overlap; ++d) {
++				auto it = coherence.find(access.addr + ASize(d));
++				if (it == coherence.end())
++					continue;
++				for (const auto &w : it->second)
++					if (d != 0 || w.getSize() != access.size) { overlap = &w; break; }
++			}
++			if (overlap) {
++				std::cerr << "Mixed-size access to static memory: a read of address "
++					  << access.addr.get() << " width " << access.size.get()
++					  << " overlaps the write (" << overlap->getPos().thread << ", "
++					  << overlap->getPos().index << ") at address "
++					  << overlap->getAddr().get() << " width " << overlap->getSize().get()
++					  << " reader instruction "
++					  << hgprog::siteName(hgprog::explorer().curInst) << "\n";
++				ERROR("Mixed-size access to static memory\n");
++			}
 +		}
  		auto val = (access.addr.isDynamic() && !initVals_.contains(access.addr))
  				   ? SVal(0)
@@ -513,20 +544,21 @@ index 2b90f35..edffa58 100644
  		errors.emplace_back("Instruction caching implies NA-label emission");
  
 diff --git a/genmc/genmc/Verification/Config.hpp b/genmc/genmc/Verification/Config.hpp
-index e7ecfa6..253cfbb 100644
+index e7ecfa6..d4460cb 100644
 --- a/genmc/genmc/Verification/Config.hpp
 +++ b/genmc/genmc/Verification/Config.hpp
-@@ -38,6 +38,8 @@ struct Config {
+@@ -38,6 +38,9 @@ struct Config {
  	bool estimate{};
  	bool isDepTrackingModel{};
  	std::optional<unsigned int> bound;
 +	std::optional<unsigned int> weakCasSpuriousBound;
 +	std::optional<unsigned int> weakCasSpuriousTotal;
++	bool weakCasSpuriousConcurrentOnly = false;
  	BoundType boundType{};
  	bool LAPOR{};
  	bool symmetryReduction{};
 diff --git a/genmc/genmc/Verification/GenMCDriver.cpp b/genmc/genmc/Verification/GenMCDriver.cpp
-index 7ea8312..55e8477 100644
+index 7ea8312..c8bb500 100644
 --- a/genmc/genmc/Verification/GenMCDriver.cpp
 +++ b/genmc/genmc/Verification/GenMCDriver.cpp
 @@ -11,6 +11,9 @@
@@ -610,10 +642,24 @@ index 7ea8312..55e8477 100644
  		auto item = getExec().getWorkqueue().getNext();
  		if (!item) {
  			/* Random mode never revisits: resample while the
-@@ -748,6 +790,45 @@ void GenMCDriver::maybePushWeakCasFailure(const CasReadLabel *cLab)
+@@ -748,6 +790,59 @@ void GenMCDriver::maybePushWeakCasFailure(const CasReadLabel *cLab)
  	 * callers must have already established success. */
  	if (!cLab->isWeak() || cLab->failsSpuriously() || !cLab->getRf())
  		return;
++	/* --weak-cas-spurious-concurrent-only: a CAS the program executes while it has one thread
++	 * (before its first thread is created) gets no spurious-failure option. */
++	if (getConf()->weakCasSpuriousConcurrentOnly && getExec().getGraph().getNumThreads() == 1) {
++		++result.spuriousCut;
++		/* HG_GENMC_SETUP_CAS_SITES: name each site this exempts, once, so a harness can list
++		 * the CASes its bound leaves strong. */
++		if (std::getenv("HG_GENMC_SETUP_CAS_SITES")) {
++			static std::set<std::string> seen;
++			auto site = hgprog::siteName(hgprog::explorer().curInst);
++			if (seen.insert(site).second)
++				std::cerr << "HG-SETUP-CAS " << site << "\n";
++		}
++		return;
++	}
 +	/* --weak-cas-spurious-bound=N: a thread's CAS on one address fails spuriously at most N
 +	 * times in a row. Each option this drops is counted in VerificationResult::spuriousCut;
 +	 * a run whose count is 0 explored every spurious failure. */
@@ -656,7 +702,7 @@ index 7ea8312..55e8477 100644
  	getExec().getWorkqueue().add(
  		std::make_unique<WeakCasFailureRevisit>(cLab->getPos(), cLab->getRf()->getPos()));
  }
-@@ -911,7 +992,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
+@@ -911,7 +1006,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
  	/* Collect all threads blocked at spinloops */
  	std::vector<int> spinBlocked;
  	for (auto i = 0; i < g.getNumThreads(); i++) {
@@ -674,7 +720,7 @@ index 7ea8312..55e8477 100644
  			spinBlocked.push_back(i);
  	}
  
-@@ -1557,8 +1647,11 @@ auto GenMCDriver::handleLoad(std::unique_ptr<ReadLabel> rLab, std::optional<SVal
+@@ -1557,8 +1661,11 @@ auto GenMCDriver::handleLoad(std::unique_ptr<ReadLabel> rLab, std::optional<SVal
  	const EventLabel *rf = nullptr;
  
  	if (inEstimationMode() || inRandomMode()) {
@@ -687,7 +733,7 @@ index 7ea8312..55e8477 100644
  		filterAtomicityViolations(lab, stores);
  		rf = pickRandomRf(lab, stores);
  	} else {
-@@ -1990,8 +2083,11 @@ auto GenMCDriver::handleStore(std::unique_ptr<WriteLabel> wLab, std::optional<SV
+@@ -1990,8 +2097,11 @@ auto GenMCDriver::handleStore(std::unique_ptr<WriteLabel> wLab, std::optional<SV
  	const EventLabel *co = nullptr;
  	if (inEstimationMode() || inRandomMode()) {
  		co = pickRandomCo(lab, cos);
@@ -700,7 +746,7 @@ index 7ea8312..55e8477 100644
  	} else {
  		co = findConsistentCo(lab, cos);
  		calcCoOrderings(lab, cos);
-@@ -2784,6 +2880,15 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
+@@ -2784,6 +2894,15 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
  
  	/* If operating in estimation mode, don't actually revisit */
  	if (inEstimationMode()) {
@@ -716,7 +762,7 @@ index 7ea8312..55e8477 100644
  		getExec().getChoiceMap().update(loads, sLab);
  		return;
  	}
-@@ -3223,7 +3328,7 @@ auto GenMCDriver::handleError(const EventDbgInfo *dbg, Event pos, std::string ms
+@@ -3223,7 +3342,7 @@ auto GenMCDriver::handleError(const EventDbgInfo *dbg, Event pos, std::string ms
  		return {.result = *err};
  	if (isExecutionDrivenByGraph(pos))
  		return {.result = std::monostate(), .count = 1U};
@@ -764,7 +810,7 @@ index 9d936e0..fd768d6 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index 5d7e272..73413d1 100644
+index 5d7e272..5b3e517 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -30,6 +30,7 @@
@@ -784,13 +830,40 @@ index 5d7e272..73413d1 100644
  
  using namespace llvm;
  
-@@ -1297,6 +1300,17 @@ void Interpreter::visitReturnInst(ReturnInst &I)
+@@ -1297,6 +1300,44 @@ void Interpreter::visitReturnInst(ReturnInst &I)
  	popStackAndReturnValueToCaller(RetTy, Result, &I);
  }
  
 +/* freeze yields its operand: the interpreter's values are never poison, so the instruction
 + * that LLVM's own loop passes insert when they hoist a condition (a loop whose bound is a
 + * runtime value, once the mem-intrinsic promotion emits one) is the identity here. */
++/* fneg, the one unary operator: the sign of a float or double, or of each element of a vector
++ * of them, is flipped. */
++void Interpreter::visitUnaryOperator(UnaryOperator &I)
++{
++	ExecutionContext &SF = ECStack().back();
++	Type *Ty = I.getOperand(0)->getType();
++	GenericValue Src = getOperandValue(I.getOperand(0), SF);
++	GenericValue R = Src;
++	updateDataDeps(getCurThr().id, &I, I.getOperand(0));
++	ERROR_ON(I.getOpcode() != Instruction::FNeg, "Unhandled unary operator");
++	auto neg = [](GenericValue &v, Type *t) {
++		if (t->isFloatTy())
++			v.FloatVal = -v.FloatVal;
++		else if (t->isDoubleTy())
++			v.DoubleVal = -v.DoubleVal;
++		else
++			ERROR("Unhandled type for FNeg instruction");
++	};
++	if (auto *VT = dyn_cast<VectorType>(Ty)) {
++		for (auto &e : R.AggregateVal)
++			neg(e, VT->getElementType());
++	} else {
++		neg(R, Ty);
++	}
++	SetValue(&I, R, SF);
++}
++
 +void Interpreter::visitFreezeInst(FreezeInst &I)
 +{
 +	ExecutionContext &SF = ECStack().back();
@@ -802,7 +875,7 @@ index 5d7e272..73413d1 100644
  void Interpreter::visitUnreachableInst(UnreachableInst &I)
  {
  	report_fatal_error("Program executed an 'unreachable' instruction!");
-@@ -1523,8 +1537,21 @@ void Interpreter::visitLoadInst(LoadInst &I)
+@@ -1523,8 +1564,21 @@ void Interpreter::visitLoadInst(LoadInst &I)
  	}
  
  	auto retVal = std::get_if<SVal>(&val);
@@ -825,7 +898,7 @@ index 5d7e272..73413d1 100644
  
  	updateDataDeps(thr.id, &I, currPos());
  	updateAddrPoDeps(thr.id, I.getPointerOperand());
-@@ -3062,6 +3089,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
+@@ -3062,6 +3116,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
  	returnValueToCaller(F->getReturnType(), INT_TO_GV(F->getReturnType(), 0));
  }
  
@@ -841,7 +914,7 @@ index 5d7e272..73413d1 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3464,14 +3500,75 @@ void Interpreter::runAtExitHandlers()
+@@ -3464,14 +3527,75 @@ void Interpreter::runAtExitHandlers()
  	setProgramState(oldState);
  }
  
@@ -918,7 +991,7 @@ index 5d7e272..73413d1 100644
  			dynState.globalInstructions[currPos().thread].kind =
  				getInstKind(&*ECStack().back().CurInst);
 diff --git a/lli/Runtime/Interpreter.cpp b/lli/Runtime/Interpreter.cpp
-index a4b0704..7405c2d 100644
+index a4b0704..c889d7a 100644
 --- a/lli/Runtime/Interpreter.cpp
 +++ b/lli/Runtime/Interpreter.cpp
 @@ -140,6 +140,29 @@ Thread &Interpreter::createAddNewThread(llvm::Function *F, SVal arg, int tid, in
@@ -951,11 +1024,18 @@ index a4b0704..7405c2d 100644
  void Interpreter::collectStaticAddresses()
  {
  	auto *M = Modules.back().get();
-@@ -149,10 +172,11 @@ void Interpreter::collectStaticAddresses()
- 		char *ptr = static_cast<char *>(GVTOP(getConstantValue(&v)));
- 		const uint64_t typeSize = getDataLayout().getTypeAllocSize(v.getValueType());
+@@ -147,12 +170,16 @@ void Interpreter::collectStaticAddresses()
  
+ 	for (auto &v : GLOBALS(*M)) {
+ 		char *ptr = static_cast<char *>(GVTOP(getConstantValue(&v)));
+-		const uint64_t typeSize = getDataLayout().getTypeAllocSize(v.getValueType());
+-
 -		/* Record whether this is a thread local variable or not */
++		/* A zero-size global (an external array of unknown bound, such as a vtable libstdc++
++		 * takes the address of) gets one byte, so it has an address of its own. */
++		const uint64_t typeSize =
++			std::max<uint64_t>(1, getDataLayout().getTypeAllocSize(v.getValueType()));
++
 +		/* Record whether this is a thread local variable or not. A thread-local is held
 +		 * as one value per byte of its storage; an aggregate initializer is walked to its
 +		 * scalar leaves, each stored at the bytes its layout gives it. */
@@ -966,11 +1046,31 @@ index a4b0704..7405c2d 100644
  			continue;
  		}
  
+@@ -170,7 +197,10 @@ void Interpreter::collectStaticAddresses()
+ 		/* ... and use that in the EE instead. Make sure to re-initialize it too;
+ 		 * it might contain the address of another global */
+ 		updateGlobalMapping(&v, (void *)addr.get());
+-		toReinitialize.push_back(std::make_pair(&v, ptr));
++		/* A declaration (an external global, resolved to the symbol in this process) has no
++		 * initializer, and its host storage is not the program's to write. */
++		if (v.hasInitializer())
++			toReinitialize.push_back(std::make_pair(&v, ptr));
+ 
+ 		/* Update naming information */
+ 		staticNames[addr] = &v;
 diff --git a/lli/Runtime/Interpreter.h b/lli/Runtime/Interpreter.h
-index 44b91fb..96681f9 100644
+index 44b91fb..e5bbece 100644
 --- a/lli/Runtime/Interpreter.h
 +++ b/lli/Runtime/Interpreter.h
-@@ -497,6 +497,7 @@ public:
+@@ -472,6 +472,7 @@ public:
+ 	void visitSwitchInst(SwitchInst &I);
+ 	void visitIndirectBrInst(IndirectBrInst &I);
+ 
++	void visitUnaryOperator(UnaryOperator &I);
+ 	void visitBinaryOperator(BinaryOperator &I);
+ 	void visitICmpInst(ICmpInst &I);
+ 	void visitFCmpInst(FCmpInst &I);
+@@ -497,6 +498,7 @@ public:
  	void visitCallInstWrapper(CallInstWrapper CIW);
  	void visitCallBase(CallBase &CB) { visitCallInstWrapper(CallInstWrapper(CB)); }
  	void visitUnreachableInst(UnreachableInst &I);
@@ -978,7 +1078,7 @@ index 44b91fb..96681f9 100644
  
  	void visitShl(BinaryOperator &I);
  	void visitLShr(BinaryOperator &I);
-@@ -589,6 +590,7 @@ private: // Helper functions
+@@ -589,6 +591,7 @@ private: // Helper functions
  
  	/* Collects the addresses (and some naming information) for all variables with
  	 * static storage. Also calculates the starting address of the allocation pool */
@@ -987,7 +1087,7 @@ index 44b91fb..96681f9 100644
  
  	/* Sets up how some errors will be reported to the user */
 diff --git a/lli/main.cpp b/lli/main.cpp
-index 5795e76..a2eb0bf 100644
+index 5795e76..4b319ec 100644
 --- a/lli/main.cpp
 +++ b/lli/main.cpp
 @@ -13,6 +13,7 @@
@@ -998,7 +1098,7 @@ index 5795e76..a2eb0bf 100644
  #include "genmc/Support/Logger.hpp"
  #include "genmc/Support/ThreadPool.hpp"
  #include "genmc/Verification/Config.hpp"
-@@ -104,6 +105,18 @@ static llvm::cl::opt<int>
+@@ -104,6 +105,24 @@ static llvm::cl::opt<int>
  	clBound("bound", llvm::cl::cat(clGeneral), llvm::cl::init(-1), llvm::cl::value_desc("N"),
  		llvm::cl::desc("Do not explore executions exceeding given bound"));
  
@@ -1014,10 +1114,16 @@ index 5795e76..a2eb0bf 100644
 +	llvm::cl::desc("Explore at most M spurious failures of weak CASes in one execution, over "
 +		       "all threads (M >= 1; unbounded when not given)"));
 +
++static llvm::cl::opt<bool> clWeakCasSpuriousConcurrentOnly(
++	"weak-cas-spurious-concurrent-only", llvm::cl::cat(clGeneral),
++	llvm::cl::desc("Explore no spurious failure of a weak CAS executed while the program has one "
++		       "thread, before its first thread is created (counted with the other dropped "
++		       "failures)"));
++
  static llvm::cl::opt<BoundType>
  	clBoundType("bound-type", llvm::cl::cat(clGeneral), llvm::cl::init(BoundType::round),
  		    llvm::cl::desc("Choose type for -bound:"),
-@@ -425,6 +438,12 @@ static void saveConfigOptions(Config &conf, LLIConfig &lliConfig)
+@@ -425,6 +444,13 @@ static void saveConfigOptions(Config &conf, LLIConfig &lliConfig)
  
  	conf.bound = clBound >= 0 ? std::optional(clBound.getValue()) : std::nullopt;
  	conf.boundType = clBoundType.getNumOccurrences() > 0 ? clBoundType : BoundType::none;
@@ -1027,10 +1133,11 @@ index 5795e76..a2eb0bf 100644
 +	if (clWeakCasSpuriousTotal.getNumOccurrences() > 0)
 +		conf.weakCasSpuriousTotal = static_cast<unsigned int>(
 +			std::max(0, clWeakCasSpuriousTotal.getValue()));
++	conf.weakCasSpuriousConcurrentOnly = clWeakCasSpuriousConcurrentOnly;
  	conf.LAPOR = clLAPOR;
  	conf.symmetryReduction = !clDisableSymmetryReduction;
  	conf.helper = !clDisableHelper;
-@@ -759,11 +778,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
+@@ -759,11 +785,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
  	      (!res.status.has_value() ? "*** Estimation complete"
  				       : "\n*** Estimation unsuccessful"));
  
@@ -1051,12 +1158,16 @@ index 5795e76..a2eb0bf 100644
  	GENMC_DEBUG(if (conf->printEstimationStats) {
  		PRINT(VerbosityLevel::Error, "Estimation moot: {}\n", res.exploredMoot);
  		PRINT(VerbosityLevel::Error, "Estimation blocked: {}\n", res.exploredBlocked);
-@@ -780,6 +804,15 @@ static void printVerificationResults(const std::shared_ptr<const Config> &conf,
+@@ -780,6 +811,19 @@ static void printVerificationResults(const std::shared_ptr<const Config> &conf,
  				       : "\n*** Verification unsuccesful"));
  
  	PRINT(VerbosityLevel::Error, "Number of complete executions explored: {}", res.explored);
 +	if (res.unrollCut)
 +		PRINT(VerbosityLevel::Error, " ({} cut at the unroll bound)", res.unrollCut);
++	if (conf->weakCasSpuriousConcurrentOnly && !conf->weakCasSpuriousBound &&
++	    !conf->weakCasSpuriousTotal)
++		PRINT(VerbosityLevel::Error,
++		      "\nWeak CAS spurious failures before the first thread: {}", res.spuriousCut);
 +	if (conf->weakCasSpuriousBound && !conf->weakCasSpuriousTotal)
 +		PRINT(VerbosityLevel::Error, "\nWeak CAS spurious failures past the bound of {}: {}",
 +		      *conf->weakCasSpuriousBound, res.spuriousCut);
@@ -1613,6 +1724,209 @@ index c0074cf..daea1b0 100644
  #include <llvm/Plugins/PassPlugin.h>
  #else
  #include <llvm/Passes/PassPlugin.h>
+diff --git a/passes/passes/Transforms/InstAnnotator.cpp b/passes/passes/Transforms/InstAnnotator.cpp
+index 70ba918..c89d316 100644
+--- a/passes/passes/Transforms/InstAnnotator.cpp
++++ b/passes/passes/Transforms/InstAnnotator.cpp
+@@ -83,6 +83,18 @@ auto InstAnnotator::generateOperandExpr(Module *mod, Value *op) -> InstAnnotator
+ 			VERIFY(isa<ConstantPointerNull>(constant)); /* will fire for GlobalValue */
+ 			return ConcreteExpr<Value *>::create(bitWidth, SVal(0));
+ 		}
++		/* A floating-point constant is its bit pattern; the annotator handles no
++		 * floating-point operation, so the value reaches an expression only as a
++		 * PHI operand or through a bitcast. */
++		if (typ->isFloatingPointTy() && typ->getPrimitiveSizeInBits() <= 64) {
++			auto bitWidth = typ->getPrimitiveSizeInBits().getFixedValue();
++			if (isa<UndefValue>(constant))
++				return ConcreteExpr<Value *>::create(bitWidth, concUndefVal);
++			auto *cf = dyn_cast<ConstantFP>(constant);
++			VERIFY(cf);
++			return ConcreteExpr<Value *>::create(
++				bitWidth, SVal(cf->getValueAPF().bitcastToAPInt().getZExtValue()));
++		}
+ 		ERROR("Only integer and null constants currently allowed in assume() "
+ 		      "expressions.");
+ 	}
+diff --git a/passes/passes/Transforms/IntrinsicLoweringPass.cpp b/passes/passes/Transforms/IntrinsicLoweringPass.cpp
+index 8c7b589..f84e75e 100644
+--- a/passes/passes/Transforms/IntrinsicLoweringPass.cpp
++++ b/passes/passes/Transforms/IntrinsicLoweringPass.cpp
+@@ -19,7 +19,9 @@
+ #include <llvm/Analysis/MemoryBuiltins.h>
+ #include <llvm/CodeGen/IntrinsicLowering.h>
+ #include <llvm/Config/llvm-config.h>
++#include <llvm/ADT/APInt.h>
+ #include <llvm/IR/BasicBlock.h>
++#include <llvm/IR/Constants.h>
+ #include <llvm/IR/Function.h>
+ #include <llvm/IR/IRBuilder.h>
+ #include <llvm/IR/InstrTypes.h>
+@@ -154,6 +156,55 @@ static auto runOnBasicBlock(BasicBlock &bb, IntrinsicLowering *IL) -> bool
+ 			modified = true;
+ 			break;
+ 		}
++		/* fmuladd may be fused or not (LangRef); it is lowered to a multiply and an add,
++		 * which IntrinsicLowering does not provide. */
++		case llvm::Intrinsic::fmuladd: {
++			IRBuilder<> builder(I);
++			auto *mul = builder.CreateFMul(I->getArgOperand(0), I->getArgOperand(1));
++			auto *add = builder.CreateFAdd(mul, I->getArgOperand(2));
++			I->replaceAllUsesWith(add);
++			I->eraseFromParent();
++			modified = true;
++			break;
++		}
++		/* fma rounds once, which no multiply-then-add reproduces; a scalar fma becomes a call to
++		 * the C library's fma/fmaf, which the interpreter reports as an unknown external function
++		 * if an execution reaches it and the module defines neither. */
++		case llvm::Intrinsic::fma: {
++			auto *ty = I->getType();
++			if (!ty->isDoubleTy() && !ty->isFloatTy()) {
++				IL->LowerIntrinsicCall(I);
++				modified = true;
++				break;
++			}
++			auto FC = M.getOrInsertFunction(ty->isDoubleTy() ? "fma" : "fmaf", ty, ty, ty, ty);
++			IRBuilder<> builder(I);
++			auto *call = builder.CreateCall(FC, {I->getArgOperand(0), I->getArgOperand(1),
++							     I->getArgOperand(2)});
++			I->replaceAllUsesWith(call);
++			I->eraseFromParent();
++			modified = true;
++			break;
++		}
++		/* fabs on a scalar clears the sign bit; IntrinsicLowering does not provide it. */
++		case llvm::Intrinsic::fabs: {
++			auto *ty = I->getType();
++			if (!ty->isFloatingPointTy()) {
++				IL->LowerIntrinsicCall(I);
++				modified = true;
++				break;
++			}
++			IRBuilder<> builder(I);
++			auto bits = ty->getPrimitiveSizeInBits().getFixedValue();
++			auto *ity = IntegerType::get(M.getContext(), bits);
++			auto *asInt = builder.CreateBitCast(I->getArgOperand(0), ity);
++			auto *cleared =
++				builder.CreateAnd(asInt, ConstantInt::get(ity, APInt::getSignedMaxValue(bits)));
++			I->replaceAllUsesWith(builder.CreateBitCast(cleared, ty));
++			I->eraseFromParent();
++			modified = true;
++			break;
++		}
+ 		// https://llvm.org/docs/LangRef.html#llvm-sadd-with-overflow-intrinsics
+ 		case llvm::Intrinsic::sadd_with_overflow:
+ 			WITH_OVERFLOW_INST(I, CreateSExt, CreateAdd)
+diff --git a/passes/passes/Transforms/LoopJumpThreadingPass.cpp b/passes/passes/Transforms/LoopJumpThreadingPass.cpp
+index 3880b5c..35744fd 100644
+--- a/passes/passes/Transforms/LoopJumpThreadingPass.cpp
++++ b/passes/passes/Transforms/LoopJumpThreadingPass.cpp
+@@ -32,6 +32,7 @@
+ #include <cstddef>
+ #include <memory>
+ #include <utility>
++#include <vector>
+ 
+ using namespace llvm;
+ 
+@@ -91,6 +92,32 @@ static auto loopUsesHeaderPHIsTrivially(Loop *l, PHINode *criticalPHI) -> bool
+ 	       !areNonCriticalPHIsUsedInBody(l, criticalPHI);
+ }
+ 
++/*
++ * After the inversion the header runs only from the latch, so it no longer
++ * dominates the body or the loop's exits. Returns true if every use of a value
++ * defined in the header is in the header (for a PHI use, on an edge out of the
++ * header), or is a use of the critical PHI in the body, which invertLoop
++ * replaces with the initial value.
++ */
++static auto headerValuesUsedOnlyInHeader(Loop *l, PHINode *criticalPHI) -> bool
++{
++	auto *header = l->getHeader();
++	for (auto &inst : *header) {
++		for (auto &use : inst.uses()) {
++			auto *user = dyn_cast<Instruction>(use.getUser());
++			if (!user)
++				return false;
++			if (&inst == criticalPHI && inLoopBody(l, user->getParent()))
++				continue;
++			auto *phi = dyn_cast<PHINode>(user);
++			auto *bb = phi ? phi->getIncomingBlock(use) : user->getParent();
++			if (bb != header)
++				return false;
++		}
++	}
++	return true;
++}
++
+ static auto getPHIConstEntryValueUsedInCond(Loop *l) -> PHINode *
+ {
+ 	for (auto iit = l->getHeader()->begin(); auto *phi = dyn_cast<PHINode>(iit); ++iit) {
+@@ -135,6 +162,22 @@ static auto entryAlwaysJumpsToBody(Loop *l) -> bool
+ 	return (numSeen == 0) && res.getBool();
+ }
+ 
++/*
++ * Returns the value that `phi`, a PHI of the body block the preheader will jump to,
++ * takes on the edge from the preheader: the value it takes from the header, with the
++ * critical PHI replaced by its initial value. Returns nullptr if that value is
++ * defined in the header, which does not run before the body block on that edge.
++ */
++static auto getValueFromPreheader(Loop *l, PHINode *criticalPHI, PHINode &phi) -> Value *
++{
++	auto *header = l->getHeader();
++	auto *val = phi.getIncomingValueForBlock(header);
++	if (val == criticalPHI)
++		return criticalPHI->getIncomingValueForBlock(l->getLoopPredecessor());
++	auto *inst = dyn_cast<Instruction>(val);
++	return (inst && inst->getParent() == header) ? nullptr : val;
++}
++
+ static auto invertLoop(Loop *l, PHINode *criticalPHI) -> bool
+ {
+ 	auto *preheader = l->getLoopPredecessor();
+@@ -148,6 +191,10 @@ static auto invertLoop(Loop *l, PHINode *criticalPHI) -> bool
+ 	if (!loopUsesHeaderPHIsTrivially(l, criticalPHI))
+ 		return false;
+ 
++	/* If a header value is used where the header will no longer dominate, skip */
++	if (!headerValuesUsedOnlyInHeader(l, criticalPHI))
++		return false;
++
+ 	/*
+ 	 * In principle, we can invert the loop even if the body was using the header's
+ 	 * Φs (as in the comment below), but this does not buy us anything, as we would not get
+@@ -156,6 +203,18 @@ static auto invertLoop(Loop *l, PHINode *criticalPHI) -> bool
+ 	 * Now, however, we have proven that the critical PHI's value remains unchanged
+ 	 * as long as the loop is executed, so we can replace all uses with the initial value
+ 	 */
++	auto *bodyBB = (inLoopBody(l, hbi->getSuccessor(0))) ? hbi->getSuccessor(0)
++							     : hbi->getSuccessor(1);
++
++	/* Each PHI of the body block needs a value on the new edge from the preheader */
++	std::vector<std::pair<PHINode *, Value *>> fromPreheader;
++	for (auto &phi : bodyBB->phis()) {
++		auto *val = getValueFromPreheader(l, criticalPHI, phi);
++		if (!val)
++			return false;
++		fromPreheader.emplace_back(&phi, val);
++	}
++
+ 	replaceUsesWithIf(criticalPHI, criticalPHI->getIncomingValueForBlock(preheader),
+ 			  [&](Use &use) {
+ 				  auto *userInst = dyn_cast<Instruction>(use.getUser());
+@@ -180,9 +239,9 @@ static auto invertLoop(Loop *l, PHINode *criticalPHI) -> bool
+ 
+ 	/* Set preheader's successor to the loop body */
+ 	auto phJmpIdx = (phbi->getSuccessor(0) == header) ? 0 : 1;
+-	auto *bodyBB = (inLoopBody(l, hbi->getSuccessor(0))) ? hbi->getSuccessor(0)
+-							     : hbi->getSuccessor(1);
+ 	phbi->setSuccessor(phJmpIdx, bodyBB);
++	for (auto &[phi, val] : fromPreheader)
++		phi->addIncoming(val, preheader);
+ 
+ 	/* Actually change the header */
+ 	l->moveToHeader(bodyBB);
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 index cd01ccc..dea97ca 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
@@ -2294,3 +2608,178 @@ index 71c1d70..0000000
 -};
 -
 -#endif /* GENMC_STRENGTHEN_CAS_PASS_HPP */
+diff --git a/tests/correct/saver/loop-body-phi/expected.cb.in b/tests/correct/saver/loop-body-phi/expected.cb.in
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.cb.in
+@@ -0,0 +1 @@
++1
+diff --git a/tests/correct/saver/loop-body-phi/expected.imm.mo.in b/tests/correct/saver/loop-body-phi/expected.imm.mo.in
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.imm.mo.in
+@@ -0,0 +1 @@
++1
+diff --git a/tests/correct/saver/loop-body-phi/expected.imm.wb.in b/tests/correct/saver/loop-body-phi/expected.imm.wb.in
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.imm.wb.in
+@@ -0,0 +1 @@
++1
+diff --git a/tests/correct/saver/loop-body-phi/expected.rb.in b/tests/correct/saver/loop-body-phi/expected.rb.in
+new file mode 100644
+index 0000000..6e8183b
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.rb.in
+@@ -0,0 +1 @@
++0 1
+diff --git a/tests/correct/saver/loop-body-phi/expected.rc11.mo.in b/tests/correct/saver/loop-body-phi/expected.rc11.mo.in
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.rc11.mo.in
+@@ -0,0 +1 @@
++1
+diff --git a/tests/correct/saver/loop-body-phi/expected.rc11.wb.in b/tests/correct/saver/loop-body-phi/expected.rc11.wb.in
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.rc11.wb.in
+@@ -0,0 +1 @@
++1
+diff --git a/tests/correct/saver/loop-body-phi/expected.sc.mo.in b/tests/correct/saver/loop-body-phi/expected.sc.mo.in
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/expected.sc.mo.in
+@@ -0,0 +1 @@
++1
+diff --git a/tests/correct/saver/loop-body-phi/loop-body-phi.c b/tests/correct/saver/loop-body-phi/loop-body-phi.c
+new file mode 100644
+index 0000000..913f7d4
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/loop-body-phi.c
+@@ -0,0 +1,36 @@
++/*
++ * The flag is true on entry, so LoopJumpThreadingPass can send the entry straight
++ * into the loop body. The body block it jumps to merges two paths and has a PHI.
++ */
++
++int n, sum;
++
++static int g(void) { return 2; }
++static bool done(void) { return ++n == 3; }
++
++void *thread_1(void *unused)
++{
++	bool first = true;
++	for (;;) {
++		int v = 1;
++#if VARIANT == 0
++		if (!first)
++			v = g();
++#elif VARIANT == 1
++		if (first)
++			;
++		else
++			v = g();
++#elif VARIANT == 2
++		if (first)
++			goto merge;
++		v = g();
++	merge:
++#endif
++		sum += v;
++		first = false;
++		if (done())
++			break;
++	}
++	return NULL;
++}
+diff --git a/tests/correct/saver/loop-body-phi/variants/loop-body-phi0.c b/tests/correct/saver/loop-body-phi/variants/loop-body-phi0.c
+new file mode 100644
+index 0000000..50abce8
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/variants/loop-body-phi0.c
+@@ -0,0 +1,22 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdbool.h>
++#include <pthread.h>
++#include <assert.h>
++#include <genmc.h>
++
++#define VARIANT 0
++#include "../loop-body-phi.c"
++
++int main()
++{
++	pthread_t t;
++
++	if (pthread_create(&t, NULL, thread_1, NULL))
++		abort();
++	if (pthread_join(t, NULL))
++		abort();
++	assert(sum == 5);
++
++	return 0;
++}
+diff --git a/tests/correct/saver/loop-body-phi/variants/loop-body-phi1.c b/tests/correct/saver/loop-body-phi/variants/loop-body-phi1.c
+new file mode 100644
+index 0000000..dd2479f
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/variants/loop-body-phi1.c
+@@ -0,0 +1,22 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdbool.h>
++#include <pthread.h>
++#include <assert.h>
++#include <genmc.h>
++
++#define VARIANT 1
++#include "../loop-body-phi.c"
++
++int main()
++{
++	pthread_t t;
++
++	if (pthread_create(&t, NULL, thread_1, NULL))
++		abort();
++	if (pthread_join(t, NULL))
++		abort();
++	assert(sum == 5);
++
++	return 0;
++}
+diff --git a/tests/correct/saver/loop-body-phi/variants/loop-body-phi2.c b/tests/correct/saver/loop-body-phi/variants/loop-body-phi2.c
+new file mode 100644
+index 0000000..b13eb9a
+--- /dev/null
++++ b/tests/correct/saver/loop-body-phi/variants/loop-body-phi2.c
+@@ -0,0 +1,22 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdbool.h>
++#include <pthread.h>
++#include <assert.h>
++#include <genmc.h>
++
++#define VARIANT 2
++#include "../loop-body-phi.c"
++
++int main()
++{
++	pthread_t t;
++
++	if (pthread_create(&t, NULL, thread_1, NULL))
++		abort();
++	if (pthread_join(t, NULL))
++		abort();
++	assert(sum == 5);
++
++	return 0;
++}
