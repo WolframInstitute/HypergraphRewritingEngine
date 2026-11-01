@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A GPU run with quotient exploration (`"CanonicalizeStates" -> Full`) could return fewer raw
+  events than the evolution has, with no warning, when an isomorphic duplicate admitted a class's
+  first state for expansion before that state published its class key. The duplicate publishes
+  the key first, and a capture that finds no key is refused with a warning.
+- A GPU partial result under `"MatchesPerStep"` with `None` states could order its kept
+  transitions by labels that were never written, when a root's canonical hash failed in step 0.
+  Such roots take label 0.
 - An allocation that fails on a worker thread outside a job body (the first use of the thread's
   scratch arena after memory runs out, or the job pool) gives the "memory exhausted" partial
   result. It ended the process with `std::bad_alloc` ("terminate called"), depending on which
