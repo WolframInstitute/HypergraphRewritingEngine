@@ -1037,7 +1037,8 @@ __device__ inline void session_frontier_append(const DeviceState& ds, const Sess
 // `exact_map` and published to state_exact_hash, and under lineage labels the root's label and
 // its edges' labels from that hash and the edges' ranks: the host's label_root. `first` is set
 // when the root is its class's first state. False, with the error recorded, when the hash could
-// not be computed. Every lane of `par` calls it.
+// not be computed; the root and its edges then take label 0, which held_select_step and the
+// transition keys of the failed attempt read. Every lane of `par` calls it.
 template <class Par>
 __device__ bool root_exact_and_labels(const DeviceState& ds, StateId sid,
                                       DedupMap::DeviceView exact_map,
@@ -1051,7 +1052,15 @@ __device__ bool root_exact_and_labels(const DeviceState& ds, StateId sid,
                                                        need_ranks, false, &eform, &eform_words,
                                                        par);
     if (st != ExactHashStatus::kOk) {
-        if (par.leader()) ds.errors.record(error_kind_for(st));
+        if (par.leader()) {
+            ds.errors.record(error_kind_for(st));
+            if (ds.state_label) {
+                ds.state_label[sid] = 0u;
+                const StateEdgeSlice sl = ds.state_edge_slices[sid];
+                for (uint32_t i = 0; i < sl.count; ++i)
+                    ds.edge_label[ds.state_edge_ids[sl.offset + i]] = 0u;
+            }
+        }
         return false;
     }
     uint32_t f = 0;
