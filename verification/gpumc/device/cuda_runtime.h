@@ -49,6 +49,11 @@ inline cudaError_t cudaGetDeviceCount(int* n) {
     return cudaSuccess;
 }
 inline cudaError_t cudaDeviceReset() { return cudaSuccess; }
+template <class T>
+inline cudaError_t cudaMemcpyToSymbol(const T&, const void*, size_t, size_t = 0,
+                                      cudaMemcpyKind = cudaMemcpyHostToDevice) {
+    return cudaSuccess;
+}
 inline cudaError_t cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
 inline cudaError_t cudaMallocHost(void**, size_t) { return cudaSuccess; }
 template <class T>

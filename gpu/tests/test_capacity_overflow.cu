@@ -133,6 +133,31 @@ TEST(CapacityOverflow, AJobAfterAnOverflowAtTheCapRunsAsOnAFreshEvolver) {
     }
 }
 
+namespace HG_NAMESPACE {
+namespace gpu {
+void test_set_publish_delay(long long cycles);  // gpu/src/persistent.cu, stats builds
+}  // namespace gpu
+}  // namespace HG_NAMESPACE
+
+// A class's first state claims its class and publishes its canonical hash a moment later. An
+// isomorphic duplicate can admit that state for expansion inside the gap, and the expansion's
+// replay capture reads the hash as its class key. The lever holds the gap open for 20,000,000
+// cycles on the first state only, so duplicates admit inside it. The replay produces every raw
+// event, sum over k = 1..7 of 4 * 5 * ... * (k + 3) = 672,984 for the growth rule from a 4-edge
+// path, with no warning. Without the duplicate's publish of the class key the run lost about
+// half of them (296,099 to 343,302 events) with kUncomputedStateHash.
+TEST(CapacityOverflow, ACanonicalStateAdmittedBeforeItPublishesItsHashKeepsEveryEvent) {
+    struct ResetDelay {
+        ~ResetDelay() { hg_gpu::test_set_publish_delay(0); }
+    } reset;
+    hg_gpu::test_set_publish_delay(20000000);
+    hg_gpu::EvolveInput in = growing_input(7);
+    in.max_device_memory_bytes = uint64_t{4} << 30;
+    hg_gpu::PersistentEvolver evolver;
+    const hg_gpu::EvolveResult r = evolver.run(in);
+    EXPECT_TRUE(r.warnings.empty());
+    EXPECT_EQ(r.observable_num_events(), 672984u);
+}
 
 // Pools far too small for the evolution requested. The run must come back, say so, and stay
 // inside its allocations.

@@ -773,8 +773,17 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
     if (!qe.enabled || depth > qe.max_steps) return;
     const uint32_t lane = threadIdx.x & 31u;
 
-    const uint64_t from = ds.state_canonical_hash[parent];
-    const uint64_t to   = ds.state_canonical_hash[child];
+    // Published by publish_canonical_hash, possibly on another block. 0 means "not computed
+    // yet", and a match captured under class 0 is replayed against no instance, so the capture
+    // is refused and reported. Every lane refuses together: each lane loads on its own.
+    const uint64_t from = cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(
+                              ds.state_canonical_hash[parent]).load(cuda::memory_order_relaxed);
+    const uint64_t to   = cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(
+                              ds.state_canonical_hash[child]).load(cuda::memory_order_relaxed);
+    if (__any_sync(0xffffffffu, from == 0 || to == 0)) {
+        if (lane == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);
+        return;
+    }
     const uint64_t xkey = qe_expansion_key(ds, from, depth);
 
     // One raw state's matches define the class's expansion; every later parent of the same class

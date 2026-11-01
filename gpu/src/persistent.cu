@@ -33,7 +33,41 @@
 
 namespace HG_NAMESPACE {
 namespace gpu {
+
+#if HG_ENGINE_STATS
+// Test lever (test_set_publish_delay): the cycles the leader of a class's first state waits
+// between claiming the class and publishing its hash. Duplicates do not wait, so a duplicate's
+// admit of that state for expansion falls inside the window.
+__device__ long long g_publish_delay_cycles = 0;
+long long g_publish_delay_cycles_host = 0;
+#endif
+
 namespace {
+
+// The exact hash of state `sid`, which another block's duplicate may store for it as well.
+__device__ inline void publish_exact_hash(const DeviceState& ds, StateId sid, uint64_t h) {
+    cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(ds.state_exact_hash[sid])
+        .store(h, cuda::memory_order_relaxed);
+}
+
+// State `sid`'s class key `h`, and the same key for `canonical`, the class's first state, when
+// `sid` is a duplicate. A duplicate admits `canonical` for expansion (register_child), possibly
+// before `canonical`'s own warp has published its hash, and that expansion reads the hash as its
+// class key (qe_capture_expansion, explore_admits): the duplicate's store comes first.
+__device__ inline void publish_class_hash(const DeviceState& ds, StateId sid, StateId canonical,
+                                          uint64_t h) {
+    publish_canonical_hash(ds, sid, h);
+    if (canonical != sid && canonical != INVALID_ID) publish_canonical_hash(ds, canonical, h);
+}
+
+// State `sid`'s exact hash, and the same key for `canonical` when `sid` is a duplicate: the
+// expansion of `canonical` reads it for event identity and transition keys.
+__device__ inline void publish_class_exact_hash(const DeviceState& ds, StateId sid,
+                                                StateId canonical, uint64_t exact) {
+    publish_exact_hash(ds, sid, exact);
+    if (exact != 0 && canonical != sid && canonical != INVALID_ID)
+        publish_exact_hash(ds, canonical, exact);
+}
 
 // The single work role the persistent schedulers count. Shared by the seed kernel below and
 // the stage-2/stage-3 worker kernels.
@@ -143,9 +177,11 @@ __device__ inline uint64_t* emit_rank_sink(const DeviceState& ds, const StepSele
 // expansion, keyed on its canonical hash, whichever path claims it: the host's
 // claim_canonical_for_expansion. A refused class stays claimed and is not expanded.
 __device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) {
-    return ds.exploration_probability >= 1.0 ||
-           hgcommon::explore_survives(ds.state_canonical_hash[canonical], ds.sampling_seed,
-                                      ds.exploration_probability);
+    if (ds.exploration_probability >= 1.0) return true;
+    // Published by publish_class_hash, possibly on another block.
+    const uint64_t h = cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(
+                           ds.state_canonical_hash[canonical]).load(cuda::memory_order_relaxed);
+    return hgcommon::explore_survives(h, ds.sampling_seed, ds.exploration_probability);
 }
 
 // How many match items state `sid` is split into per rule (match_state_rule's parts). A thread's
@@ -1643,9 +1679,14 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                 canonical = id.canonical;
                 fresh = id.fresh ? 1u : 0u;
             }
+#if HG_ENGINE_STATS
+            if (canonical == sid)
+                for (const long long t0 = clock64(); clock64() - t0 < g_publish_delay_cycles;) {
+                }
+#endif
             // Publish before anything reads it: a transition OUT of this state needs it as an
             // input hash, and that read happens on another block.
-            publish_canonical_hash(ds, sid, h);
+            publish_class_hash(ds, sid, canonical, h);
 
             if (need_exact && !defer_exact) {
                 if (ex_st != ExactHashStatus::kOk) {
@@ -1659,7 +1700,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                     exact = ec.key;
                     if (ds.record_invariants && ec.canonical == sid) want_record = 1;
                 }
-                ds.state_exact_hash[sid] = exact;
+                publish_class_exact_hash(ds, sid, canonical, exact);
             }
 
             // The event identity, where both halves exist: the input hash, published when the
@@ -2621,6 +2662,10 @@ __global__ void k_persistent_evolve(
 
 }  // namespace
 
+#if HG_ENGINE_STATS
+void test_set_publish_delay(long long cycles) { g_publish_delay_cycles_host = cycles; }
+#endif
+
 // The RingBuffer's sequence init; declared in ring_buffer.hpp, whose class cannot hold a
 // kernel because the header reaches host-only translation units. External linkage: every
 // RingBuffer constructor everywhere calls this.
@@ -3567,6 +3612,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         launch.attrs = window;
         launch.numAttrs = 1;
     }
+#if HG_ENGINE_STATS
+    // Copied at each launch: release_after_failure's cudaDeviceReset clears device variables.
+    HG_CUDA_CHECK(cudaMemcpyToSymbol(g_publish_delay_cycles, &g_publish_delay_cycles_host,
+                                     sizeof g_publish_delay_cycles_host),
+                  "publish delay");
+#endif
     HG_CUDA_CHECK(cudaLaunchKernelEx(
         &launch, k_persistent_evolve,
         dsk, d_rules, num_rules, match_q.view(), scratch_matches.view(),
