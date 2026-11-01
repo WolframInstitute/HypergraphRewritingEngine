@@ -22,6 +22,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <pthread.h>
 
@@ -59,7 +60,11 @@ void* lane(void* arg) {
 int main() {
     const unsigned lanes[2] = {2, 2};
     hg_gpumc::launch(kBlocks, lanes);
-    g_ds = new (malloc(sizeof(g::DeviceState))) g::DeviceState{};
+    // Zeroed first: DeviceState's padding is not written by DeviceState{}, and the by-value
+    // kernel argument copies it.
+    auto* ds = static_cast<g::DeviceState*>(malloc(sizeof(g::DeviceState)));
+    memset(ds, 0, sizeof(g::DeviceState));
+    g_ds = new (ds) g::DeviceState{};
     g_qe = new (malloc(sizeof(g::QeView))) g::QeView{};
     g_qe->max_steps = 1;
     g_qe->by_key.pool = {g_nodes, &g_nodes_n, 3};

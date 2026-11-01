@@ -84,7 +84,11 @@ int main() {
     const unsigned lanes[2] = {1, 2};
     hg_gpumc::launch(2, lanes);
     // On the heap: GPUMC's static allocator places a struct of this size wrongly.
-    g_ds = new (malloc(sizeof(g::DeviceState))) g::DeviceState{};
+    // Zeroed first: DeviceState's padding is not written by DeviceState{}, and the by-value
+    // kernel argument copies it.
+    auto* ds = static_cast<g::DeviceState*>(malloc(sizeof(g::DeviceState)));
+    memset(ds, 0, sizeof(g::DeviceState));
+    g_ds = new (ds) g::DeviceState{};
     g_ds->errors.counters = g_errors;
     pthread_t t[3];
     for (long i = 0; i < 3; ++i) pthread_create(&t[i], nullptr, thread_fn, reinterpret_cast<void*>(i));
