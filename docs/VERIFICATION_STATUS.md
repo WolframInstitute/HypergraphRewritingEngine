@@ -215,10 +215,10 @@ harness declares its cells (`// GPUMC-CELL: name PASS|FAIL|BLOCKED defines -- gp
 a calibration cell that must FAIL: `HG_GPUMC_CALIBRATE_NO_THREADFENCE` (every `__threadfence` a
 no-op), `HG_GPUMC_CALIBRATE_SPLIT_RMW` (atomicAdd, atomicMin, atomicMax, atomicCAS and the
 `atomic_ref` exchanges and fetch_add a load and a separate store), or a harness's own reordering.
-`verification/gpumc/COVERAGE.md` maps the device's 466 concurrency points to 29 protocols: 217
+`verification/gpumc/COVERAGE.md` maps the device's 470 concurrency points to 29 protocols: 231
 points are covered.
 
-The checker is the CAV 2025 artifact with six fixes (`verification/gpumc/checker/build.sh`, image
+The checker is the CAV 2025 artifact with eight fixes (`verification/gpumc/checker/build.sh`, image
 `gpumc_docker:hg-fixes`): 32-bit compare-exchange, memcpy and memset promotion, races in included
 headers, struct returns, barrier divergence after a pruned spin, and floating point (intrinsics,
 C math, external-call arguments). Each fix has a checker cell.
@@ -238,6 +238,7 @@ C math, external-call arguments). Each fix has a checker cell.
 | `saturating_totals` | `saturating_add` | no update lost; the sum stops at `QM_SATURATED` | 6, 6 | split_rmw FAIL |
 | `hash_insert_elects_one` | `ConcurrentMap::DeviceView` | one inserter elected, its value stored | 9 | split_rmw FAIL |
 | `depth_relax_child_registration` | `persistent.cu` `DeviceExploreCtx` | a child never strands at a stale depth and is logged once | 11 | no_threadfence FAIL |
+| `capture_class_key` | `persistent.cu` `publish_class_hash`, `publish_class_exact_hash`, `register_child`; `qe_capture_expansion` | a state admitted for expansion by an isomorphic duplicate has its class key published before a capture of its matches loads it | 3,808 (coin: 4,704) | no_duplicate_publish FAIL |
 | `form_claim_classes` | `state_claim_form` | equal forms share a class, a colliding form takes the next key | 696 | split_rmw FAIL |
 | `content_claim_classes` | `state_claim_content` | equal content shares a class, other content under the same hash takes the next key | 252 | split_rmw FAIL; no_threadfence PASS (the map's exchange publishes the slice) |
 | `keyed_follow_rendezvous` | `keyed_hash_or_follow`, `keyed_close_followers` | a child of an unpublished twin follows once or reads its hash | 23 | no_threadfence FAIL |
@@ -392,7 +393,7 @@ amber, and 11 of the 1053 cases differ from it.
 - **Worker index reuse.** Under `HG_VERIFICATION` the arena's worker index comes from a counter
   that never releases, and `arena_worker_index_exclusive` holds its indices. Release and
   re-acquire are not checked.
-- **Device points not covered.** `verification/gpumc/COVERAGE.md` lists 249 of the device's 466
+- **Device points not covered.** `verification/gpumc/COVERAGE.md` lists 239 of the device's 470
   concurrency points that no GPUMC harness runs, with the reason for each. The largest groups:
   `k_persistent_evolve`'s block body (91; `evolve_ring_termination` runs its loop's accounting
   transcribed), the IR on a warp (54), and the geometry, invariants and curvature code (31), on
