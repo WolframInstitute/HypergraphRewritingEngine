@@ -131,9 +131,12 @@ struct StepSelectScratch {
 };
 
 // The candidate ranks match_state_rule writes as it emits: the selection scratch's when the
-// passes split, null otherwise.
+// passes split, null otherwise. Held sets (held_select_step) key their candidates by held_key and
+// read none.
 __device__ inline uint64_t* emit_rank_sink(const DeviceState& ds, const StepSelectScratch& sel) {
-    return ds.max_states_per_step != 0u && match_state_rule_splits(ds) ? sel.cand_rank : nullptr;
+    return ds.max_states_per_step != 0u && ds.held == 0u && match_state_rule_splits(ds)
+               ? sel.cand_rank
+               : nullptr;
 }
 
 // Under quotient exploration the ExplorationProbability coin is drawn when a class is claimed for
@@ -391,10 +394,13 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
     __shared__ uint32_t s_failed;
     constexpr uint64_t kNoSet = ~uint64_t{0};
     // The step's sets, in sel.idx (one per state of the step), and their groups in sel.group.
+    // Step 0's roots under root_labels have no label until the block labels them below; their
+    // groups are written there.
+    bool unlabelled_roots = s == 0u && sel.root_labels && succ != nullptr;
     auto add_block = [&](uint32_t h) {
         if (s_nb < sel.cap) {
             sel.idx[s_nb] = h;
-            sel.group[s_nb] = ds.state_label[c.sets[h].state];
+            sel.group[s_nb] = unlabelled_roots ? 0u : ds.state_label[c.sets[h].state];
             ++s_nb;
         } else {
             s_full = 1u;
@@ -448,7 +454,7 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
     // STEP 0'S ROOTS, when the seed left them unlabelled (StepSelectScratch::root_labels): each
     // root with a candidate is a set here, and is hashed and labelled by the block before any
     // key reads its labels. A root with no transition is never hashed (the host's label_root).
-    if (s == 0u && sel.root_labels && succ != nullptr) {
+    if (unlabelled_roots) {
         for (uint32_t b = 0; b < s_nb; ++b) {
             bool first = false;
             root_exact_and_labels(ds, c.sets[sel.idx[b]].state, sel.exact_map, sel.forms,
@@ -461,6 +467,7 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
             for (uint32_t b = 0; b < s_nb; ++b)
                 sel.group[b] = ds.state_label[c.sets[sel.idx[b]].state];
         __syncthreads();
+        unlabelled_roots = false;
     }
     // A slot and the slab entry of each candidate, a lane each; sel.rank becomes set << 32 | slot.
     const uint32_t start = s_start, n = s_n;
@@ -631,10 +638,10 @@ __device__ void held_select_step(const DeviceState& ds, uint32_t s,
                         const HeldEntry& y = o.run(at[2u * j])[at[2u * j + 1u]];
                         if (best == k || y.key < x.key) {
                             best = j;
-                            x = y;
+                            hgcommon::ko_copy(x, y);
                         }
                     }
-                    e[w] = x;
+                    hgcommon::ko_copy(e[w], x);
                     blk[w] = g + best;
                     ++at[2u * best + 1u];
                     settle(best);

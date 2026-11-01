@@ -101,6 +101,10 @@ using HeldEntry = hgcommon::KeyOrderEntry<uint32_t>;
 // bucket.
 struct DeviceKeyOrder {
     uint32_t   bits = 0;
+    // While set, the tree is left alone and rebuilt from the counts afterwards
+    // (held_order_rebuild_tree): a block editing many buckets at once would otherwise add to the
+    // tree's top nodes from every lane.
+    uint32_t   defer_tree = 0;
     uint64_t*  tree = nullptr;     // [2^bits + 1]
     uint64_t   size = 0;
     uint32_t*  counts = nullptr;   // [2^bits]
@@ -110,10 +114,6 @@ struct DeviceKeyOrder {
     __host__ __device__ uint32_t count(uint32_t b) const { return counts[b]; }
     __host__ __device__ void set_count(uint32_t b, uint32_t n) { counts[b] = n; }
     __host__ __device__ bool reserve(uint32_t, uint32_t n) const { return n <= kHeldBucketCap; }
-    // While set, the tree is left alone and rebuilt from the counts afterwards
-    // (held_order_rebuild_tree): a block editing many buckets at once would otherwise add to the
-    // tree's top nodes from every lane.
-    uint32_t   defer_tree = 0;
     __device__ void tree_add(uint32_t i, int64_t d) {
         if (defer_tree) return;
         atomicAdd(reinterpret_cast<unsigned long long*>(&tree[i]),
@@ -156,7 +156,8 @@ __device__ inline void held_order_carve(DeviceKeyOrder& o, uint32_t* block, uint
     hgcommon::ko_clear(o);
 }
 
-// One state's held matches.
+// One state's held matches. The fields are ordered so the struct has no padding: held_copy_alloc
+// copies a whole header, and a copy of padding reads bytes no write fills.
 struct DeviceHeldSet {
     DeviceKeyOrder order;
     uint32_t* order_block = nullptr;
@@ -164,16 +165,16 @@ struct DeviceHeldSet {
     // uses, the matched edges in pattern order), `slots` of them; `used` handed out; the freed
     // slots a stack of `free_n` in free_slots[slots].
     uint32_t* slab = nullptr;
-    uint32_t  stride = 0;
-    uint32_t  slots = 0;
-    uint32_t  used = 0;
     uint32_t* free_slots = nullptr;
-    uint32_t  free_n = 0;
     // The adjacency: head[v] for v < vcap the first node of vertex v's list; node i is
     // nodes[2i] (the edge) and nodes[2i + 1] (the next node); freed nodes chained from free_node.
     uint32_t* head = nullptr;
-    uint32_t  vcap = 0;
     uint32_t* nodes = nullptr;
+    uint32_t  stride = 0;
+    uint32_t  slots = 0;
+    uint32_t  used = 0;
+    uint32_t  free_n = 0;
+    uint32_t  vcap = 0;
     uint32_t  ncap = 0;
     uint32_t  nused = 0;
     uint32_t  free_node = kHeldNone;
@@ -182,6 +183,8 @@ struct DeviceHeldSet {
     uint32_t  live = 0;
     uint32_t  pending = 0;        // the candidates a selection is about to hold (held_select_step)
 };
+static_assert(sizeof(DeviceKeyOrder) == 40u, "DeviceKeyOrder has padding");
+static_assert(sizeof(DeviceHeldSet) == 128u, "DeviceHeldSet has padding");
 
 // The arrays of DeviceState's held sets, for the update and the selection.
 struct HeldCtx {
@@ -204,6 +207,14 @@ constexpr uint32_t kHeldFailed = 2u;
 
 __device__ inline uint64_t held_slab_words(uint32_t slots, uint32_t stride) {
     return uint64_t{slots} * stride;
+}
+
+// Whether word w of a slab of `stride` words per slot is written: a slot's four header words and
+// its matched edges. A slot of a rule with fewer left-hand edges than the longest leaves the rest
+// of its stride unwritten.
+__device__ inline bool held_slab_word_written(const uint32_t* slab, uint32_t stride, uint64_t w) {
+    const uint64_t at = w % stride;
+    return at < 4u || at - 4u < (slab[w - at] >> 16);
 }
 
 __device__ inline bool held_grow_order(const HeldCtx& c, DeviceHeldSet& s) {
@@ -265,7 +276,8 @@ __device__ inline bool held_grow_slab(const HeldCtx& c, DeviceHeldSet& s, uint32
         held_free(c.pool, free_slots, slots);
         return false;
     }
-    for (uint64_t w = 0; w < held_slab_words(s.used, s.stride); ++w) slab[w] = s.slab[w];
+    for (uint64_t w = 0; w < held_slab_words(s.used, s.stride); ++w)
+        if (held_slab_word_written(s.slab, s.stride, w)) slab[w] = s.slab[w];
     for (uint32_t i = 0; i < s.free_n; ++i) free_slots[i] = s.free_slots[i];
     held_free(c.pool, s.slab, held_slab_words(s.slots, s.stride));
     held_free(c.pool, s.free_slots, s.slots);
@@ -806,10 +818,17 @@ __device__ inline void held_copy_data(const HeldCtx& c, uint32_t from_h, uint32_
                                       uint32_t lane, uint32_t nt) {
     const DeviceHeldSet& from = c.sets[from_h];
     const DeviceHeldSet& s = c.sets[to_h];
-    const uint64_t ow = held_order_words(from.order.bits);
-    for (uint64_t w = lane; w < ow; w += nt) s.order_block[w] = from.order_block[w];
+    // The order's tree, its counts and the entries below each bucket's count.
+    const DeviceKeyOrder& fo = from.order;
+    const uint32_t nb = hgcommon::ko_buckets(fo.bits);
+    for (uint32_t i = lane; i <= nb; i += nt) s.order.tree[i] = fo.tree[i];
+    for (uint32_t b = lane; b < nb; b += nt) s.order.counts[b] = fo.counts[b];
+    for (uint64_t e = lane; e < uint64_t{nb} * kHeldBucketCap; e += nt)
+        if (e % kHeldBucketCap < fo.counts[e / kHeldBucketCap])
+            hgcommon::ko_copy(s.order.runs[e], fo.runs[e]);
     const uint64_t sw = held_slab_words(from.used, from.stride);
-    for (uint64_t w = lane; w < sw; w += nt) s.slab[w] = from.slab[w];
+    for (uint64_t w = lane; w < sw; w += nt)
+        if (held_slab_word_written(from.slab, from.stride, w)) s.slab[w] = from.slab[w];
     for (uint32_t i = lane; i < from.free_n; i += nt) s.free_slots[i] = from.free_slots[i];
     for (uint32_t w = lane; w < from.vcap; w += nt) s.head[w] = from.head[w];
     for (uint64_t w = lane; w < 2ull * from.nused; w += nt) s.nodes[w] = from.nodes[w];

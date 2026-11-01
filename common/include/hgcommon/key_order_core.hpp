@@ -38,6 +38,14 @@ struct KeyOrderEntry {
     V value;
 };
 
+// Entry `from` into `to`, field by field. KeyOrderEntry<uint32_t> has 4 bytes of padding that no
+// write fills, and a whole-struct copy reads them.
+template <class V>
+HG_HD inline void ko_copy(KeyOrderEntry<V>& to, const KeyOrderEntry<V>& from) {
+    to.key = from.key;
+    to.value = from.value;
+}
+
 HG_HD inline uint32_t ko_buckets(uint32_t bits) { return 1u << bits; }
 
 HG_HD inline uint32_t ko_bucket_of(uint64_t key, uint32_t bits) {
@@ -88,7 +96,7 @@ HG_HD inline bool ko_insert(Store& s, uint64_t key, V value) {
     auto* r = s.run(b);
     uint32_t i = n;
     while (i > 0u && r[i - 1u].key > key) {
-        r[i] = r[i - 1u];
+        ko_copy(r[i], r[i - 1u]);
         --i;
     }
     r[i].key = key;
@@ -107,7 +115,7 @@ HG_HD inline bool ko_erase(Store& s, uint64_t key, Same&& same) {
     const uint32_t n = s.count(b);
     for (uint32_t i = ko_lower(r, n, key); i < n && r[i].key == key; ++i) {
         if (!same(r[i].value)) continue;
-        for (uint32_t j = i + 1u; j < n; ++j) r[j - 1u] = r[j];
+        for (uint32_t j = i + 1u; j < n; ++j) ko_copy(r[j - 1u], r[j]);
         s.set_count(b, n - 1u);
         ko_tree_add(s, b, -1);
         s.size_add(-1);
@@ -158,7 +166,7 @@ HG_HD inline auto ko_select(const Store& s, uint64_t p, uint64_t* lo, uint64_t* 
     while (h < n && r[h].key == r[at].key) ++h;
     *lo = before + l;
     *hi = before + h;
-    return r[at];
+    return KeyOrderEntry<decltype(r[at].value)>{r[at].key, r[at].value};
 }
 
 // Every entry, in key order.
@@ -186,7 +194,7 @@ HG_HD inline bool ko_rebuild(const From& from, To& to) {
             const uint32_t t = ko_bucket_of(r[i].key, to.bits);
             const uint32_t m = to.count(t);
             if (!to.reserve(t, m + 1u)) return false;
-            to.run(t)[m] = r[i];
+            ko_copy(to.run(t)[m], r[i]);
             to.set_count(t, m + 1u);
         }
     }
