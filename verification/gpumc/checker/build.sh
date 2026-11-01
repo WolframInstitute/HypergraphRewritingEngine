@@ -2,9 +2,9 @@
 # Build gpumc_docker:hg-fixes, the image verification/gpumc/run.sh uses: the CAV 2025 GPUMC artifact
 # (gpumc_docker:latest, loaded by `docker load`) with gpumc-fixes.patch applied.
 #
-# gpumc-fixes.patch carries six changes. Each has a test in this directory, run by
+# gpumc-fixes.patch carries seven changes. Each has a test in this directory, run by
 # `verification/gpumc/run.sh cells cas_width memcpy_promotion race_in_header struct_return
-# barrier_divergence float_math`.
+# barrier_divergence float_math loop_jump_threading loop_body_phi`.
 #
 # Compare-exchange width (Execution.cpp, GenMCDriver.cpp, SVal.hpp). GPUMC 0.9 compared a
 # compare-exchange's read value against the expected value sign-extended from the access width,
@@ -56,6 +56,20 @@
 # interpreter took any argument whose bits read as a static address for a pointer, which a
 # negative double does (-2.25 is 0xC002...), and stopped at getStaticAddr. checker/float_math.cpp
 # checks both.
+#
+# Loop inversion (LoopJumpThreadingPass.cpp). When the header's condition is true on entry, the
+# pass sends the preheader straight into the loop body, and the header then runs only from the
+# latch. It checked uses of the header's PHIs inside the loop only. A header value read after the
+# loop, as in `bool ok = true; while (ok && full()) ok = grow(); if (ok) ...`
+# (gpu/src/persistent.cu held_select_step), had no definition on the path that leaves the body on
+# the first iteration, and the checker aborted in transformLLVMModule with "Instruction does not
+# dominate all uses!". The pass inverts a loop only when every use of a header value is in the
+# header, on an edge out of it, or is a use of the critical PHI in the body.
+# checker/loop_jump_threading.cpp checks it. The body block the preheader jumps to had no PHI entry
+# for the new edge when it merges two paths ("PHINode should have one entry for each predecessor"):
+# each of its PHIs takes, from the preheader, the value it takes from the header, with the critical
+# PHI replaced by its initial value, and a loop whose value is defined in the header is not
+# inverted. checker/loop_body_phi.cpp checks it. Both defects are also in GenMC v0.20.0.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 docker image inspect gpumc_docker:latest >/dev/null

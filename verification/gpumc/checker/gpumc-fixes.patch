@@ -258,6 +258,116 @@ diff -u a/src/LLVMModule.cpp b/src/LLVMModule.cpp
  		OptPM.add(llvm::createPromoteMemoryToRegisterPass());
  		OptPM.add(llvm::createDeadArgEliminationPass());
  		OptPM.add(createLocalSimplifyCFGPass());
+diff -u a/src/LoopJumpThreadingPass.cpp b/src/LoopJumpThreadingPass.cpp
+--- a/src/LoopJumpThreadingPass.cpp
++++ b/src/LoopJumpThreadingPass.cpp
+@@ -24,6 +24,8 @@
+ #include "SExprVisitor.hpp"
+ #include <llvm/IR/Constants.h>
+ #include <llvm/IR/Value.h>
++#include <utility>
++#include <vector>
+ 
+ using namespace llvm;
+ 
+@@ -85,6 +87,32 @@
+ 	       !areNonCriticalPHIsUsedInBody(l, criticalPHI);
+ }
+ 
++/*
++ * After the inversion the header runs only from the latch, so it no longer
++ * dominates the body or the loop's exits. Returns true if every use of a value
++ * defined in the header is in the header (for a PHI use, on an edge out of the
++ * header), or is a use of the critical PHI in the body, which invertLoop
++ * replaces with the initial value.
++ */
++bool headerValuesUsedOnlyInHeader(Loop *l, PHINode *criticalPHI)
++{
++	auto *h = l->getHeader();
++	for (auto &i : *h) {
++		for (auto &u : i.uses()) {
++			auto *ui = dyn_cast<Instruction>(u.getUser());
++			if (!ui)
++				return false;
++			if (&i == criticalPHI && inLoopBody(l, ui->getParent()))
++				continue;
++			auto *p = dyn_cast<PHINode>(ui);
++			auto *b = p ? p->getIncomingBlock(u) : ui->getParent();
++			if (b != h)
++				return false;
++		}
++	}
++	return true;
++}
++
+ PHINode *getPHIConstEntryValueUsedInCond(Loop *l)
+ {
+ 	for (auto iit = l->getHeader()->begin(); auto phi = dyn_cast<PHINode>(iit); ++iit) {
+@@ -130,6 +158,22 @@
+ 	return (numSeen == 0) && res.getBool();
+ }
+ 
++/*
++ * Returns the value that `phi`, a PHI of the body block the preheader will jump to,
++ * takes on the edge from the preheader: the value it takes from the header, with the
++ * critical PHI replaced by its initial value. Returns nullptr if that value is
++ * defined in the header, which does not run before the body block on that edge.
++ */
++Value *getValueFromPreheader(Loop *l, PHINode *criticalPHI, PHINode &phi)
++{
++	auto *h = l->getHeader();
++	auto *v = phi.getIncomingValueForBlock(h);
++	if (v == criticalPHI)
++		return criticalPHI->getIncomingValueForBlock(l->getLoopPredecessor());
++	auto *i = dyn_cast<Instruction>(v);
++	return (i && i->getParent() == h) ? nullptr : v;
++}
++
+ bool invertLoop(Loop *l, PHINode *criticalPHI)
+ {
+ 	auto *ph = l->getLoopPredecessor();
+@@ -143,6 +187,10 @@
+ 	if (!loopUsesHeaderPHIsTrivially(l, criticalPHI))
+ 		return false;
+ 
++	/* If a header value is used where the header will no longer dominate, skip */
++	if (!headerValuesUsedOnlyInHeader(l, criticalPHI))
++		return false;
++
+ 	/*
+ 	 * In principle, we can invert the loop even if the body was using the header's
+ 	 * Φs (as in the comment below), but this does not buy us anything, as we would not get
+@@ -151,6 +199,18 @@
+ 	 * Now, however, we have proven that the critical PHI's value remains unchanged
+ 	 * as long as the loop is executed, so we can replace all uses with the initial value
+ 	 */
++	auto *b = (inLoopBody(l, hbi->getSuccessor(0))) ?
++		hbi->getSuccessor(0) : hbi->getSuccessor(1);
++
++	/* Each PHI of the body block needs a value on the new edge from the preheader */
++	std::vector<std::pair<PHINode *, Value *>> fromPreheader;
++	for (auto &phi : b->phis()) {
++		auto *v = getValueFromPreheader(l, criticalPHI, phi);
++		if (!v)
++			return false;
++		fromPreheader.emplace_back(&phi, v);
++	}
++
+ 	replaceUsesWithIf(criticalPHI, criticalPHI->getIncomingValueForBlock(ph), [&](Use &u){
+ 			auto *us = dyn_cast<Instruction>(u.getUser());
+ 			return us && inLoopBody(l, us->getParent());
+@@ -174,9 +234,9 @@
+ 
+ 	/* Set preheader's successor to the loop body */
+ 	auto phJmpIdx = (phbi->getSuccessor(0) == h) ? 0 : 1;
+-	auto *b = (inLoopBody(l, hbi->getSuccessor(0))) ?
+-		hbi->getSuccessor(0) : hbi->getSuccessor(1);
+ 	phbi->setSuccessor(phJmpIdx, b);
++	for (auto &p : fromPreheader)
++		p.first->addIncoming(p.second, ph);
+ 
+ 	/* Actually change the header */
+ 	l->moveToHeader(b);
 diff -u a/src/PromoteMemIntrinsicPass.cpp b/src/PromoteMemIntrinsicPass.cpp
 --- a/src/PromoteMemIntrinsicPass.cpp
 +++ b/src/PromoteMemIntrinsicPass.cpp
