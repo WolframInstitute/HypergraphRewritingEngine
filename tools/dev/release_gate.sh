@@ -35,6 +35,11 @@
 #   under initcheck the measured engine exceeds its estimate by 38 MB).
 #   GpuBinaryGate.NoUsableDeviceIsAStructuredRefusal: its worker hides the device with
 #   CUDA_VISIBLE_DEVICES; started under the sanitizer, the worker answers the job it must refuse.
+#   Sampling.HeldMatchSetsOfMergedLineagesKeepTheSameHistoryOnBothEngines: 78 s natively (3,000
+#   steps on two 4,096-edge cycles); under initcheck it ran for 11 hours without finishing.
+#   CapacityOverflow.AHeldStepPastTheSelectionArraysGrowsTheMatchPool and
+#   Sampling.HeldMatchSetsKeepTheSameHistoryOnBothEngines run the same held-set code under the
+#   sanitizers.
 #   gpu_ffi_tests' kernels run in worker processes, so the sanitizer follows child processes.
 # API errors are not reported: CapacityOverflow.AFailedEngineConstructionReturnsItsDeviceMemory
 # provokes cudaMalloc failures and checks them.
@@ -51,6 +56,7 @@ read -r -a SUITES <<< "${HG_GPU_SUITES:-hg_gpu_tests gpu_differential_tests gpu_
 UNSANITIZABLE="CapacityOverflow.AnEngineThatDoesNotFitStopsAndReports"
 UNSANITIZABLE+=":CapacityOverflow.TheEstimateCoversTheAllocation"
 UNSANITIZABLE+=":GpuBinaryGate.NoUsableDeviceIsAStructuredRefusal"
+UNSANITIZABLE+=":Sampling.HeldMatchSetsOfMergedLineagesKeepTheSameHistoryOnBothEngines"
 export PATH="$PATH:/usr/lib/wsl/lib"
 mkdir -p "$LOGS"
 fail=0
