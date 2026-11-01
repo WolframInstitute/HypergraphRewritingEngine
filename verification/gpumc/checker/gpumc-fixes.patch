@@ -198,6 +198,61 @@ diff -u a/src/GenMCDriver.hpp b/src/GenMCDriver.hpp
  		unsigned racecount;
  		unsigned esize=0;
  #ifdef ENABLE_GENMC_DEBUG
+diff -u a/src/InstAnnotator.cpp b/src/InstAnnotator.cpp
+--- a/src/InstAnnotator.cpp
++++ b/src/InstAnnotator.cpp
+@@ -62,22 +62,41 @@
+ InstAnnotator::IRExprUP InstAnnotator::generateOperandExpr(Value *op)
+ {
+ 	if (auto *c = dyn_cast<Constant>(op)) {
+-		if (isa<UndefValue>(c)) {
+-			return ConcreteExpr<Value *>::create(c->getType()->getIntegerBitWidth(), 42);
+-		} else if (c->getType()->isIntegerTy()) {
+-			auto v = c->getUniqueInteger();
+-			return ConcreteExpr<Value *>::create(v.getBitWidth(), v.getLimitedValue());
+-		} else if (isa<ConstantPointerNull>(c)) {
+-			BUG_ON(!op->getType()->isPointerTy());
++		auto *typ = c->getType();
++		/* The width of a pointer constant, from the module of an instruction that uses it */
++		auto pointerBits = [&]() {
+ 			auto iIt = std::find_if(op->user_begin(), op->user_end(), [](const User *u){
+ 					return llvm::isa<Instruction>(u);
+ 				});
+ 			BUG_ON(iIt == op->user_end());
+ 			auto *mod = dyn_cast<Instruction>(*iIt)->getParent()->getParent()->getParent();
+-			auto &DL = mod->getDataLayout();
+-			return ConcreteExpr<Value *>::create(DL.getTypeAllocSizeInBits(op->getType()), 0);
++			return mod->getDataLayout().getTypeAllocSizeInBits(typ);
++		};
++		/*
++		 * An undef takes the width of its type. A floating-point constant is its bit
++		 * pattern: the annotator handles no floating-point operation, so the value
++		 * reaches an expression only as a PHI operand or through a bitcast.
++		 */
++		const bool smallFP = typ->isFloatingPointTy() && typ->getPrimitiveSizeInBits() <= 64;
++		if (isa<UndefValue>(c)) {
++			if (typ->isIntegerTy())
++				return ConcreteExpr<Value *>::create(typ->getIntegerBitWidth(), 42);
++			if (smallFP)
++				return ConcreteExpr<Value *>::create(typ->getPrimitiveSizeInBits().getFixedSize(), 42);
++			if (typ->isPointerTy())
++				return ConcreteExpr<Value *>::create(pointerBits(), 42);
++		} else if (typ->isIntegerTy()) {
++			auto v = c->getUniqueInteger();
++			return ConcreteExpr<Value *>::create(v.getBitWidth(), v.getLimitedValue());
++		} else if (isa<ConstantPointerNull>(c)) {
++			BUG_ON(!op->getType()->isPointerTy());
++			return ConcreteExpr<Value *>::create(pointerBits(), 0);
++		} else if (isa<ConstantFP>(c) && smallFP) {
++			auto bits = cast<ConstantFP>(c)->getValueAPF().bitcastToAPInt();
++			return ConcreteExpr<Value *>::create(typ->getPrimitiveSizeInBits().getFixedSize(),
++							     bits.getLimitedValue());
+ 		}
+-		ERROR("Only integer and null constants currently allowed in assume() expressions.\n");
++		ERROR("Only integer, floating-point and null constants currently allowed in assume() expressions.\n");
+ 	}
+ 	BUG_ON(!isa<Instruction>(op) && !isa<Argument>(op));
+ 	Module *mod = nullptr;
 diff -u a/src/IntrinsicLoweringPass.cpp b/src/IntrinsicLoweringPass.cpp
 --- a/src/IntrinsicLoweringPass.cpp
 +++ b/src/IntrinsicLoweringPass.cpp

@@ -2,9 +2,9 @@
 # Build gpumc_docker:hg-fixes, the image verification/gpumc/run.sh uses: the CAV 2025 GPUMC artifact
 # (gpumc_docker:latest, loaded by `docker load`) with gpumc-fixes.patch applied.
 #
-# gpumc-fixes.patch carries seven changes. Each has a test in this directory, run by
+# gpumc-fixes.patch carries eight changes. Each has a test in this directory, run by
 # `verification/gpumc/run.sh cells cas_width memcpy_promotion race_in_header struct_return
-# barrier_divergence float_math loop_jump_threading loop_body_phi`.
+# barrier_divergence float_math loop_jump_threading loop_body_phi annotation_constants`.
 #
 # Compare-exchange width (Execution.cpp, GenMCDriver.cpp, SVal.hpp). GPUMC 0.9 compared a
 # compare-exchange's read value against the expected value sign-extended from the access width,
@@ -70,6 +70,14 @@
 # each of its PHIs takes, from the preheader, the value it takes from the header, with the critical
 # PHI replaced by its initial value, and a loop whose value is defined in the header is not
 # inverted. checker/loop_body_phi.cpp checks it. Both defects are also in GenMC v0.20.0.
+#
+# Annotation constants (InstAnnotator.cpp). Annotating a loop header's condition with the values
+# entering from the preheader called getIntegerBitWidth on every undef, so an undef pointer or
+# floating-point value aborted the checker in llvm::cast<IntegerType> (gpu/src/match.cu under
+# match_drain_block), and any floating-point constant stopped it with "Only integer and null
+# constants currently allowed in assume() expressions". An undef takes the width of its type and a
+# floating-point constant of 64 bits or less is its bit pattern, as in GenMC v0.19.
+# checker/annotation_constants.cpp checks both.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 docker image inspect gpumc_docker:latest >/dev/null
