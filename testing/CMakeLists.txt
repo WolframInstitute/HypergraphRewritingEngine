@@ -245,6 +245,8 @@ create_test_executable(core_tests
     ../hypergraph/tests/ir_pinned_states.hpp
     ../wxf/tests/test_wxf.cpp
 )
+# test_initial_conditions.cpp checks the lattice limit of initial_condition_job.hpp.
+target_include_directories(core_tests PRIVATE ${CMAKE_SOURCE_DIR}/paclet_source)
 
 # =============================================================================
 # evolution_tests - Evolution and pattern matching tests
