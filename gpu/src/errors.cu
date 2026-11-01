@@ -51,6 +51,7 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
         case ErrorKind::kIRDepthExceeded:     return "IR search depth (retryable: grow config)";
         case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";
+        case ErrorKind::kUncomputedStateHash: return "state hash read before it was computed (defect)";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
