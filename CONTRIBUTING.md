@@ -49,6 +49,12 @@ GPU (when built with `-DBUILD_GPU=ON`):
 ./build/gpu_ffi_tests            # FFI serialization tests answered by the GPU
 ```
 
+Python package (the `_core` module built with `-DHG_BUILD_PYTHON=ON`):
+
+```bash
+python3 -m pytest python/tests
+```
+
 Worker-sequence fuzz (needs both binaries and a GPU; a local gate, not run in CI). It sends
 random jobs to one `hg_evolve_gpu --serve` worker and compares each reply with `hg_evolve`, the
 StepStatistics of both devices and of 1, 4, 16, 32 and one seed-chosen count of CPU workers, and counts-only replies with full
