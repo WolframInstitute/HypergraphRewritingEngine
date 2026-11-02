@@ -57,3 +57,36 @@ TEST(QuotientCompletenessTest, MatchesFullExpansionCanonicalCount) {
             << " canonical states, full expansion " << full;
     }
 }
+
+// A class's first state stores its class key after it claims the class. An isomorphic duplicate
+// registers that state as a child, and a worker that lowers the parent's depth admits it for
+// expansion (explore_relax), possibly before the key is stored; the replay capture keys the
+// expansion on it. The two rules reach one class by paths of different length, so depths are
+// lowered, and the lever holds each class's first state 2,000 us between its claim and its store.
+// The replay gives the raw event count of full capture, with no capture dropped.
+TEST(QuotientCompletenessTest, ADuplicateAdmittingAClassBeforeItsKeyIsStoredLosesNoEvent) {
+    const Rules rules = {make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build(),
+                         make_rule(1).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).rhs({2, 3}).build()};
+    const Init init = {{0u, 1u}};
+    const int steps = 4;
+    auto run = [&](bool quotient, uint32_t delay_us, uint64_t* dropped) {
+        auto hg_heap = std::make_unique<Hypergraph>(); Hypergraph& hg = *hg_heap;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_test_publish_delay_us(delay_us);
+        auto e_heap = std::make_unique<ParallelEvolutionEngine>(&hg, 8);
+        ParallelEvolutionEngine& e = *e_heap;
+        e.set_explore_from_canonical_states_only(quotient);
+        if (quotient) hg.set_quotient_reconstruction(true);
+        for (const auto& r : rules) e.add_rule(r);
+        Init in = init;
+        e.evolve(in, steps);
+        if (dropped) *dropped = hg.captures_dropped();
+        return hg.observable_num_events();
+    };
+    const uint64_t full = run(false, 0, nullptr);
+    for (int round = 0; round < 3; ++round) {
+        uint64_t dropped = 0;
+        EXPECT_EQ(run(true, 2000, &dropped), full) << "round " << round;
+        EXPECT_EQ(dropped, 0u) << "round " << round;
+    }
+}

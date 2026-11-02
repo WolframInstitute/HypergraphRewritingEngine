@@ -20,6 +20,7 @@
 #include "hgcommon/dedup_claim_core.hpp"
 #include "hgcommon/slot_core.hpp"
 #include "hypergraph/atomic_compat.hpp"
+#include <chrono>
 #include <thread>
 
 
@@ -412,6 +413,20 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
         existing_or_new = claim.rep;
         was_inserted = claim.won;
         canonical_hash = claim.key;
+#if HG_ENGINE_STATS
+        // Test lever (set_test_publish_delay_us): the class's first state waits between its
+        // claim and the store of its hash below. Duplicates do not wait.
+        if (was_inserted)
+            if (const uint32_t us = test_publish_delay_us_.load(std::memory_order_relaxed))
+                std::this_thread::sleep_for(std::chrono::microseconds(us));
+#endif
+        // A duplicate stores the class key for the class's first state as well, before anything
+        // below makes that state reachable from this thread (explore_register_child pushes it
+        // into its parent's child list, and explore_relax on another worker admits it for
+        // expansion). The first state's own store at the end of this function can come later,
+        // and qc_capture_expansion keys the expansion on this field. Both stores write claim.key.
+        if (!was_inserted && existing_or_new != new_sid && existing_or_new != INVALID_ID)
+            publish_canonical_hash(existing_or_new, canonical_hash);
     } else if (mode == StateCanonicalizationMode::Automatic) {
         // Automatic identity is equal edge content, so two states whose content hashes collide
         // stay two states.
@@ -2143,7 +2158,19 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         HG_STAT(qc_capture_no_orbits_.fetch_add(1, std::memory_order_relaxed));
         return;
     }
-    const uint64_t from = get_state(ev.input_state).canonical_hash;
+    // Stored by create_or_get_canonical_state, possibly on another worker. 0 means "not stored
+    // yet": a match captured under class 0 is replayed against no instance, so it is dropped
+    // and counted ("CapturesDropped").
+    auto class_key = [&](StateId s) {
+        return hgcommon::atomic_ref<uint64_t>(const_cast<uint64_t&>(get_state(s).canonical_hash))
+            .load(std::memory_order_acquire);
+    };
+    const uint64_t from = class_key(ev.input_state);
+    const uint64_t to = class_key(ev.output_state);
+    if (from == 0 || to == 0) {
+        qc_captures_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     // The input state's depth: the reconstruction's instances of it stand at its step. Read only
     // when expansions are kept per depth (qc_expansion_key), which is under full capture.
     const uint32_t from_depth = get_state(ev.input_state).step;
@@ -2173,7 +2200,6 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         {
             SVec<uint32_t> in_slot(in_orb->n ? in_orb->n : 1),
                            out_slot(out_orb->n ? out_orb->n : 1);
-            const uint64_t to = get_state(ev.output_state).canonical_hash;
             if (!qc_frame_slots(from, ev.input_state, in_orb, in_slot.data()) ||
                 !qc_frame_slots(to, ev.output_state, out_orb, out_slot.data())) {
                 HG_STAT(qc_align_fail_.fetch_add(1, std::memory_order_relaxed));
@@ -2205,7 +2231,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     }
 
     SlotMatch m;
-    m.to_hash = get_state(ev.output_state).canonical_hash;
+    m.to_hash = to;
     m.id = qc_next_match_id_.fetch_add(1, std::memory_order_relaxed);
     m.rule = ev.rule_index;
     m.from_slots = in_orb->n; m.to_slots = out_orb->n;

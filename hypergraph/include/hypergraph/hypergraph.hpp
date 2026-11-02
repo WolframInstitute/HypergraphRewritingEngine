@@ -398,6 +398,11 @@ class Hypergraph {
     alignas(hgcommon::kDestructiveLine) uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
     std::atomic<uint64_t> qc_ids_refused_{0};
     std::atomic<uint64_t> qc_captures_dropped_{0};
+#if HG_ENGINE_STATS
+    // Test lever: microseconds a class's first state waits between its claim and the store of
+    // its canonical hash (create_or_get_canonical_state). 0 outside tests.
+    std::atomic<uint32_t> test_publish_delay_us_{0};
+#endif
     // An id counter read as a bound on the ids it issued.
     uint32_t qc_id_bound(const std::atomic<uint64_t>& counter) const {
         const uint64_t v = counter.load(std::memory_order_relaxed);
@@ -1172,6 +1177,11 @@ public:
     // Captures dropped because their frames could not be aligned; non-zero means the reconstructed
     // raw events and relations are truncated ("CapturesDropped").
     uint64_t captures_dropped() const { return qc_captures_dropped_.load(std::memory_order_relaxed); }
+#if HG_ENGINE_STATS
+    void set_test_publish_delay_us(uint32_t us) {
+        test_publish_delay_us_.store(us, std::memory_order_relaxed);
+    }
+#endif
     struct IrWorkTotals {
         uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
     };
