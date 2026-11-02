@@ -70,7 +70,8 @@ CELLS=(
   "baseline|                                                          |16 1 8|CLEAN"
   "two_tls|-DTWO_TLS                                                  |16 1 8|CLEAN"
   "two_tls_alloc|-DTWO_TLS -DGUARD_ALLOCATES                          |16 1 8|CLEAN"
-  "two_tls_static|-DTWO_TLS -DGUARD_TOUCHES_STATIC                    |16 1 8|CLEAN"
+  # CORRUPT 40 of 40 under WSL kernel 6.18.54.1 (2 Nov 2026), CLEAN 0 of 20 under 6.18.40.1.
+  "two_tls_static|-DTWO_TLS -DGUARD_TOUCHES_STATIC                    |16 1 8|CORRUPT"
   "two_tls_static_alloc|-DTWO_TLS -DGUARD_TOUCHES_STATIC -DGUARD_ALLOCATES|16 1 8|CORRUPT"
   "split_fn|-DTWO_TLS -DSPLIT_FN -DGUARD_TOUCHES_STATIC -DGUARD_ALLOCATES|16 1 8|CLEAN"
   "three_tls|-DTHREE_TLS                                              |16 1 8|CLEAN"
