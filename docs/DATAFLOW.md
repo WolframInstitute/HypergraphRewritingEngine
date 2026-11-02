@@ -10,8 +10,8 @@ verified against code are marked `[UNVERIFIED]` and are work items, not document
 
 ## 1. The pipeline
 
-One evolution is four job types (`EvolutionJobType`, `parallel_evolution.hpp:167`) over a
-work-stealing scheduler:
+One evolution runs seven job types (`EvolutionJobType`, `parallel_evolution.hpp:209`) over a
+work-stealing scheduler. Four of them form the pipeline:
 
 ```
    MATCH  ──▶  SCAN  ──▶  EXPAND  ──▶  REWRITE
@@ -26,6 +26,14 @@ work-stealing scheduler:
 | `SCAN` | picks anchor candidates for the first pattern edge | (state, rule) |
 | `EXPAND` | extends a partial match by one edge; emits a completed match | partial match |
 | `REWRITE` | applies a contiguous range of one state's matches | `ExpandChunk` |
+| `REDRIVE` | in a continuation (`evolve_more`, a session's `Step`), replays one quotient point that the previous step bound left standing (`quotient_redrive_point`) | (class, depth) |
+| `QC_APPLY` | applies one capture to one (depth, list) unit of its class's instances (the replay) | capture x instances |
+| `SIDE` | runs a caller's job on the engine's workers (`submit_side_job`): StepStatistics and reply work | caller-defined |
+
+A single history under `EventOrderingFunction` runs these jobs on one worker, since each event
+depends on the one before. `"Search" -> "BestFirst"` takes one transition at a time from a heap
+and rewrites and matches it on the driver's thread (`best_first_inline`, `best_first_driver`),
+with costing in chunks on the workers (`cost_best_first`).
 
 **The work unit is a state expansion, not a match.** `ExpandChunk` carries `{matches, begin,
 end, step}` over an arena-resident, immutable match array shared read-only by every chunk of the
@@ -79,9 +87,13 @@ rules + initial state + steps + options
 hence was already a match in `P`, so it is FORWARDED — or uses at least one produced edge, so
 DELTA finds it. The partition is exhaustive, which is what makes incremental matching sound.
 
-**The GPU does none of this.** `match_state_rule` takes no produced-edge list and no delta flag:
-every (state, rule) pair is matched by a FULL scan. So the two devices run different matching
-algorithms, and any statement about matching complexity has to name which one (#78). One
+**The GPU forwards only under held match sets.** `match_state_rule` takes no produced-edge list
+and no delta flag: outside held match sets each (state, rule) pair is matched by a FULL scan.
+Under held match sets (`"MatchesPerStep"` with `None` states, `hgcommon::held_matches_apply`) the
+child's expand entry keeps the parent's set, drops the matches on consumed edges and joins only
+from the produced edges (`held_set.hpp`). So the two devices run different matching algorithms
+outside held match sets, and any statement about matching complexity has to name which one
+(#78). One
 consequence is benign — with no delta path the device cannot find a match twice, so it needs no
 match dedup — and one is not: on a deep evolution the host exploits that a child shares almost
 all its parent's matches and the device redoes the scan.
@@ -99,7 +111,7 @@ engine.
 
 | structure | guarantee | notes |
 |---|---|---|
-| `ConcurrentMap` | wait-free lookup, lock-free insert | no tombstones: a claimed slot must never return to EMPTY, or probe chains cut. Key 0 is a reserved sentinel |
+| `ConcurrentMap` | wait-free lookup, lock-free insert | no tombstones: a claimed slot must never return to EMPTY, or probe chains cut. Keys 0 (EMPTY) and ~0 (LOCKED) are reserved sentinels |
 | `LockFreeList` | lock-free push | per-edge consumers, per-state events |
 | `SegmentedArray` | lock-free append | bounded `MAX_SEGMENTS` |
 | `SparseBitset` | copy-on-write sharing | child edge sets share with the parent |

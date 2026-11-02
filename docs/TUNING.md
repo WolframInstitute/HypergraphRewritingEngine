@@ -1,6 +1,6 @@
 # Tuning constants
 
-This document lists every fixed tuning constant in the engine, on the host and on the device, and states for each one what it trades, which hardware property it depends on, and how it is set. The first part describes the code as it is at master 0abd13e6. The second part, marked **Proposed**, gives the derivation, the expert knob and the measurement for each constant, and the design for C1 (active worker count scaled to the available work).
+This document lists the fixed tuning constants in the engine, on the host and on the device, and states for each what it trades, which hardware property it depends on, and how it is set. The first part lists the constants and their sites, with line numbers read at 0abd13e6. §2.6 gives the code for each row that has a derived value. The second part, marked **Proposed**, gives the derivation, the expert knob and the measurement for each constant, and the design for C1 (active worker count scaled to the available work).
 
 The rule for every setting: a default derived from the machine, a knob for experts, and a per-device table entry only where a value was measured and cannot be derived.
 
@@ -36,7 +36,7 @@ Placement today: `ensure_default_cpu_order` pins workers only when the allowed C
 | `JobSystem::set_worker_cpus`, `set_worker_cache_domains` | C++ API | placement |
 | `HG_CONCURRENT_MAP_INITIAL_CAPACITY`, `HG_KEY_SET_PROBE_LIMIT`, `HG_KEY_SET_SHARDS`, `HG_JOB_QUEUE_CAPACITY`, `HG_JOB_INJECTOR_CAPACITY`, `HG_JOB_CHUNK_SLOTS`, `HG_JOB_MAX_POOLS`, `HG_MAX_ARENA_WORKERS`, `HG_SEGMENTED_ARRAY_MAX_SEGMENTS` | compile-time macro | sizes; most exist so the model checker can shrink them |
 
-The paclet has no worker-count option: `CpuEngineHolder` is built with `hardware_concurrency()` (`hypergraph_ffi.cpp:944`).
+The paclet's worker count is the `"Threads"` option, else `HG_TUNE_THREADS`, else one worker per logical CPU the process may use, at most 1024 (`common/include/hgcommon/tuning.hpp`, `common/include/hgcommon/affinity.hpp`). A job under `"EventOrderingFunction"` runs on one worker.
 
 ### 1.3 Host constants
 
@@ -45,7 +45,7 @@ The paclet has no worker-count option: `CpuEngineHolder` is built with `hardware
 | H1 | default worker count | `hardware_concurrency()` | `parallel_evolution.cpp:61`, `cpu_engine_holder.hpp:41`, `job_system.hpp:796` | parallelism against park/wake churn, steal traffic, SMT and E-core sharing (C1) |
 | H2 | wake policy | wake one parked worker on every submit while any worker is idle | `job_system.hpp:351`, `common/include/hgcommon/park_gate.hpp:92` | wake latency against wakes that find nothing |
 | H3 | steal attempts per search | near peers once each, then `n` random victims | `job_system.hpp:553-575` | finding work against reads of other workers' deque lines |
-| H4 | `kExpandChunkSize` | 16 matches per task | `hypergraph/include/hypergraph/parallel_evolution.hpp:1237` | spread of a wide state against per-task cost |
+| H4 | expand chunk | `derived_expand_chunk(count, workers)`: ceil(count / workers) from 4 to 64 matches per task (§2.6) | `hypergraph/src/parallel_evolution.cpp` | spread of a wide state against per-task cost |
 | H5 | causal set working capacity (`ConcurrentKeySet::WORKING_CAPACITY`) | 1024 per shard | `hypergraph/include/hypergraph/concurrent_key_set.hpp:99`; sets at `causal_graph.hpp:133,137`, `hypergraph.hpp:309` | table chain length (paid on every insert) against fixed footprint; 8192 measured -2.5 to -4.7% time at one thread, +5.7 MB on small runs (board H3) |
 | H6 | `HG_CONCURRENT_MAP_INITIAL_CAPACITY` | 1024 entries (16 KB), allocated on first insert | `concurrent_map.hpp:82` | chain length against footprint of the 17 engine maps |
 | H7 | `LOAD_FACTOR_THRESHOLD` | 0.75 | `concurrent_map.hpp:101`, `concurrent_key_set.hpp:87` | probe length against table bytes |
@@ -63,7 +63,7 @@ The paclet has no worker-count option: `CpuEngineHolder` is built with `hardware
 | H19 | job slot | 512 B payload, 16 B header | `job_system/include/job_system/job_pool.hpp:42-43` | malloc fallback for large jobs against bytes per job |
 | H20 | `HG_JOB_CHUNK_SLOTS` | 256 slots (about 135 KB per chunk) | `job_pool.hpp:14` | malloc count against per-thread footprint |
 | H21 | `HG_JOB_MAX_POOLS` | 1024 | `job_pool.hpp:11` | registry size |
-| H22 | branchial pass threads | `min(k/64 + 1, hardware_concurrency())`, own `std::thread` pool | `paclet_support.cpp:870` | runs outside the job system (C3) |
+| H22 | branchial pass jobs | up to one job per worker for a step's overlap rows, on the engine's job system (`stats::BranchialStepWork`) | `paclet_support.cpp` | rows per job against merge cost |
 | H23 | glibc malloc arenas | glibc default (8 x cores) | no `mallopt` in the tree | address space grows about 64 MB per worker (C24, board H7) |
 | H24 | `keyed_claim_limit` | 1024 | `hypergraph.hpp:726` | keyed twin claims kept against memory |
 
@@ -73,7 +73,7 @@ The paclet has no worker-count option: `CpuEngineHolder` is built with `hardware
 |---|---|---|---|---|
 | D1 | persistent grid | SMs x 8; 32 SMs when the query fails | `gpu/src/persistent.cu:1704-1722` | worker blocks against IR arena, TR scratch and survivor scratch, which scale with the grid (`evolve.cu:435`, `:935-941`) |
 | D2 | `kMatchBlockThreads` | 32 (one warp per block) | `gpu/include/hg_gpu/match.hpp:92` | per-item serial work against warps per SM; with D1 gives 8 warps per SM |
-| D3 | `kLaneBatchBacklog` | 64 records | `persistent.cu:708` | spread of a short backlog over the grid against batch efficiency |
+| D3 | `DeviceState::lane_backlog` | `lane_backlog_of(cfg)`: max(8, grid / 16), 64 records at grid 1024 (§2.6) | `persistent.cu` | spread of a short backlog over the grid against batch efficiency |
 | D4 | `kBatchRecords` | 8 | `persistent.cu:714` | records per claim |
 | D5 | `kDeepStreak` | 16 | `persistent.cu:715` | iterations before a block claims 32 records |
 | D6 | `kMaxTile` | 4 lanes | `persistent.cu:716` | IR tile width for a batch |

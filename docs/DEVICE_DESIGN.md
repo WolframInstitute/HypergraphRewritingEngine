@@ -139,7 +139,9 @@ chunks in order; the iteration is one shared function, as `DeviceContentCursor` 
 
 ### 4.2 Matching: drain-time inheritance and delta joins
 
-Today the device matches every state from scratch for every rule. The host inherits (2bfb5198):
+The device matches each state from scratch for each rule, except under held match sets
+(`"MatchesPerStep"` with `None` states, `held_set.hpp`), where a child updates its parent's set
+by joins anchored at the consumed and produced edges. The host inherits (2bfb5198):
 a state's matching drains exactly once, and at the drain the parent hands each registered child
 the stored matches that use none of the child's consumed edges; a child registered after the
 drain takes them at registration (rv::ChildInheritance, MatchJoin::drained / inherited). The

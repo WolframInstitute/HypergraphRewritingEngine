@@ -66,8 +66,8 @@ list.
 ## Key options
 
 - `"CanonicalizeStates" -> None | Automatic | Full` — how states are deduplicated.
-  `None` keeps every state distinct; `Automatic` uses a fast content hash; `Full` is
-  exact isomorphism (identifies all isomorphic states). Default `None`.
+  `None` keeps each state distinct; `Automatic` merges states with identical edge lists;
+  `Full` merges isomorphic states. Default `None`.
 - `"TargetDevice" -> "CPU" | "GPU"` — run on the CPU (default) or, where a GPU build
   is bundled, the GPU (like `NetTrain`). Falls back to CPU with `HGEvolve::gpudev` if no GPU
   binary is present or the machine has no usable NVIDIA GPU;
@@ -76,18 +76,24 @@ list.
   transitive reduction (default `True`).
 - `"ExploreFromCanonicalStatesOnly" -> True | False` — quotient exploration: expand
   each canonical state once, so the run costs the canonical closure rather than the
-  (exponentially larger) provenance count. Off by default. The observable output —
-  event identities, causal and branchial relations — is identical to a full-capture
-  run of the same model (every golden row is checked equal between the two), so this
-  is purely a cost switch. The one exception is `"CanonicalizeEvents" -> "Positional"`,
-  whose identity needs raw presentations: requesting it turns the quotient off for
-  that run and says so in the result's warnings.
+  (exponentially larger) provenance count. Off by default. It applies only under
+  `"CanonicalizeStates" -> Full`. The observable output — event identities, causal and
+  branchial relations — is identical to a full-capture run of the same model (each golden
+  row is checked equal between the two). The engine runs full capture instead, with a
+  warning, under `"CanonicalizeEvents" -> "Positional"`, `"UndirectedEdges" -> True`,
+  `"MaxStatesPerStep"` and `"MatchesPerStep"`.
 - `"IncludeCanonicalHashes" -> True` — attach a run-stable isomorphism hash to each
   state, for fusing results across separate runs.
 - `"Generational" -> True`, `"EventOrderingFunction"`, `"MatchesPerStep" -> 1` with
   `"UniformRandom" -> True` — a single history: one generation, one event in SetReplace's
   order, or one random match per step.
 - `"UndirectedEdges" -> True` — every hyperedge of two vertices is an unordered pair.
+- `"StateCost"`, `"TransitionCost"` and `"BeamCost"` with `"MaxStatesPerStep"`, and
+  `"Search" -> "BestFirst"` with `"SearchBudget"` — cost-guided evolution
+  ([TRANSITION_COST.md](TRANSITION_COST.md)).
+- `"StepStatistics"` (a property) with `"StepStatisticsMeasures"` — per-step counts and
+  summaries of per-state measures; `"IncludeVertexCurvature" -> True` adds each vertex's
+  Ollivier-Ricci curvature to the state records.
 - `"Tuning" -> <|"MemoryLimit" -> bytes|>` — the engine's memory limit (default half of
   physical memory); an evolution that reaches it returns a partial result with
   `HGEvolve::overflow`.

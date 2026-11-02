@@ -360,6 +360,11 @@ OF case runs every option row below.
 | sessions: open, step, steer ("From", including {}), query, delta, close | OF (whole steps and a split step against the reference), SE, OC (`Continuing*`, `Steer*`) | 1053, SE corpus |
 | TargetDevice CPU and GPU | OF (every case, both), WF, GC | 1053, 5072, 12 |
 | worker counts 1 to 32 | WF (1, 4, 16, 32, one of 2-31), OC (`DeterministicAcrossThreadCounts`) | 5072 |
+| EventOrderingFunction, Generational | all_tests `EventOrdering.*` (`MatchesSetReplaceWolframModel`: events, final states and causal graphs against SetReplace's `WolframModel` on the cases recorded by `reference/verify_setreplace_order.wls` in `reference/setreplace_order_cases.hpp`), `Generational.*` (all_tests and gpu_differential_tests); not in OF or WF | 119 recorded cases |
+| UndirectedEdges | all_tests `UndirectedEngine.*` (against the emulation by directed orientations), `UndirectedHash.*` (against a brute-force isomorphism test); gpu_differential_tests `Undirected.RunsAgreeAcrossEngines`; not in OF or WF | |
+| StateCost, TransitionCost, BeamCost, Search -> BestFirst | all_tests `TransitionCost.*`, `BeamPath.*`, `BestFirst.*`; not in OF or WF | |
+| held match sets and lineage labels (MatchesPerStep under None states) | gpu_differential_tests `Sampling.HeldMatchSets*` (the two engines against each other) | |
+| MemoryLimit and partial results | all_tests `PartialResults.*`, python `test_memory_limit.py`; not in OF or WF | |
 
 No reference meaning exists for which transitions a binding cap or a sampling draw keeps: the
 rank is the engine's transition key (docs/SPEC.md 5), so OF checks the properties listed above.

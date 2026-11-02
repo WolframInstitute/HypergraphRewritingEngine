@@ -287,7 +287,7 @@ make -j$(nproc) paclet
 **Troubleshooting OSXCross:**
 - **SDK version mismatch**: Use SDK version matching your target macOS
 - **Missing tools**: Ensure all dependencies installed
-- **Linker errors**: Try `./build_compiler_rt.sh` for additional libraries
+- **Linker errors**: Run `./build_compiler_rt.sh` in the OSXCross checkout for additional libraries
 - **PATH issues**: Verify `OSXCROSS_ROOT` points to correct directory
 
 **SDK Version Selection:**
@@ -501,13 +501,18 @@ rm -rf build_*
 
 ## Platform-Agnostic Code
 
-This project is designed to be platform-agnostic:
-- No platform-specific code in core libraries
-- All platform differences handled via CMake
-- Standard C++20, no OS-specific APIs
-- Cross-platform threading (std::thread and std::atomic)
+The engine is standard C++20 with `std::thread` and `std::atomic`. The OS-specific code is in
+three places, each with a branch per platform:
+- worker parking: futex on Linux, `WaitOnAddress` on Windows, `os_sync_wait_on_address` on
+  macOS (`common/include/hgcommon/park.hpp`, `job_system/src/park.cpp`)
+- the memory limit: `RLIMIT_DATA` on Linux, a Job Object on Windows, none on macOS
+  (`common/include/hgcommon/memory_limit.hpp`, `job_system/src/memory_limit.cpp`)
+- CPU topology and worker placement (`common/include/hgcommon/affinity.hpp`,
+  `job_system/src/affinity.cpp`)
 
-Adding new platforms requires only:
-1. Create toolchain file in `cmake/toolchains/`
-2. Update `paclet/LibraryResources/CMakeLists.txt` platform detection
-3. Test build and runtime
+Adding a platform requires:
+1. A toolchain file in `cmake/toolchains/`
+2. The platform's `$SystemID` directory name in `cmake/FindWolframLanguage.cmake` and
+   `paclet_source/CMakeLists.txt`
+3. A branch for the platform in the three places above
+4. A build and a test run on the platform

@@ -28,7 +28,7 @@ HGEvolve[...]
         │                                 │                                   │
         │                            ParallelEvolutionEngine                  ▼
         │                            + Hypergraph + matcher                 gpu/  (CUDA)
-        │                            + WL/IR canonicalization              match/rewrite/
+        │                            + IR canonicalization                 match/rewrite/
         │                            on job_system + arenas                canon/dedup
         │                                 │                                   │
         │  ◄───────────────────────  WXF result  ◄──────── marshal ──────────┘
@@ -47,7 +47,8 @@ CUDA runtime) arrives as log frames and the kernel never reads the worker's stan
 call opens a socket: on Windows, Wolfram 15.0 faults inside `SocketConnect` (libzeromqlink.dll) in
 about 1 of 6 fresh kernels. When no worker can start or a new worker does not answer a handshake
 job within 10 s, the call runs a one-shot `hg_evolve` through `RunProcess` and the next call tries
-to start a worker again; after three such calls in a row the device's calls go to `RunProcess`.
+to start a worker again; after three such calls in a row the device's calls go to `RunProcess`
+until `HGSessionOpen` on that device clears the count.
 Start-up warnings arrive as log frames during the handshake and are issued with the first call's
 `HGEvolve::enginelog`. A crash or an Alt-. abort is a process
 kill, so it never takes down the notebook. The binary is
@@ -96,8 +97,9 @@ Core engine:
   Causal/branchial in `causal_graph.hpp`.
 - **`job_system/`** — work-stealing task scheduler the engine runs on.
 - **`lockfree_deque/`** — the lock-free deque backing the scheduler.
-- **`common/`** (`hgcommon/`) — shared primitives: portable intrinsics, the WL hash
-  core shared by CPU and GPU. The named initial conditions are generated here
+- **`common/`** (`hgcommon/`) — shared primitives: portable intrinsics, and the rules both
+  engines compile (IR canonicalization, the content hash, the join, event identity, sampling,
+  quotient replay). The named initial conditions are generated here
   (`initial_condition_core.hpp`) for the paclet and the Python package, through the engine's
   "InitialCondition" job.
 - **`wxf/`** — Wolfram Exchange Format reader/writer for the WL boundary.
@@ -116,8 +118,7 @@ Boundary + tooling:
 - **`reference/`** — the validation oracle: `MultiwayReference.wl` (brute-force
   ground truth) + golden corpus + paclet verification scripts. See
   [reference/CANONICALIZATION.md](../reference/CANONICALIZATION.md).
-- **`tools/`** — standalone research/validation probes (canonicalization vs WL,
-  quotient reconstruction, determinism, profiling harnesses). `make host_tools`
+- **`tools/`** — standalone research/validation probes (quotient reconstruction, determinism, profiling harnesses). `make host_tools`
   builds every non-GPU one.
 - **`testing/`** — the aggregate C++ test target (`all_tests`).
 - **`benchmarks/` / `benchmarking/`** — per-area benchmarks and the framework lib.
@@ -130,11 +131,30 @@ Boundary + tooling:
 
 ## Key ideas a developer should know
 
-- **Canonicalization is tiered by mode, not tiered per state.** `None` = no dedup;
-  `Automatic` = fast content hash (may false-merge); `Full` = exact IR. WL is the
-  fast approximate hash; IR is exact. (A WL-bucket + IR-on-collision "tiered exact"
-  scheme was tried and profiled as a pessimization — the multiway is dedup-heavy, so
-  duplicates still need IR to confirm.)
+- **State identity is chosen by mode.** `None`: no dedup. `Automatic`: states with identical
+  edge lists are one state, keyed by the content hash, and a key hit compares the edge lists.
+  `Full`: isomorphic states are one state, keyed by the IR canonical hash, and a key hit compares
+  the canonical forms. No mode merges two states that differ under its identity. docs/SPEC.md
+  §1.1 defines the terms used below.
+- **Single histories.** `Generational`, `EventOrderingFunction` and `MatchesPerStep -> 1` with
+  `UniformRandom -> True` follow one history from each initial state (docs/SPEC.md §5). A
+  generation is applied by `Rewriter::apply_generation`, on the device as one generation record
+  (`match_state_generation`). A job under `EventOrderingFunction` runs on one worker, since each
+  event depends on the one before. Under `MatchesPerStep` with `None` states, lineage labels
+  order a step's transitions, and held match sets carry a state's matches to its child.
+- **Undirected edges.** `UndirectedEdges -> True` registers the orientation variants of each rule
+  (`hypergraph::expand_undirected_rules`), applies one match per symmetric set
+  (`hgcommon::undirected_orbit_least`) and canonicalises two-vertex edges as unordered pairs
+  (`hgcommon::ir_sym_edge`). Quotient exploration is off under it (docs/SPEC.md §3.1).
+- **Memory limit and partial results.** A job runs under a host memory limit
+  (`hgcommon::resolved_memory_limit`, default half of physical memory). The arenas refuse a block
+  past it (`hypergraph::JobMemoryLimit`), and `hg_evolve` also installs an operating-system limit.
+  A run that reaches a limit or a container ceiling stops and returns the states, events and
+  relations published so far, with `HGEvolve::overflow` (docs/SPEC.md §5).
+- **GPU fallback.** `"TargetDevice" -> "GPU"` on a machine with no usable NVIDIA GPU runs on the
+  CPU and issues `HGEvolve::gpudev` with the reason. `hg_evolve_gpu` probes the device at start
+  (`probe_device`) and refuses each job with the reason when the probe fails.
+  `{"GPU", "Strict" -> True}` gives `$Failed` with `HGEvolve::nogpu`.
 - **Quotient exploration** (`ExploreFromCanonicalStatesOnly`) expands each canonical
   state once at its shortest depth, so a run costs the canonical closure, not the
   exponentially larger provenance count. The raw events full capture would have fired

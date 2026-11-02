@@ -12,9 +12,9 @@ and the golden corpus requires `CPU == GPU` exactly.
 
 Every decision that defines the semantics — matching, rewriting, canonicalization, event
 identity, causal and quotient rules — has exactly one implementation, in `common/include/hgcommon/`,
-compiled for host and device (`match_core`, `join_core`, `rewrite_core`, `wl_core`, `ir_core`,
-`event_core`, `slot_core`, `signature_core`, `sampling_core`, `quotient_causal_core`,
-`quotient_replay_core`, `tr_reduce`). Shared code is allocation-free and synchronisation-free by
+compiled for host and device (`match_core`, `join_core`, `rewrite_core`, `content_core`, `ir_core`,
+`event_core`, `slot_core`, `signature_core`, `sampling_core`, `undirected_core`,
+`transition_cost_core`, `quotient_causal_core`, `quotient_replay_core`, `tr_reduce`). Shared code is allocation-free and synchronisation-free by
 construction; anything that allocates or synchronises is orchestration and belongs to one side.
 What this file describes is the DEVICE'S orchestration: storage, scheduling, capacity, readback.
 
@@ -30,6 +30,15 @@ the successor items back, until a termination detector observes a stable empty s
   carries depth on its tasks. There are no phases and no per-step barrier: the observable
   contract is schedule-independent because states and events are keyed by canonical identity,
   not because production is synchronised.
+- **Single histories are generation records.** Under `Generational` the block that matches a
+  state collects its matches, takes the edge-disjoint set in the standard order and emits one
+  generation record (`match_state_generation`), which one thread applies (`apply_generation`).
+  Under `EventOrderingFunction` the record holds the first match in the order.
+- **Held match sets carry a state's matches to its child.** Under `"MatchesPerStep"` with `None`
+  states (`hgcommon::held_matches_apply`), the step's selection hands each kept state's set on in
+  the selected record (`held_set.hpp`). The child's expand entry drops the matches on the
+  consumed edges, found by joins anchored at them in the parent, and adds the matches on the
+  produced edges, found by joins anchored at them in the child, and pushes no match item.
 - **A state with few peers is matched by many blocks.** When no cap ranks a state's matches
   (`match_state_rule_splits`), its item is split into parts over equal ranges of its anchor
   edges (`match_parts_of`): under `MaxStatesPerStep` N, a state of n edges is split into parts
@@ -88,16 +97,19 @@ round trip for any other reason is the same defect in a different place. Three c
 
 ## 5. Identity on device
 
-All three state modes (`None`, `Automatic`, `Full`) and all event identities (`None`, `Full`,
-`Automatic`, `Positional`, custom key sets) run on device with the host's definitions
-(`SPEC.md` §4): `state_key_device` computes exactly what the mode identifies states by; the
+All three state modes (`None`, `Automatic`, `Full`) and the event identities `None`, `Full`,
+`Automatic` and `Positional` run on device with the host's definitions (`SPEC.md` §4). A job
+with a custom key set runs on the CPU engine with an `Engine` warning, as does a job with
+`"Search" -> "BestFirst"`: `state_key_device` computes exactly what the mode identifies states by; the
 exact IR hash is a second per-state quantity filled when an event identity reads it; event
 signatures come from the shared `event_core` with ranks resolved on device, and a rank that is
 unavailable substitutes the raw edge id and is counted (`kEventSigRawFallback`).
 
 ## 6. Quotient exploration and reconstruction
 
-The device defaults to quotient exploration for bounded state growth. A canonical state is
+`EngineConfig::explore_from_canonical_states_only` defaults to true in the C++ API. The paclet
+and the Python package set it from `"ExploreFromCanonicalStatesOnly"`, whose default is false,
+and quotient exploration applies only under `Full` states. A canonical state is
 expanded once, at the shortest depth any path reaches it by, through the host's rules
 (`hgcommon/explore_depth_core.hpp`, `gpu/include/hg_gpu/explore_depth.hpp`): each arrival
 registers the canonical child under its parent and lowers the child's depth to one past the
@@ -127,6 +139,14 @@ per-event signatures so a caller can build the graph whose vertex set the count 
 `materialize_relations` gates the pair expansion: counts are device counters and cost nothing;
 the pairs are an expansion of the applied lists and are built only when the reply serves them.
 
+A capture is filed under the class key of its input state (`SPEC.md` §1.1). A class's first
+state publishes its key a moment after it claims the class, so an isomorphic duplicate that finds
+the claim publishes the same key and exact hash for the first state (`publish_class_hash`,
+`publish_class_exact_hash`) before `register_child` can admit the first state for expansion.
+The expand log's release and acquire carry the key to `qe_capture_expansion`, which loads it
+atomically and, on 0, refuses the capture and records `kUncomputedStateHash`. GPUMC
+`capture_class_key` checks this protocol.
+
 The replay is the one place the device schedules differently from the host. The host drives a
 class's instance cascade on the thread that produced it. On the device one thread runs the same
 code about 60 times slower than a host thread, and a warp of 32 lanes is the unit of issue. So
@@ -149,7 +169,11 @@ slice per lane, claimed from the expansion arena on first need (`QeView::lane_re
 
 `hg_evolve_gpu` translates jobs and marshals results through the same WXF path and the same
 graph marshaller (`paclet_source/graph_marshal.hpp`) as the host, so the two devices emit
-identical reply shapes. The relation observables follow the one-relation rule of `SPEC.md`
+identical reply shapes. At start it probes the device (`probe_device`). When the probe fails (no
+device, no driver, an old driver, or a compute capability with no code in the binary), the
+worker refuses each job with the reason, and the paclet runs the call on the CPU with
+`HGEvolve::gpudev`. The worker's operating-system memory limit is the job's `"MemoryLimit"`
+plus the memory committed by the CUDA runtime and by the device engine (`SPEC.md` §5). The relation observables follow the one-relation rule of `SPEC.md`
 §5.2, gated on this engine by `gpu_ffi_tests`.
 
 ## 8. Performance characteristics, measured (RTX 4090)
@@ -185,5 +209,8 @@ Baseline is sm_75 (Turing). The shipped Linux and Windows binaries carry real SA
 from source uses the CMake default `HG_GPU_ARCHS`, which adds sm_100 and sm_120 (Blackwell). The
 CUDA 13 runtime it links statically needs NVIDIA driver 580 or newer. Device LTO is deliberately off (measured within noise of LTO on, and the
 multi-architecture LTO link is what made release builds unbuildable on the development box).
-Every kernel-level behaviour is differential-tested against the host engine; the suites and the
-golden corpus run in CI's GPU lane.
+Kernel-level behaviour is differential-tested against the host engine. CI's GPU workflow
+(`.github/workflows/gpu.yml`) compiles `hg_gpu`, `hg_gpu_tests` and `gpu_differential_tests`
+with no GPU. Its run job is disabled until a GPU runner is attached, so `hg_gpu_tests`,
+`gpu_differential_tests`, `gpu_ffi_tests` and the golden corpus on the GPU run outside CI, on a
+machine with a GPU.

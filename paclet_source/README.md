@@ -244,12 +244,11 @@ causalStructure = HGEvolve[rules, initialEdges, 3, "CausalGraphStructure"]
 
 ### Options and properties
 
-`HGEvolve` is the paclet's only exported function. Its complete option and property
-reference is the documentation page `docs/en/ReferencePages/Symbols/HGEvolve.md`, which is
-generated into the paclet's own documentation and is verified against `Options[HGEvolve]`.
-It is not duplicated here: a second copy drifts, and this one had drifted -- it documented
-a `"HashStrategy"` option that does not exist and analysis families that were removed when
-the physics analyses moved to the companion `hypergraph_viz` project.
+The paclet exports `HGEvolve` and the session functions `HGSessionOpen`, `HGSessionStep`,
+`HGSessionQuery`, `HGSessionFrontier` and `HGSessionClose`, with the `HGSessionObject` they
+return. The complete option and property reference is the documentation page
+`docs/en/ReferencePages/Symbols/HGEvolve.md`, which is generated into the paclet's own
+documentation and is verified against `Options[HGEvolve]`.
 
 ## Examples
 
@@ -335,9 +334,9 @@ Common cross-compilation problems:
 
 If `HGEvolve` returns `$Failed`:
 
-1. **Check library loaded**: Look for "Library functions loaded successfully" message when loading paclet
+1. **Read the message**: `HGEvolve` issues one message with `$Failed`, for example `HGEvolve::badrule`, `HGEvolve::badinit`, `HGEvolve::steps`, `HGEvolve::enginemsg` (the engine refused the job, with its reason), `HGEvolve::noengine` or `HGEvolve::workerlost`
 2. **Verify input format**: Rules use `lhs -> rhs` (plain `Rule`, not `RuleDelayed`). Symbolic vertices are normalised to 0-based integers automatically; integer vertices are passed through. Edges are lists of vertices.
-3. **Check steps**: Steps must be a positive integer
+3. **Check steps**: Steps must be a non-negative integer
 
 ### Build Issues
 
