@@ -1467,9 +1467,6 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
         // D16: a held verb takes its identity from the SESSION, not from its own envelope.
         if (held_session) read_back_session_identity(req, hg, engine);
 
-        // The hot-path state hash is always Weisfeiler-Leman; exact IR
-        // canonicalization is selected via CanonicalizeStates -> Full.
-
         // Full canonicalization mode: IR-based dedup, exact edge correspondence, canonical output
         const bool full_canonicalization = (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
 
