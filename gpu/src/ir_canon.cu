@@ -190,6 +190,10 @@ __device__ bool grow_ir_slot(DeviceArena::View arena, uint32_t*& slot, uint64_t&
     // The leader alone reads slot_words, which it writes below: a lane that read it after that
     // write would return here, skip the sync and broadcast, and pair them with its next ones.
     if (par.bcast(par.leader() && need <= slot_words ? 1u : 0u) != 0u) return true;
+    // Callers read slot and slot_words on every lane before this call (state_cost_of_form_device,
+    // record_state_invariants_device, transition_cost_device). A shuffle orders no memory
+    // access, so this sync puts those reads before the leader's write.
+    par.sync();
     uint32_t got = 0;
     if (par.leader()) {
         uint32_t* bigger = arena.claim(need);
