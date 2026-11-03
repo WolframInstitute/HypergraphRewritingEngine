@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.0-rc3 (2026-11-03)
 
 - A GPU run with quotient exploration (`"CanonicalizeStates" -> Full`) could return fewer raw
   events than the evolution has, with no warning, when an isomorphic duplicate admitted a class's
