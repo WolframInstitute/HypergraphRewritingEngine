@@ -6,8 +6,10 @@ length-prefixed results, reporting the time for each. Confirms the framing and,
 for the GPU binary, that the CUDA context is created once (first job) and
 amortised across the rest.
 
-Frame (both directions): [8-byte little-endian length][payload]. A zero-length
-reply frame means that job errored (detail on the binary's stderr).
+Frame (both directions): [8-byte little-endian length][payload]. On the worker's
+output, the top three bits of the length mark progress, error and log frames
+(paclet_source/frame_writer.hpp); the probe skips progress and log frames and
+times each job to its reply frame or its error frame.
 
 Usage:
     tools/hg_serve_probe.py <binary> <job.wxf> [num_jobs]
@@ -22,6 +24,12 @@ import struct
 import subprocess
 import sys
 import time
+
+
+# paclet_source/frame_writer.hpp: bit 63 marks a progress frame, bit 62 an error frame and bit 61
+# a log frame; a frame with none of the three is the job's reply.
+PROGRESS_BIT, ERROR_BIT, LOG_BIT = 1 << 63, 1 << 62, 1 << 61
+KIND_BITS = PROGRESS_BIT | ERROR_BIT | LOG_BIT
 
 
 def read_exact(f, k):
@@ -51,8 +59,15 @@ def main():
         p.stdin.write(struct.pack("<Q", len(job)))
         p.stdin.write(job)
         p.stdin.flush()
-        rlen = struct.unpack("<Q", read_exact(p.stdout, 8))[0]
-        _ = read_exact(p.stdout, rlen) if rlen else b""
+        while True:
+            head = struct.unpack("<Q", read_exact(p.stdout, 8))[0]
+            kind, rlen = head & KIND_BITS, head & ~KIND_BITS
+            payload = read_exact(p.stdout, rlen) if rlen else b""
+            if kind & ERROR_BIT:
+                print(f"job {i}: error: {payload.decode('utf-8', 'replace')[:200]}")
+                break
+            if kind == 0:
+                break
         times.append((time.time() - t0) * 1000.0)
         sizes.append(rlen)
         print(f"job {i}: {times[-1]:8.1f} ms   result {rlen} bytes")
