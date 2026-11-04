@@ -921,8 +921,9 @@ uint64_t Hypergraph::marked_form_hash(StateId s, const EdgeId* marked, uint8_t n
         return EMPTY_STATE_CANONICAL_HASH;
     }
     const uint32_t occ = static_cast<uint32_t>(ev.size());
-    SVec<uint32_t> verts(occ);
-    uint32_t n_verts = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
+    SVec<uint64_t> table(hgcommon::ir_renumber_table_words(occ));
+    uint32_t n_verts = hgcommon::ir_renumber_encounter_hashed(ev.data(), occ, table.data(),
+                                                              static_cast<uint32_t>(table.size()));
     auto is_marked = [&](uint32_t e) { return mark[e] != 0; };
     ev.resize(occ + hgcommon::ir_colour_extra_occ(ea.data(), n, is_marked));
     const uint32_t total_occ =
@@ -1151,8 +1152,9 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             for (VertexId v : edge_vectors[i]) ev.push_back(v);
         }
         const uint32_t total_occ = static_cast<uint32_t>(ev.size());
-        SVec<uint32_t> verts(total_occ ? total_occ : 1);
-        const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev.data(), total_occ, verts.data());
+        SVec<uint64_t> table(hgcommon::ir_renumber_table_words(total_occ));
+        const uint32_t n_verts = hgcommon::ir_renumber_encounter_hashed(
+            ev.data(), total_occ, table.data(), static_cast<uint32_t>(table.size()));
         SVec<uint32_t> ranks(n);
         bool ok = false;
         uint32_t* form = nullptr;
@@ -1685,9 +1687,10 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
         ea[i] = e.arity;
         for (uint8_t j = 0; j < e.arity; ++j) ev[occ++] = static_cast<uint32_t>(e.vertices[j]);
     }
-    auto* verts = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw(sizeof(uint32_t) * (total_occ ? total_occ : 1), alignof(uint32_t)));
-    const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev, occ, verts);
+    const uint32_t table_words = hgcommon::ir_renumber_table_words(occ);
+    auto* table = static_cast<uint64_t*>(
+        worker_scratch().allocate_raw(sizeof(uint64_t) * table_words, alignof(uint64_t)));
+    const uint32_t n_verts = hgcommon::ir_renumber_encounter_hashed(ev, occ, table, table_words);
 
     // The rungs of hgcommon::ir_depth_ladder.
     uint32_t* form = nullptr;

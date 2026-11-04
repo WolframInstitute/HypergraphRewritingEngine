@@ -1051,3 +1051,28 @@ TEST(IRDepthHint, AStarIsCanonicalisedWithoutTheFallbackOnEveryPath) {
     t.join();
 }
 #endif
+
+// The host flatteners number vertices with ir_renumber_encounter_hashed and the device with
+// ir_renumber_encounter; both give the first-appearance numbering, on random occurrence lists
+// with few and many distinct ids, ids near both ends of the id range, and the empty list.
+TEST(IrRenumber, TheHashedAndSortedNumberingsAgree) {
+    uint64_t s = 0x2545F4914F6CDD1Dull;
+    auto next = [&]() { s ^= s << 13; s ^= s >> 7; s ^= s << 17; return s; };
+    for (uint32_t round = 0; round < 2000; ++round) {
+        const uint32_t occ = static_cast<uint32_t>(next() % 600);
+        const uint32_t range = round % 3 == 0 ? 8u : (round % 3 == 1 ? 1000u : 0xFFFFFFFEu);
+        std::vector<uint32_t> ev(occ);
+        for (auto& v : ev) {
+            v = static_cast<uint32_t>(next() % range);
+            if (round % 7 == 0) v = 0xFFFFFFFEu - v % 4u;
+        }
+        std::vector<uint32_t> sorted_ev = ev, hashed_ev = ev;
+        std::vector<uint32_t> verts(occ ? occ : 1);
+        const uint32_t n_sorted = hgcommon::ir_renumber_encounter(sorted_ev.data(), occ, verts.data());
+        std::vector<uint64_t> table(hgcommon::ir_renumber_table_words(occ));
+        const uint32_t n_hashed = hgcommon::ir_renumber_encounter_hashed(
+            hashed_ev.data(), occ, table.data(), static_cast<uint32_t>(table.size()));
+        ASSERT_EQ(n_sorted, n_hashed) << "round " << round;
+        ASSERT_EQ(sorted_ev, hashed_ev) << "round " << round;
+    }
+}

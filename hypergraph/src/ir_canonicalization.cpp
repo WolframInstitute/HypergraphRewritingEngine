@@ -57,9 +57,12 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
     HG_THREAD_LOCAL(std::vector<uint32_t>, raw);
     raw.assign(ev.begin(), ev.end());
-    orig.resize(total_occ);
-    const uint32_t n_verts =
-        total_occ ? hgcommon::ir_renumber_encounter(ev.data(), total_occ, orig.data()) : 0;
+    HG_THREAD_LOCAL(std::vector<uint64_t>, table);
+    table.resize(hgcommon::ir_renumber_table_words(total_occ));
+    const uint32_t n_verts = total_occ ? hgcommon::ir_renumber_encounter_hashed(
+                                             ev.data(), total_occ, table.data(),
+                                             static_cast<uint32_t>(table.size()))
+                                       : 0;
     orig.resize(n_verts);
     for (uint32_t o = 0; o < total_occ; ++o) orig[ev[o]] = raw[o];
 

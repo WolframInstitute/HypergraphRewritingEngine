@@ -358,6 +358,34 @@ HG_HD inline uint32_t ir_renumber_encounter(uint32_t* ev, uint32_t occ, uint32_t
     return n;
 }
 
+// The words of the table ir_renumber_encounter_hashed takes for `occ` occurrences: the least power
+// of two of at least 2 * occ, and at least 2.
+HG_HD inline uint32_t ir_renumber_table_words(uint32_t occ) {
+    uint32_t w = 2;
+    while (w < 2u * occ) w <<= 1;
+    return w;
+}
+
+// The same numbering as ir_renumber_encounter, in one pass: an open-addressing table of
+// `table_words` (ir_renumber_table_words(occ)) 64-bit words, cleared here, maps each vertex id to
+// its number. Each word holds the id in its high half and the number plus one in its low half, so
+// 0 marks an empty slot. O(occ). The host flatteners use it; the device keeps
+// ir_renumber_encounter, whose scratch is one word per occurrence.
+HG_HD inline uint32_t ir_renumber_encounter_hashed(uint32_t* ev, uint32_t occ, uint64_t* table,
+                                                  uint32_t table_words) {
+    const uint32_t mask = table_words - 1u;
+    for (uint32_t i = 0; i < table_words; ++i) table[i] = 0;
+    uint32_t next = 0;
+    for (uint32_t o = 0; o < occ; ++o) {
+        const uint32_t id = ev[o];
+        uint32_t h = static_cast<uint32_t>((uint64_t{id} * 0x9E3779B97F4A7C15ull) >> 32) & mask;
+        while (table[h] != 0 && static_cast<uint32_t>(table[h] >> 32) != id) h = (h + 1u) & mask;
+        if (table[h] == 0) table[h] = (uint64_t{id} << 32) | (uint64_t{next++} + 1u);
+        ev[o] = static_cast<uint32_t>(table[h]) - 1u;
+    }
+    return next;
+}
+
 // -----------------------------------------------------------------------------------------
 // EDGE COLOURING. A state with a set of marked edges is canonicalised as a plain hypergraph in
 // which every marked edge of arity k is extended to IR_COLOUR_ARITY by IR_COLOUR_ARITY - k
