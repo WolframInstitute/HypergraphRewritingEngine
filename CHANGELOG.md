@@ -1,7 +1,10 @@
 # Changelog
 
-## v1.0.0-rc3 (2026-11-03)
+## v1.0.0-rc3 (2026-11-04)
 
+- The CPU engine numbers the vertices of a state in one hashed pass before canonicalisation. A
+  single-threaded quotient evolution of wpp at depth 8 takes 2181 ms (2370 ms before, 2147 ms in
+  rc2).
 - A GPU run with quotient exploration (`"CanonicalizeStates" -> Full`) could return fewer raw
   events than the evolution has, with no warning, when an isomorphic duplicate admitted a class's
   first state for expansion before that state published its class key. The duplicate publishes
