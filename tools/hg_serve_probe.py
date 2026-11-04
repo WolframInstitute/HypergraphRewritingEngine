@@ -12,7 +12,9 @@ output, the top three bits of the length mark progress, error and log frames
 times each job to its reply frame or its error frame.
 
 Usage:
-    tools/hg_serve_probe.py <binary> <job.wxf> [num_jobs]
+    tools/hg_serve_probe.py <binary> <job.wxf> [num_jobs] [--log]
+
+--log prints each progress and log frame the worker sends.
 
 The <job.wxf> is a BinarySerialize'd HGEvolve input association (as the paclet
 sends); generate one from Wolfram, e.g.
@@ -46,8 +48,10 @@ def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
-    exe, job_file = sys.argv[1], sys.argv[2]
-    n = int(sys.argv[3]) if len(sys.argv) > 3 else 8
+    show_log = "--log" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--log"]
+    exe, job_file = args[0], args[1]
+    n = int(args[2]) if len(args) > 2 else 8
     with open(job_file, "rb") as f:
         job = f.read()
 
@@ -68,6 +72,8 @@ def main():
                 break
             if kind == 0:
                 break
+            if show_log:
+                print(f"  log: {payload.decode('utf-8', 'replace').rstrip()[:300]}")
         times.append((time.time() - t0) * 1000.0)
         sizes.append(rlen)
         print(f"job {i}: {times[-1]:8.1f} ms   result {rlen} bytes")
