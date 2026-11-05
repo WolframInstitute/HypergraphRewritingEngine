@@ -63,10 +63,14 @@ jobs:
       # deleted. Nothing rebuilds a markdown link, so nothing else was ever going to catch this.
       - name: Every docs/ path a tracked document names actually exists
         run: |
+          # A reference is the whole path ending in docs/<name>.md (python/docs/API.md, not its
+          # docs/API.md tail), resolved from the repository root or from the document's directory.
           fail=0
           for d in $(git ls-files '*.md'); do
-            for f in $(grep -ohE 'docs/[A-Za-z0-9_]+\.md' "$d" | sort -u); do
-              if [ ! -f "$f" ]; then echo "$d points at $f, which does not exist"; fail=1; fi
+            for f in $(grep -ohE '[A-Za-z0-9_./-]*docs/[A-Za-z0-9_]+\.md' "$d" | sed 's#^\./##' | sort -u); do
+              if [ ! -f "$f" ] && [ ! -f "$(dirname "$d")/$f" ]; then
+                echo "$d points at $f, which does not exist"; fail=1
+              fi
             done
           done
           [ "$fail" = 0 ] && echo "every docs/ reference in every tracked markdown resolves"

@@ -292,7 +292,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`hgevolve/_cost.py`** -- `state_cost_program`: a Python expression over "Invariants" statistics compiled to the engine's "StateCost" postfix program
 - **`hgevolve/_result.py`** -- `Result`, `Table`, `Relation`, and the CSR column types `Ragged`, `EdgeLists`, `VertexReals`
 - **`tests/`** -- pytest: `test_parity.py` (every job of the HGEvolve reference page's examples against the paclet's reply, `fixtures/HGEvolve.json.gz`, written by `generate_fixtures.wls` after `measure_fixture_jobs.py` has run each job under a memory cap), `test_views.py` (arrays are views and outlive their result and session), `test_api.py`, `test_search.py` (transition_cost, search="BestFirst" and heat_residual), `test_examples.py`, `test_memory_limit.py` (a job over its "MemoryLimit" returns a partial result with the warning, run by `memory_limit_child.py` under an address-space cap)
-- **`examples/`** -- runnable scripts (multiway, sampled histories, update orders, undirected edges, step statistics, a parallel sweep); **`docs/API.md`** -- the API reference
+- **`examples/`** -- runnable scripts (multiway, sampled histories, update orders, undirected edges, step statistics, a parallel sweep); **`python/docs/API.md`** -- the API reference
 
 ## `paclet/` -- the Wolfram Language paclet
 
