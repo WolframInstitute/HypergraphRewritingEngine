@@ -27,6 +27,7 @@
 #  include <windows.h>
 #  include <memory>
 #elif defined(__APPLE__)
+#  include <mach/mach.h>
 #  include <sys/sysctl.h>
 #  include <sys/types.h>
 #endif
@@ -483,6 +484,16 @@ void read_apple(HostTopology& t) {
     if (sysctl_u64("hw.perflevel0.l2cachesize", v) || sysctl_u64("hw.l2cachesize", v)) t.l2_bytes = v;
     if (sysctl_u64("hw.l3cachesize", v) && v > 0) t.llc_bytes.push_back(v);
     if (sysctl_u64("hw.memsize", v)) t.total_bytes = v;
+    // Available memory: the free, inactive and purgeable pages of the VM statistics, the pages
+    // the kernel hands out without paging anything out.
+    vm_statistics64_data_t vs{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    vm_size_t page = 0;
+    if (::host_statistics64(::mach_host_self(), HOST_VM_INFO64,
+                            reinterpret_cast<host_info64_t>(&vs), &count) == KERN_SUCCESS &&
+        ::host_page_size(::mach_host_self(), &page) == KERN_SUCCESS)
+        t.available_bytes = (uint64_t{vs.free_count} + vs.inactive_count + vs.purgeable_count) *
+                            uint64_t{page};
     if (t.physical_cores > 0 && t.logical_cpus >= t.physical_cores)
         t.smt_width = t.logical_cpus / t.physical_cores;
     char brand[256] = {0};
