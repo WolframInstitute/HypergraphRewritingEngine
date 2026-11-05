@@ -2589,6 +2589,7 @@ void expect_no_output_hook(const std::string& exe) {
 }
 
 TEST(WorkerOutput, TheShippedWorkersHaveNoOutputHook) {
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
     expect_no_output_hook(cpu_binary_path());
     if (::access(gpu_binary_path().c_str(), X_OK) == 0) expect_no_output_hook(gpu_binary_path());
 }
@@ -2596,6 +2597,7 @@ TEST(WorkerOutput, TheShippedWorkersHaveNoOutputHook) {
 // A job frame over the 1 GiB cap is read through and refused with an error frame, and the worker
 // serves the next job.
 TEST(WorkerOutput, AJobFrameOverTheCapIsRefusedAndTheWorkerServesOn) {
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
     WorkerPipes w;
     ASSERT_TRUE(worker_start(w, cpu_binary_path())) << w.last_error;
     const uint64_t len = (1ull << 30) + 1;
