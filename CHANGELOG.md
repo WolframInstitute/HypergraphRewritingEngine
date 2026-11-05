@@ -1,7 +1,9 @@
 # Changelog
 
-## v1.0.0-rc3 (2026-11-04)
+## v1.0.0-rc3 (2026-11-05)
 
+- On macOS, `"StepStatisticsMatrices"` under the Automatic `"StepStatisticsMatrixLimit"` returned no
+  matrices: the engine read the available memory as 0. It reads it from the VM statistics.
 - The CPU engine numbers the vertices of a state in one hashed pass before canonicalisation. A
   single-threaded quotient evolution of wpp at depth 8 takes 2181 ms (2370 ms before, 2147 ms in
   rc2).
