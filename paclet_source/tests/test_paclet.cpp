@@ -60,8 +60,10 @@ namespace {
 class PacletTest : public ::testing::Test {
 protected:
     void SetUp() override {
+#if BUILD_WOLFRAM_LANGUAGE_PACLET && WOLFRAMSCRIPT_AVAILABLE
         static const std::string stale = stale_paclet_binary();
         if (!stale.empty()) GTEST_FAIL() << "stale paclet binary: " << stale;
+#endif
     }
 };
 
