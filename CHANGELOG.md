@@ -2,145 +2,100 @@
 
 ## v1.0.0-rc3 (2026-11-05)
 
-- On macOS, `"StepStatisticsMatrices"` under the Automatic `"StepStatisticsMatrixLimit"` returned no
-  matrices: the engine read the available memory as 0. It reads it from the VM statistics.
-- The CPU engine numbers the vertices of a state in one hashed pass before canonicalisation. A
-  single-threaded quotient evolution of wpp at depth 8 takes 2181 ms (2370 ms before, 2147 ms in
-  rc2).
-- A GPU run with quotient exploration (`"CanonicalizeStates" -> Full`) could return fewer raw
-  events than the evolution has, with no warning, when an isomorphic duplicate admitted a class's
-  first state for expansion before that state published its class key. The duplicate publishes
-  the key first, and a capture that finds no key is refused with a warning.
-- A GPU partial result under `"MatchesPerStep"` with `None` states could order its kept
-  transitions by labels that were never written, when a root's canonical hash failed in step 0.
-  Such roots take label 0.
-- An allocation that fails on a worker thread outside a job body (the first use of the thread's
-  scratch arena after memory runs out, or the job pool) gives the "memory exhausted" partial
-  result. It ended the process with `std::bad_alloc` ("terminate called"), depending on which
-  worker reached it first.
-- `"Search" -> "BestFirst"` creates the same states with the same raw edges at any thread count.
-  Under `Full` states with `"CanonicalizeEvents" -> Automatic`, transitions related by an
-  automorphism tied and were taken in the order the workers delivered them. An allocation failure
-  during the search gives a partial result with one `HGEvolve::overflow` warning, where the call
-  failed or warned twice.
-- A generated point set with a small `"EdgeThreshold"` bins its points by their number as well as
-  by the box: a 3D `"BrillLindquist"` with `"EdgeThreshold" -> 0.01` asked for 1024^3 bins.
-- A generated lattice above 2^31 vertices is refused. An initial-condition `"Seed"` that is not an
-  integer is refused; it was replaced by a random seed.
-- `"Threads"` and `HG_TUNE_THREADS` above 1024 are lowered to 1024, with an `OptionLowered`
-  warning for the option.
+- In rc2 a GPU run with quotient exploration (`"CanonicalizeStates" -> Full`) could return fewer
+  raw events than the evolution has, with no warning, when an isomorphic duplicate admitted a
+  class's first state for expansion before that state published its class key. In rc3 the
+  duplicate publishes the key first, and a capture that finds no key is refused with a warning.
+- `"Threads" -> n` sets the number of worker threads, and `"Tuning"` overrides derived tuning
+  values by name. The environment variables `HG_TUNE_*` set the same values. `"Threads"` and
+  `HG_TUNE_THREADS` above 1024 are lowered to 1024, with an `OptionLowered` warning for the
+  option.
 - A refused held-session verb (`HGSessionStep`, `HGSessionQuery`, `HGSessionFrontier`,
-  `HGSessionClose`) issues `HGSessionStep::refused`. It issued `HGSessionOpen::refused`.
-- Without an `hg_evolve` binary, a job the in-process library refuses gives
-  `HGEvolve::enginemsg` with the engine's reason. It gave `$Failed` with no message.
-- On the GPU, a run under `"MatchesPerStep"` (or `"MaxStatesPerStep"` under `None` states) sizes
-  its edge pool from every initial state. The paclet's jobs counted none, so an initial state of
-  more than about 4,096 edges made such a run fail before its first step.
-- On the GPU under `"MatchesPerStep"` with `None` states, identical initial states (one group of
-  equal lineage labels) leaked pool memory at every step, and their merge sorted on one thread in
-  quadratic time: two 2,048-edge tori made 362 events in 20 minutes. The merge frees its arrays
-  and merges the sets in linear time.
-- The GPU's held match pool counts in its memory estimate and under the operating-system limit,
-  and a step whose transitions exceed the match pool grows it and retries.
-- Python: a named initial condition takes the call's `random_seed`, `encode_job` asks for every
-  step's branchial edges for an `EvolutionBranchialGraph` as `HGEvolve` does,
-  `event_ordering_function="None"` is the same as None, and a `transition_cost` without
-  `"Field"` raises `ValueError`.
+  `HGSessionClose`) issues `HGSessionStep::refused`. In rc2 it issued `HGSessionOpen::refused`.
+- Without an `hg_evolve` binary, a job refused by the in-process library gives
+  `HGEvolve::enginemsg` with the engine's reason. In rc2 it gave `$Failed` with no message.
+- The hgevolve Python package runs the jobs of `HGEvolve` in-process on the CPU engine and
+  returns NumPy arrays. It takes a name or a spec dict as an initial state
+  (`hg.initial_condition`), and a named initial condition takes the call's `random_seed`.
+  `encode_job` asks for the branchial edges of each step for an `EvolutionBranchialGraph`, as
+  in `HGEvolve`. `event_ordering_function="None"` is the same as None. `hg.evolve` returns the
+  memory used by each call: the resident set of the process stays at its size after the first
+  call (30.6 to 30.8 MB over five calls, three of them filling a 64 MB `"MemoryLimit"`).
 
-- A history under `"EventOrderingFunction"` runs on one worker whatever `"Threads"` says. It
-  applies one event at a time, each after the one before, and more workers only moved each event
-  between cores: on a 2,048-point synchronizer it ran at 28,258 events/s on one thread and
-  19,266 on four, and now at about 28,200 on both.
-
-- A GPU run with "MaxStatesPerStep" and "StateCost" sizes the device IR arena for its largest
-  state before it starts. A 400-vertex cycle that ran out of device memory and returned a partial
-  result now completes in one attempt with the CPU's states.
+- `"StateCost" -> f`, a pure function of `"Invariants"` names such as
+  `Abs[#BallDimension - 3] &`, orders the successor states of a `"MaxStatesPerStep"` step, or the
+  transitions of `"UniformRandom"` with `"MatchesPerStep"`, by the cost of the state made by each
+  one. Both engines compute the same cost and keep the same states.
 
 - The paclet talks to its engine worker over the worker's standard input and output
-  (`hg_evolve --serve` started with `StartProcess`) and opens no socket. On Windows, Wolfram 15.0's
-  `SocketConnect` to the old socket worker took about 2 s, and in 7 of 40 fresh wolframscript
-  kernels the Wolfram process faulted inside it ("The product exited for an unknown reason").
-  `hg_evolve --serve-socket` is removed. A worker that ends during an evaluation gives
-  `HGEvolve::workerlost`, and the next evaluation starts a new one.
+  (`hg_evolve --serve` started with `StartProcess`) and opens no socket.
+  `hg_evolve --serve-socket` is removed. In rc2 the paclet used the socket worker. On Windows,
+  Wolfram 15.0's `SocketConnect` to it took about 2 s, and in 7 of 40 fresh wolframscript kernels the Wolfram
+  process faulted inside it ("The product exited for an unknown reason"). A worker that ends
+  during an evaluation gives `HGEvolve::workerlost`, and the next evaluation starts a new one.
 
 - A state with more than one connected component, whose refined vertex partition has a cell of three
   or more vertices, is canonicalised per component: each component is canonicalised on its own and
-  the state's canonical form is the components' forms in canonical order. A state of k isomorphic
-  components no longer costs a search over all k at once. Canonical hashes
-  (`IncludeCanonicalHashes`) of those states have new values; which states are isomorphic is
-  unchanged.
+  the state's canonical form is the components' forms in canonical order. Canonical hashes
+  (`IncludeCanonicalHashes`) of those states have other values than in rc2. Which states are
+  isomorphic is unchanged.
 
-- The engine generates the named initial conditions ("Grid", "Torus", "BrillLindquist", ...): one
-  C++ body (`hgcommon/initial_condition_core.hpp`) serves the paclet and the Python package, which
-  now accepts a name or a spec dict where it takes an initial state (`hg.initial_condition`).
-  The Wolfram Language generators are removed. A given "RandomSeed" or "Seed" gives other
-  edges than before for the randomized families (edge directions, point sets); the lattices with
-  "RandomizeDirections" -> False are unchanged.
+- The engine generates the named initial conditions ("Grid", "Torus", "BrillLindquist", ...) for
+  the paclet and the Python package, from one C++ body (`hgcommon/initial_condition_core.hpp`).
+  The Wolfram Language generators are removed. For a given "RandomSeed" or "Seed", the randomized
+  families (edge directions, point sets) give other edges than in rc2. The lattices with
+  "RandomizeDirections" -> False are unchanged. A generated lattice above 2^31 vertices is
+  refused. An initial-condition "Seed" that is not an integer is refused. In rc2 it was passed to
+  `SeedRandom`.
 
 - An evaluation whose engine worker does not start or does not answer the start-up handshake runs
   in a one-shot `hg_evolve`, and the next evaluation tries to start a worker again. After three
-  such evaluations in a row, the device's evaluations run in one-shot `hg_evolve` processes without
-  trying, until `HGSessionOpen` on that device clears the count. Warnings
-  the worker writes as it starts are issued with the first evaluation's `HGEvolve::enginelog`. An
-  abort during a worker's start no longer leaves the worker running, and output the worker writes
-  after a result is read by the next evaluation instead of being lost (which could stop the next
-  evaluation from returning).
+  such evaluations in a row, the evaluations on that device run in one-shot `hg_evolve` processes
+  until `HGSessionOpen` on that device clears the count. In rc2 one failed start sent each later
+  evaluation on that device to a one-shot process until `HGSessionOpen`. Warnings written by the
+  worker during its start are issued with the first evaluation's `HGEvolve::enginelog`.
 
-- `HGSessionOpen`, `HGSessionStep` and `HGSessionQuery` accept the `"InitialCondition"` property.
-
-- Each message the engine worker reports (`HGEvolve::enginelog`, and `"ShowProgress"` output)
-  arrives whole: a progress message is one line however long. A byte of library output that is
+- Each message reported by the engine worker (`HGEvolve::enginelog`, and `"ShowProgress"` output)
+  arrives whole: a progress message is one line of any length. A byte of library output that is
   not part of a UTF-8 character appears as `\xHH`.
 
-- In `hg_evolve_gpu` the operating-system memory limit is the job's `"MemoryLimit"` plus what
-  the CUDA runtime commits after the device probe and what a device engine's construction
-  commits. On Windows the worker commits 2.29-2.57 GB for a small job and device memory counts in
-  the process's commit, so under a `"MemoryLimit"` of 2 GB a small GPU job gave a partial result.
-  It now completes at 1 GB. Below what the engine's host side needs, the reply is a partial result
-  with the "memory exhausted" warning naming the limit. `"OSMemoryLimit"` in `"Device"` reports
-  the sum.
+- In `hg_evolve_gpu` the operating-system memory limit is the job's `"MemoryLimit"` plus the
+  memory committed by the CUDA runtime after the device probe, by the construction of the device
+  engine, and by the device memory allocated by a run after the engine is built (the IR arena,
+  the held match sets). Windows counts device memory in the commit of the process. On Windows a
+  small GPU job completes at a `"MemoryLimit"` of 1 GB, and a 40-step `"StepStatistics"` run on a
+  9 x 9 torus with `"MatchesPerStep"` completes at 1 to 4 GB. Below the memory needed by the host
+  side of the engine, the reply is a partial result with the "memory exhausted" warning naming
+  the limit. `"OSMemoryLimit"` in `"Device"` reports the sum.
 
-- The GPU worker's operating-system limit also allows the device memory a run allocates after the
-  engine is built (the IR arena, the held match sets), which Windows counts in the process's
-  commit. A 40-step `"StepStatistics"` run on a 9 x 9 torus with `"MatchesPerStep"` completes on
-  Windows at a `"MemoryLimit"` of 1 to 4 GB (it returned a partial result at 2 to 4 GB).
-
-- The Python package returns the memory each `hg.evolve` call used: its process's resident set
-  stays at its size after the first call over later calls (30.6 to 30.8 MB over five calls, three
-  of them filling a 64 MB `"MemoryLimit"`).
-
-- A single history costs the same memory per event at every length: about 2.1 kB per event from
-  10,000 to 250,000 events of a 2 -> 3 rule (519 MB at 250,000 events; it was 3.4 GB).
+- A single history costs the same memory per event at any length: about 2.1 kB per event from
+  10,000 to 250,000 events of a 2 -> 3 rule (519 MB at 250,000 events).
 
 - The `"InitialCondition"` property of `HGEvolve` gives the initial condition as an association:
   `"Edges"` and, for a generated one, the generator's other keys, such as `"VertexCoordinates"`
-  (each vertex's point, keyed by the vertex as the states name it). With other properties it is
-  one more key of the result. `"InitialCondition"` alone runs no evolution.
+  (the point of each vertex, keyed by the vertex as named in the states). With other properties it
+  is one more key of the result. `"InitialCondition"` alone runs no evolution. `HGSessionOpen`,
+  `HGSessionStep` and `HGSessionQuery` accept the property.
 
 - The canonical hash costs less on states with many isomorphic components. A search node of
-  the canonicalisation no longer clears arrays the size of the state, seeds the rest of its
+  the canonicalisation clears only the stamps set by its refinement, seeds the rest of its
   target cell only when that can split a cell, and sorts its target cell only when the search
   returns to it. The canonical hash of a fragmented 900-edge state takes 10 times fewer
   instructions, and `"StepStatistics"` over a 400-point Brill-Lindquist history (41 states)
   2.5 times fewer. The hashes, ranks and orbits are unchanged.
 
-- On the CPU, `"MatchesPerStep"` under `"CanonicalizeStates" -> None` computes an initial
-  state's canonical hash and edge ranks only when the initial state has a transition. A
-  900-edge initial state with no match took 3.8 s, all in that computation. The GPU does the
-  same under held match sets, and the same job there took over 120 s and now takes 0.9 s.
+- On the GPU, `"MatchesPerStep"` under `"CanonicalizeStates" -> None` computes the canonical hash
+  and edge ranks of an initial state only when the initial state has a transition. In rc2 the GPU
+  computed them for each initial state.
 
 - `"StepStatisticsMeasures"` `"WaveFront"` adds `"WaveFrontSize"`, `"WaveFrontCoverage"` and
   `"WaveReflectionStep"` to `"Invariants"` and the per-step key `"WaveFront"`. They follow the wave
   of InfraGeometry's `FindAdvancingInfraFront` from every vertex of a state's largest component
   for twice its diameter in steps, on both engines.
 
-- On the GPU, a step of `"MatchesPerStep"` that keeps several transitions of one state copies the
-  state's held matches with the whole block. The copies ran on one thread and took most of each
-  step: a 40-step `"StepStatistics"` run on a 9 x 9 torus spent 250 ms on the device, now 147 ms.
-
 - On the GPU, a `"StepStatistics"` run with `"CanonicalizeStates"` None or Automatic computes the
-  exact hash of a new state on an idle block when only the statistics read it. A step no longer
-  waits for the state's canonical labelling.
+  exact hash of a new state on an idle block when only the statistics read it. In rc2 the step
+  computed it on its own path.
 
 - `"TransitionCost" -> <|"Field" -> f, "TimeStep" -> dt|>` costs a transition by the heat residual
   of a vertex field from its parent state to its child state: the sum over the vertices of both of
@@ -149,14 +104,17 @@
   `"StateCost"`. Under `"MaxStatesPerStep"` a successor state costs the lowest cost of a
   transition into it. Both engines compute the same cost and keep the same states.
 - `"Search" -> "BestFirst"` with `"SearchBudget" -> n` takes the transition of lowest path cost
-  next, one at a time, until n states are created. The `"PathCosts"` property gives each state's
-  path cost. It runs on the CPU engine.
+  next, one at a time, until the search has created n states. The `"PathCosts"` property gives
+  each state's path cost. It runs on the CPU engine. The search creates the same states with the
+  same raw edges at any thread count. An allocation failure during the search gives a partial
+  result with one `HGEvolve::overflow` warning.
 - `"BeamCost" -> "Path"` ranks a `"MaxStatesPerStep"` step by the path cost of each child and
   takes one transition into each kept state, so with `Automatic` states a step makes each edge
   list once. Both devices keep the same states with the same path costs.
 - The hgevolve Python client takes `transition_cost` as a dict or a callable
   `f(parent_edges, child_edges)`, `search` and `search_budget`, and `hg.heat_residual` computes
-  the engine's residual for two edge lists.
+  the engine's residual for two edge lists. A `transition_cost` without `"Field"` raises
+  `ValueError`.
 - The engine has a host memory limit, `"Tuning" -> <|"MemoryLimit" -> bytes|>` or the
   environment variable `HG_TUNE_MEMORY_LIMIT`. The default is half of physical memory, and a value
   above physical memory is lowered to it. An evolution that reaches the limit stops and gives a
@@ -172,20 +130,24 @@
   more vertices is refused. Both engines give the same states and events.
 
 - `"TargetDevice" -> "GPU"` on a machine with no usable NVIDIA GPU (no device, no driver, a
-  driver older than the engine needs, or a compute capability the engine has no code for) runs
-  on the CPU and issues `HGEvolve::gpudev` naming the reason. It gave `$Failed` with
+  driver below the version required by the engine, or a compute capability with no code in the
+  engine) runs on the CPU and issues `HGEvolve::gpudev` naming the reason. It gave `$Failed` with
   `HGEvolve::enginefail` in rc2. The reason is kept for the Wolfram Language session, so later
   GPU calls and sessions go straight to the CPU.
 - `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with `HGEvolve::nogpu` where the
   GPU cannot be used.
 - The `"Device"` property names the device that ran an evolution, with the name and compute
   capability of the GPU.
+- `"StepStatisticsMeasures"` adds the families `"WaveFront"`, `"Topology"`, `"MetricTensor"`,
+  `"Holonomy"`, `"Equilibrium"`, `"BranchAlignment"` and `"StatisticsGraph"`, with their per-state
+  invariants.
+- `"Delivery" -> "Delta"` is served by the GPU engine and by the CPU's quotient reconstruction.
 - `"StepStatisticsMatrices"` adds `"StateMatrices"` to each `"StepStatistics"` step: the step's
   state ids and, for each matrix asked for, the state x state matrix of the overlap, the cosine
   similarity or the mutual information of the states' vertex sets or edge sets. The overlap and the
   cosine are SparseArrays when fewer than half of the step's state pairs share an element.
   A step whose matrices need more bytes than `"StepStatisticsMatrixLimit"` (default `Automatic`,
-  a quarter of the available memory) has none and warns.
+  a quarter of the available memory) has none, with a warning.
 - `"IncludeVertexCurvature" -> True` adds `"VertexCurvature"` to each state record: each vertex
   with a neighbour and its Ollivier-Ricci curvature.
 - `"UniformRandom" -> True` with `"MatchesPerStep" -> n` keeps n transitions of each step drawn
@@ -206,23 +168,25 @@
   `"LeastOldEdge"`, `"LeastRecentEdge"`, `"NewestEdge"`, `"RuleOrdering"`,
   `"ReverseRuleOrdering"`, `"RuleIndex"`, `"ReverseRuleIndex"`), a list of them, or `Automatic`
   for SetReplace's default. The evolution follows one history from each initial state, and each
-  step applies the state's one match first in that order, as SetReplace's `WolframModel` does.
+  step applies the state's one match first in that order, as in SetReplace's `WolframModel`.
   The events, final states and causal graphs equal `WolframModel`'s on 119 recorded cases, on
-  both devices. An order that leaves two matches tied, `"Random"` and `"Any"` are refused.
+  both devices. An order that leaves two matches tied, `"Random"` and `"Any"` are refused. A
+  history under `"EventOrderingFunction"` runs on one worker at any `"Threads"` value.
 - `"BrillLindquistDimension" -> 3` places the `"BrillLindquist"` points in a box whose z range
   is `"BrillLindquistBoxZ"`, with point density ψ⁶. `"BrillLindquistPeriodic" -> True` measures
   every distance to the nearest periodic image of a point. The 2D output for a given
   `"RandomSeed"` is unchanged.
 - `"CausalEdges"` and `"BranchialEdges"` list their records in ascending order, on both devices.
-  In rc2 the order was the order the run registered the pairs in, which two identical runs on
-  several threads could give differently.
+  In rc2 they were in registration order, which could differ between two identical runs on
+  several threads.
 - An evolution on the CPU engine that runs out of memory gives the part it built and issues
-  `HGEvolve::overflow`. It gave `$Failed` in rc2. When the memory left does not hold the whole
-  result, the result has the counts, and its states, events, relations and graphs are empty.
+  `HGEvolve::overflow`, also when the allocation fails on a worker thread outside a job body. It
+  gave `$Failed` in rc2. When the memory left does not hold the whole result, the result has the
+  counts, and its states, events, relations and graphs are empty.
 - A single history of `"UniformRandom" -> True` with `"MatchesPerStep" -> 1` under
-  `"CanonicalizeStates" -> None` costs, per step, the matches that touch the step's event rather
-  than a match of the whole state: 2.8e6 instead of 4.9e8 instructions per step on an 877-edge
-  state, 1.8e7 instead of 8.4e9 on a 3587-edge one.
+  `"CanonicalizeStates" -> None` costs, per step, the matches that touch the step's event. In rc2
+  each step matched the whole state. The cost per step is 2.8e6 instructions on an 877-edge state
+  (4.9e8 in rc2) and 1.8e7 on a 3587-edge one (8.4e9 in rc2).
 
 ## v1.0.0-rc2 (2026-10-09)
 
