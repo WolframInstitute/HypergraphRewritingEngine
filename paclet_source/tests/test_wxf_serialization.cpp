@@ -2325,6 +2325,19 @@ struct WorkerPipes {
     int err_read = -1;        // with extra_env: the read end of the worker's stderr pipe, never read
 };
 
+// A pipe whose two ends are close-on-exec (pipe2 with O_CLOEXEC is Linux-only).
+bool cloexec_pipe(int fds[2]) {
+    if (::pipe(fds) != 0) return false;
+    for (int i = 0; i < 2; ++i) {
+        if (::fcntl(fds[i], F_SETFD, FD_CLOEXEC) != 0) {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            return false;
+        }
+    }
+    return true;
+}
+
 // Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
 // forked while the first is live would otherwise inherit the first's write end, and the first
 // would never see end of input when the test closes it. A nonzero `address_space` caps the
@@ -2350,9 +2363,9 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
     // The child reports a failed exec on a close-on-exec pipe: the parent reads end of file when
     // the exec succeeded and the child's errno when it did not.
     int exec_pipe[2];
-    if (::pipe2(exec_pipe, O_CLOEXEC) != 0) return false;
+    if (!cloexec_pipe(exec_pipe)) return false;
     int err_pipe[2] = {-1, -1};
-    if (extra_env && ::pipe2(err_pipe, O_CLOEXEC) != 0) return false;
+    if (extra_env && !cloexec_pipe(err_pipe)) return false;
     w.pid = ::fork();
     if (w.pid < 0) return false;
     if (w.pid == 0) {
