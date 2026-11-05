@@ -83,6 +83,10 @@ def accepted_names():
     # FFI: the keys the engine reads off the wire.
     ffi = (ROOT / "paclet_source/hypergraph_ffi.cpp").read_text()
     names.update(re.findall(r'option_key == "([A-Za-z][A-Za-z0-9]*)"', ffi))
+
+    # The keys of an initial-condition spec, which an example can add to a spec with Append.
+    ic = (ROOT / "paclet_source/initial_condition_job.hpp").read_text()
+    names.update(re.findall(r'key == "([A-Za-z][A-Za-z0-9]*)"', ic))
     return names
 
 

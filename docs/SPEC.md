@@ -103,7 +103,7 @@ The engine's code and documents use these terms with these meanings.
   at the state fail. Ranks and draws are functions of the transition key, the seed and, where §5
   says so, the step.
 - **Partial result.** The result of a run stopped by a capacity or memory limit: the states,
-  events and relations published before the stop, with `"Partial" -> 1` in the warnings (§5).
+  events and relations published before the stop, with its warning's `Partial` field 1 (§5).
 - **Session and frontier.** A session holds one evolution in the engine worker between calls
   (`HGSessionOpen`). The frontier is the set of states at the session's last step.
   `HGSessionStep` expands the frontier, or a chosen subset of it.
