@@ -281,3 +281,9 @@ private:
 // wxf::ValueParser) and replied as arrays. Throws std::exception on error, as it does.
 HG_NAMESPACE::ffi::ArrayReply run_rewriting_arrays(const HG_NAMESPACE::wxf::WXFValue& job,
                                                   const HostBridge& host);
+
+// The OptionSkipped messages of a job's options (an option the engine does not recognise, a value
+// that does not parse, a Tuning entry it ignores), read by the parser run_rewriting_arrays uses,
+// without running the job. Empty when the engine reads every option. Throws on an envelope that
+// does not parse.
+std::vector<std::string> job_option_problems(const HG_NAMESPACE::wxf::WXFValue& job);

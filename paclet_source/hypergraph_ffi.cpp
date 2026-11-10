@@ -2643,6 +2643,16 @@ hgffi::ArrayReply run_rewriting_arrays(const wxf::WXFValue& job, const HostBridg
     return out;
 }
 
+std::vector<std::string> job_option_problems(const wxf::WXFValue& job) {
+    hgffi::ParsedJob req;
+    wxf::ValueParser parser(job);
+    parse_job(parser, req);
+    std::vector<std::string> out;
+    for (const auto& w : req.ffi_warnings)
+        if (w.kind == "OptionSkipped") out.push_back(w.context);
+    return out;
+}
+
 void release_job_memory(size_t keep_pooled_bytes) {
     hypergraph::arena_trim_block_pool(keep_pooled_bytes);
     HG_NAMESPACE::jobs::JobSlotPool::trim_retired_pools();
