@@ -1410,6 +1410,8 @@ TEST(WxfValueParser, AgreesWithParserOnTheValuesBytes) {
     // The comparison covers a symbol read as a string, a Rule read as a function, and refusals
     // (an int64 read as int among them).
     EXPECT_NE(std::find(from_value.begin(), from_value.end(), "Full"), from_value.end());
+    // An integer reads as the real of the same value.
+    EXPECT_NE(std::find(from_value.begin(), from_value.end(), "3.000000"), from_value.end());
     EXPECT_NE(std::find(from_value.begin(), from_value.end(), "Rule/2/0,1"), from_value.end());
     EXPECT_GE(std::count(from_value.begin(), from_value.end(), "refused"), 20);
 }

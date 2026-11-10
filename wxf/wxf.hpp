@@ -412,7 +412,10 @@ T ValueParser::read() {
         next_();
         return static_cast<T>(v);
     } else if constexpr (std::is_same_v<T, double>) {
+        // An integer reads as the real of the same value: a JavaScript caller has one number type
+        // and sends 1 for 1.0.
         const WXFValue& v = peek_();
+        if (v.holds<int64_t>()) { next_(); return static_cast<double>(v.get<int64_t>()); }
         if (!v.holds<double>()) throw TypeError("Expected 64-bit real", pos_);
         next_();
         return v.get<double>();
@@ -570,6 +573,10 @@ T Parser::read() {
             throw TypeError("Expected integer type", read_position_);
         }
     } else if constexpr (std::is_same_v<T, double>) {
+        // An integer reads as the real of the same value, as in ValueParser::read<double>.
+        if (token == Token::Integer8 || token == Token::Integer16 || token == Token::Integer32 ||
+            token == Token::Integer64)
+            return static_cast<double>(read<int64_t>());
         return read_real64();
     } else if constexpr (std::is_same_v<T, std::string>) {
         // Handle both String and Symbol tokens for std::string type
