@@ -207,7 +207,13 @@ struct WXFValue {
         return b ? &**b : nullptr;
     }
 };
-static_assert(sizeof(WXFValue) <= sizeof(std::string) + alignof(std::string),
+// The bound rounds the string up to the variant's alignment: on wasm32 a std::string is 12 bytes
+// with alignment 4, and the int64_t and double members align the variant to 8 (24 bytes there,
+// 40 on 64-bit targets).
+static_assert(sizeof(WXFValue) <=
+                  (sizeof(std::string) + alignof(WXFValue) - 1) / alignof(WXFValue) *
+                          alignof(WXFValue) +
+                      alignof(WXFValue),
               "a WXFValue is a std::string and an index; hold a larger kind in a Boxed");
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
