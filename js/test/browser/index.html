@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>hgevolve browser check</title>
+<script type="module">
+// The single-threaded module on the page's thread, then each module in a module Web Worker.
+import { load } from "../../hgevolve.mjs";
+const results = { crossOriginIsolated: globalThis.crossOriginIsolated };
+try {
+    const hg = await load({ threads: false });
+    const r = hg.evolve([[[1, 2]], [[1, 2], [2, 3]]], [[1, 2]], 3);
+    results.page = { threaded: hg.threaded, numStates: r.numStates, numEvents: r.numEvents };
+} catch (e) {
+    results.page = { error: String(e && e.stack || e) };
+}
+const inWorker = (threads) => new Promise((resolve) => {
+    const w = new Worker(new URL("./worker.mjs", import.meta.url), { type: "module" });
+    w.onmessage = ({ data }) => { w.terminate(); resolve(data); };
+    w.onerror = (e) => resolve({ error: e.message });
+    w.postMessage({ threads });
+});
+results.worker = await inWorker(false);
+results.workerThreads = await inWorker(true);
+window.hgResults = results;
+</script>

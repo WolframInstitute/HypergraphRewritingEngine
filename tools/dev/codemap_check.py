@@ -31,10 +31,10 @@ CODEMAP = os.path.join(ROOT, "docs", "CODEMAP.md")
 
 SOURCE_EXT = (".hpp", ".h", ".cpp", ".cu", ".cuh")
 # A name in CODEMAP can resolve against more than C++: a build target lives in a
-# CMakeLists, a WL symbol in a .wl, a Python name (tools/dev, python/) in a .py, and a
-# probe's name is its file's, never a token inside it. Searching only the C++ corpus reports
-# all four as missing.
-CORPUS_EXT = SOURCE_EXT + (".wl", ".wls", ".cmake", ".txt", ".py")
+# CMakeLists, a WL symbol in a .wl, a Python name (tools/dev, python/) in a .py, a
+# JavaScript name (js/) in a .mjs or .d.ts, and a probe's name is its file's, never a token
+# inside it. Searching only the C++ corpus reports all five as missing.
+CORPUS_EXT = SOURCE_EXT + (".wl", ".wls", ".cmake", ".txt", ".py", ".mjs", ".ts")
 
 # A section header names the directory it documents: "## `gpu/src/` -- CUDA kernels".
 SECTION_RE = re.compile(r"^##+ +`([^`]+)`")
@@ -48,8 +48,8 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # an entry per file would make the map longer and worse.
 # `verification/` holds no sources directly -- its harnesses live in genmc/ and tla/ -- and the
 # map describes the two suites and the discipline they follow rather than listing 30 files.
-SUMMARISED = ("tools/", "benchmarks/", "benchmarking/", "paclet/", "python/", "visualisation/",
-              "verification/")
+SUMMARISED = ("tools/", "benchmarks/", "benchmarking/", "paclet/", "python/", "js/",
+              "visualisation/", "verification/")
 
 # Words that are backticked in CODEMAP as prose or as non-C++ names. Each is spelled the
 # way an identifier is, so the pattern cannot tell them apart and the list is the only

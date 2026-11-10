@@ -25,6 +25,7 @@ wxf/             Wolfram Exchange Format serialization (the WL boundary)
 paclet_source/   FFI: run_rewriting_core, the standalone hg_evolve binary, GPU marshaling
 paclet/          The Wolfram Language paclet (kernel code + bundled binaries + doc notebooks)
 python/          The hgevolve Python package: the CPU engine in-process, results as NumPy views
+js/              The hgevolve JavaScript package: the CPU engine in WebAssembly, one and many threads
 reference/       Validation oracle (brute-force ground truth) + golden corpus + verify scripts
 tools/           Standalone research / validation / profiling probes
 verification/    GenMC and GPUMC model-checking harnesses, TLA+ specifications
@@ -293,6 +294,14 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`hgevolve/_result.py`** -- `Result`, `Table`, `Relation`, and the CSR column types `Ragged`, `EdgeLists`, `VertexReals`
 - **`tests/`** -- pytest: `test_parity.py` (every job of the HGEvolve reference page's examples against the paclet's reply, `fixtures/HGEvolve.json.gz`, written by `generate_fixtures.wls` after `measure_fixture_jobs.py` has run each job under a memory cap), `test_views.py` (arrays are views and outlive their result and session), `test_api.py`, `test_search.py` (transition_cost, search="BestFirst" and heat_residual), `test_examples.py`, `test_memory_limit.py` (a job over its "MemoryLimit" returns a partial result with the warning, run by `memory_limit_child.py` under an address-space cap)
 - **`examples/`** -- runnable scripts (multiway, sampled histories, update orders, undirected edges, step statistics, a parallel sweep); **`python/docs/API.md`** -- the API reference
+
+## `js/` -- the hgevolve JavaScript package
+
+- **`CMakeLists.txt`** -- the Emscripten target `hgevolve_js`: `src/binding.cpp` with the paclet's `hypergraph_ffi.cpp` and `paclet_support.cpp`, linked to the engine, as an ES module `hgevolve.mjs` (no threads) or `hgevolve-threads.mjs` (`-pthread`, a pool of Web Workers made at load); every object compiles with `-fwasm-exceptions`
+- **`build.sh`** -- configures and builds both variants (one build tree each) and copies the modules into `js/dist/`
+- **`src/binding.cpp`** -- embind: `runJob` (a job as JavaScript values -> `wxf::WXFValue`; `job_option_problems` refuses an option the engine would ignore; `run_rewriting_arrays`; the reply copied into JavaScript objects, integers as `BigInt64Array`), `encode`, `heatResidual`, `measureNames`/`matrixNames`, `buildStamp`, `threaded`; a transition cost function runs in the single-threaded module only
+- **`hgevolve.mjs`** -- `load` (picks the module), `Engine` (`evolve`, `session`, `initialCondition`, `encodeJob`, `heatResidual`), `Session`, `Result`, `Table`, `Relation`, `Ragged`, `EdgeLists`, `VertexReals`, `EngineError`; options are HGEvolve's names in camelCase, checked by the engine; **`index.d.ts`** -- the types
+- **`test/`** -- `node --test`: `parity.test.mjs` (the Python package's HGEvolve fixtures on both modules: exact on the threaded module, up to run-local ids on the single-threaded one), `api.test.mjs`, `fixtures.mjs` (the fixture reader and the comparison); `browser.mjs` runs both modules in headless Chromium from `test/browser/`
 
 ## `paclet/` -- the Wolfram Language paclet
 

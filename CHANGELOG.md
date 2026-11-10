@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The JavaScript package hgevolve (`js/`) runs the CPU engine in WebAssembly, in Node.js and in
+  browsers. It has two modules: one runs on a single thread, and one runs the engine's workers on
+  Web Workers where `SharedArrayBuffer` is available. `evolve`, sessions, generated initial
+  conditions and the transition cost take HGEvolve's options in camelCase, and the reply is
+  HGEvolve's. `js/README.md` describes it.
+
 ## v1.0.0-rc3 (2026-11-05)
 
 - In rc2 a GPU run with quotient exploration (`"CanonicalizeStates" -> Full`) could return fewer

@@ -613,6 +613,12 @@ if(HG_BUILD_PYTHON)
     add_subdirectory(python)
 endif()
 
+# The JavaScript package hgevolve (js/): the CPU engine compiled to WebAssembly. An Emscripten
+# build only; js/build.sh configures the single-threaded and the threaded build.
+if(EMSCRIPTEN)
+    add_subdirectory(js)
+endif()
+
 # Viz-event emission. The interactive renderer lives in its own repo
 # (../hypergraph_viz, split with history 2026-08-01); this switch builds the
 # event-stream side it consumes: viz_events (above) plus the engine's

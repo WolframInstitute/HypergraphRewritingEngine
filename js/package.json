@@ -1,0 +1,36 @@
+{
+  "name": "hgevolve",
+  "version": "1.0.0",
+  "description": "Multiway hypergraph rewriting with the HypergraphRewriting engine, in WebAssembly",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./hgevolve.mjs"
+    }
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "hgevolve.mjs",
+    "index.d.ts",
+    "dist/hgevolve.mjs",
+    "dist/hgevolve.wasm",
+    "dist/hgevolve-threads.mjs",
+    "dist/hgevolve-threads.wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "./build.sh",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WolframInstitute/HypergraphRewritingEngine.git",
+    "directory": "js"
+  },
+  "keywords": ["hypergraph", "rewriting", "multiway", "wolfram-model", "webassembly"]
+}
