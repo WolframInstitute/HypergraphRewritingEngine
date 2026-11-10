@@ -129,15 +129,23 @@ public:
         static Table* create(size_t cap, Table* prev, ConcurrentHeterogeneousArena* arena) {
             size_t actual = 1;
             while (actual < cap) actual <<= 1;
-            const size_t bytes = sizeof(Table) + sizeof(std::atomic<K>) * actual;
+            // The keys start at the first multiple of their alignment after the header. On wasm32
+            // the header is 20 bytes with alignment 4, and an atomic on a uint64_t that is not
+            // 8-byte aligned traps there.
+            constexpr size_t kAlign = alignof(Table) > alignof(std::atomic<K>)
+                                          ? alignof(Table)
+                                          : alignof(std::atomic<K>);
+            constexpr size_t kKeysAt =
+                (sizeof(Table) + alignof(std::atomic<K>) - 1) / alignof(std::atomic<K>) *
+                alignof(std::atomic<K>);
+            const size_t bytes = kKeysAt + sizeof(std::atomic<K>) * actual;
             bool  zero = false;
-            void* mem = arena ? arena->allocate_raw(bytes, alignof(Table), &zero)
+            void* mem = arena ? arena->allocate_raw(bytes, kAlign, &zero)
                               : ::operator new(bytes);
             // The first table has nothing below it, so its chain is clear by construction.
             Table* t = new (mem) Table{actual, actual - 1, prev, nullptr, {false},
                                        {prev == nullptr}};
-            t->keys = reinterpret_cast<std::atomic<K>*>(
-                reinterpret_cast<char*>(mem) + sizeof(Table));
+            t->keys = reinterpret_cast<std::atomic<K>*>(reinterpret_cast<char*>(mem) + kKeysAt);
             // Bytes the arena knows to be zero already hold the empty sentinel in every slot
             // when the sentinel is zero bytes; the fill was half of all zeroing on wpp depth 7
             // (callgrind: 55.0 M instructions in 1,273 table creations).
