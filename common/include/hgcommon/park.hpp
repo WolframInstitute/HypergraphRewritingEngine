@@ -149,6 +149,14 @@ constexpr bool park_is_lock_free() {
 // a caller can static_assert on it too, not only where this file happens to check it.
 inline constexpr bool park_is_always_lock_free = park_is_lock_free();
 
+// False in a build with no threads (Emscripten without -pthread). The engine runs its serial mode
+// there whatever mode the caller asks for.
+#if defined(HG_PARK_NO_THREADS)
+inline constexpr bool build_has_threads = false;
+#else
+inline constexpr bool build_has_threads = true;
+#endif
+
 #if !defined(HG_PARK_ALLOW_LOCKING_FALLBACK)
 static_assert(park_is_always_lock_free,
               "park() would take a lock in this build: std::atomic::wait is permitted to hold a "

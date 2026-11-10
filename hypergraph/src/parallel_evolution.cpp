@@ -72,13 +72,13 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
                                                  std::vector<unsigned> worker_cpus)
     : hg_(hg)
     , rewriter_(hg)
+    , mode_(hgcommon::build_has_threads ? mode : ExecutionMode::Serial)
     // Serial reports one thread of execution -- the caller's. Reporting the hardware count
     // there would be a lie to anything sizing itself from num_threads().
-    , num_threads_(mode == ExecutionMode::Serial
+    , num_threads_(mode_ == ExecutionMode::Serial
                        ? 1
                        : (num_threads > 0 ? num_threads
                                          : hgcommon::default_worker_count(MAX_ARENA_WORKERS)))
-    , mode_(mode)
 {
     // Route every engine map's table storage through the hypergraph arena (no malloc,
     // no per-map heap contention). These maps are append-only across the engine's

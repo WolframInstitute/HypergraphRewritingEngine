@@ -996,14 +996,15 @@ public:
     // run is deterministic by construction. This is the single-threaded execution mode
     // (and the WebAssembly path, where spawning threads is not available): everything
     // the workers would do happens on the thread that waits.
+    // A build with no threads (hgcommon::build_has_threads false) runs every JobSystem serially.
     explicit JobSystem(size_t num_threads = 0, size_t queue_capacity = HG_JOB_QUEUE_CAPACITY,
                        bool serial = false)
         : injector_(HG_JOB_INJECTOR_CAPACITY),
-          num_threads_(serial ? 0
+          num_threads_(serial || !hgcommon::build_has_threads ? 0
                               : (num_threads == 0 ? hgcommon::default_worker_count()
                                                   : num_threads)),
           queue_capacity_(queue_capacity == 0 ? HG_JOB_QUEUE_CAPACITY : queue_capacity),
-          serial_(serial) {
+          serial_(serial || !hgcommon::build_has_threads) {
         if (!serial_ && num_threads_ == 0) num_threads_ = 1;
         workers_.reserve(num_threads_);
         for (size_t i = 0; i < num_threads_; ++i) {

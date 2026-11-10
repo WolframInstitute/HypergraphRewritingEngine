@@ -807,8 +807,9 @@ private:
 
     // Job system
     std::unique_ptr<job_system::JobSystem<EvolutionJobType>> job_system_;
-    size_t num_threads_{0};
+    // mode_ precedes num_threads_: the constructor sets num_threads_ from mode_.
     ExecutionMode mode_{ExecutionMode::Parallel};
+    size_t num_threads_{0};
 
     // A match task the step budget refused. Its state exists and its matches were never
     // computed, so this is precisely the work a continuation resumes -- and precisely the
