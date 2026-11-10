@@ -204,17 +204,32 @@ def invariant_view(reply):
         (s["CanonicalHash"], s["Step"], s["IsInitial"], len(s["Edges"]),
          h.get(s["CanonicalId"]), h.get(s["ContentStateId"])) for s in states)
     events = reply.get("Events", [])
+    # A raw state the reply does not list (an isomorphic duplicate under Full states) stands for
+    # its class, the event's canonical state: which copy of a class is listed, and which copy's
+    # children are found first, depends on the order of exploration.
     sig = {}
     for e in events:
-        sig[e["Id"]] = (e["RuleIndex"], h.get(e["InputState"]), h.get(e["OutputState"]),
+        sig[e["Id"]] = (e["RuleIndex"],
+                        h.get(e["InputState"], h.get(e["CanonicalInputState"])),
+                        h.get(e["OutputState"], h.get(e["CanonicalOutputState"])),
                         h.get(e["CanonicalInputState"]), h.get(e["CanonicalOutputState"]),
                         len(e.get("ConsumedEdges", [])), len(e.get("ProducedEdges", [])))
     ev = collections.Counter(sig.values())
-    canon = collections.Counter(sig.get(e["CanonicalId"]) for e in events)
-    causal = collections.Counter((sig.get(c["From"]), sig.get(c["To"]))
+    # The partition of the events into canonical events: each class as the sorted signatures of
+    # its events. A CanonicalId numbers the classes and is not a raw event's id; a pair's From
+    # and To are canonical ids, its RawFrom and RawTo raw ids.
+    members = collections.defaultdict(list)
+    for e in events:
+        members[e["CanonicalId"]].append(repr(sig[e["Id"]]))
+    cls = {k: tuple(sorted(v)) for k, v in members.items()}
+    canon = collections.Counter(cls.values())
+    causal = collections.Counter((cls.get(c["From"]), cls.get(c["To"]),
+                                  sig.get(c.get("RawFrom")), sig.get(c.get("RawTo")))
                                  for c in reply.get("CausalEdges", []))
-    branchial = collections.Counter(frozenset([sig.get(c["From"]), sig.get(c["To"])])
-                                    for c in reply.get("BranchialEdges", []))
+    branchial = collections.Counter(
+        (frozenset([cls.get(c["From"]), cls.get(c["To"])]),
+         frozenset([sig.get(c.get("RawFrom")), sig.get(c.get("RawTo"))]))
+        for c in reply.get("BranchialEdges", []))
     glob = collections.Counter(len(e) for e in reply.get("GlobalEdges", []))
     bits = collections.Counter((h.get(b["State"]), len(b["Edges"]))
                                for b in reply.get("StateBitvectors", []))
