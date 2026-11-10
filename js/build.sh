@@ -8,6 +8,8 @@ OUT="${1:-$ROOT/build_js}"
 JOBS="${BUILD_JOBS:-4}"
 command -v emcmake > /dev/null || { echo "emcmake not found: source <emsdk>/emsdk_env.sh" >&2; exit 2; }
 mkdir -p "$ROOT/js/dist"
+# The MIT licence goes with every copy of the package.
+cp "$ROOT/LICENSE.md" "$ROOT/js/LICENSE.md"
 for variant in single threads; do
     flags="-fwasm-exceptions"
     [ "$variant" = threads ] && flags="$flags -pthread"
