@@ -24,6 +24,9 @@
 #  endif
 #elif defined(HG_PARK_OS_SYNC)
 #  include <os/os_sync_wait_on_address.h>
+#elif defined(HG_PARK_EMSCRIPTEN_FUTEX)
+#  include <emscripten/threading.h>
+#  include <cmath>
 #endif
 
 namespace HG_NAMESPACE {
@@ -48,6 +51,8 @@ void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) {
     ::os_sync_wait_on_address(const_cast<void*>(static_cast<const void*>(&addr)),
                               static_cast<uint64_t>(expected), sizeof(uint32_t),
                               OS_SYNC_WAIT_ON_ADDRESS_NONE);
+#elif defined(HG_PARK_EMSCRIPTEN_FUTEX)
+    ::emscripten_futex_wait(const_cast<std::atomic<uint32_t>*>(&addr), expected, INFINITY);
 #elif defined(HG_PARK_STD_ATOMIC_WAIT)
     addr.wait(expected, std::memory_order_acquire);
 #endif
@@ -67,6 +72,8 @@ void unpark_one(const std::atomic<uint32_t>& addr) {
 #elif defined(HG_PARK_OS_SYNC)
     ::os_sync_wake_by_address_any(const_cast<void*>(static_cast<const void*>(&addr)),
                                   sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
+#elif defined(HG_PARK_EMSCRIPTEN_FUTEX)
+    ::emscripten_futex_wake(const_cast<std::atomic<uint32_t>*>(&addr), 1);
 #elif defined(HG_PARK_STD_ATOMIC_WAIT)
     // wait() is const-qualified but notify_one()/notify_all() are not; the wake mutates no
     // atomic value, and this API takes const& to mirror the futex path, so cast it away.
@@ -88,6 +95,8 @@ void unpark_all(const std::atomic<uint32_t>& addr) {
 #elif defined(HG_PARK_OS_SYNC)
     ::os_sync_wake_by_address_all(const_cast<void*>(static_cast<const void*>(&addr)),
                                   sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
+#elif defined(HG_PARK_EMSCRIPTEN_FUTEX)
+    ::emscripten_futex_wake(const_cast<std::atomic<uint32_t>*>(&addr), INT32_MAX);
 #elif defined(HG_PARK_STD_ATOMIC_WAIT)
     const_cast<std::atomic<uint32_t>&>(addr).notify_all();
 #endif

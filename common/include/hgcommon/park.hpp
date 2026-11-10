@@ -16,6 +16,8 @@
 //
 //   Linux    futex(FUTEX_WAIT_PRIVATE / FUTEX_WAKE_PRIVATE)
 //   Windows  WaitOnAddress / WakeByAddressSingle / WakeByAddressAll
+//   wasm32   emscripten_futex_wait / emscripten_futex_wake (with -pthread: memory.atomic.wait32
+//            and memory.atomic.notify on the shared heap)
 //   macOS    os_sync_wait_on_address / os_sync_wake_by_address_{any,all}
 //            (public since the 14.4 SDK). An older SDK falls through to std::atomic::wait,
 //            which libc++ marks unavailable below macOS 11 -- so the cross toolchain's
@@ -67,6 +69,8 @@
 #elif defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 #  define HG_PARK_NO_THREADS 1
 #  define HG_PARK_SPIN 1
+#elif defined(__EMSCRIPTEN__)
+#  define HG_PARK_EMSCRIPTEN_FUTEX 1
 #elif defined(__linux__)
 #  define HG_PARK_FUTEX 1
 #elif defined(_WIN32)
@@ -91,7 +95,7 @@
 // address does not get a lock here; it gets a compile error, which is the honest answer and
 // keeps "no mutex anywhere" checkable by grep rather than by argument.
 #if !defined(HG_PARK_FUTEX) && !defined(HG_PARK_WAIT_ON_ADDRESS) && !defined(HG_PARK_OS_SYNC) \
-    && !defined(HG_PARK_SPIN)
+    && !defined(HG_PARK_EMSCRIPTEN_FUTEX) && !defined(HG_PARK_SPIN)
 #  if defined(__cpp_lib_atomic_wait)
 #    define HG_PARK_STD_ATOMIC_WAIT 1
 #  else
@@ -102,7 +106,7 @@
 namespace HG_NAMESPACE {
 namespace common {
 
-enum class ParkBackend { Futex, WaitOnAddress, OsSync, Spin, StdAtomicWait, CondVar };
+enum class ParkBackend { Futex, WaitOnAddress, OsSync, EmscriptenFutex, Spin, StdAtomicWait, CondVar };
 
 // Which primitive this build uses. StdAtomicWait is the only one that may block on a lock.
 constexpr ParkBackend park_backend() {
@@ -114,6 +118,8 @@ constexpr ParkBackend park_backend() {
     return ParkBackend::WaitOnAddress;
 #elif defined(HG_PARK_OS_SYNC)
     return ParkBackend::OsSync;
+#elif defined(HG_PARK_EMSCRIPTEN_FUTEX)
+    return ParkBackend::EmscriptenFutex;
 #elif defined(HG_PARK_STD_ATOMIC_WAIT)
     return ParkBackend::StdAtomicWait;
 #else

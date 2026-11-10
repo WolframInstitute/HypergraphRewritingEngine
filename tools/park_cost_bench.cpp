@@ -37,6 +37,7 @@ const char* backend_name() {
         case hgcommon::ParkBackend::Futex:         return "futex (SYS_futex, Linux)";
         case hgcommon::ParkBackend::WaitOnAddress: return "WaitOnAddress (Windows)";
         case hgcommon::ParkBackend::OsSync:        return "os_sync_wait_on_address (macOS)";
+        case hgcommon::ParkBackend::EmscriptenFutex: return "emscripten_futex_wait (wasm32 with threads)";
         case hgcommon::ParkBackend::Spin:          return "spin (verification builds, and "
                                                           "threadless wasm where park is "
                                                           "unreachable)";
