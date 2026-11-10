@@ -271,8 +271,9 @@ class Hypergraph {
     struct QcGenesisRoot { const QcLineage* root; EventId genesis; };
     std::vector<QcGenesisRoot> qc_genesis_roots_;
     // One block of an instance's claim chain (hgcommon::qr_claim_chain): `words` 64-bit claim
-    // words follow the header in the same allocation.
-    struct QcClaimBlock {
+    // words follow the header in the same allocation. The header aligns to the words, so the
+    // words start 8-byte aligned on wasm32 too (pointer and uint32_t, alignment 4, there).
+    struct alignas(std::atomic<uint64_t>) QcClaimBlock {
         std::atomic<QcClaimBlock*> next{nullptr};
         uint32_t words = 0;
         std::atomic<uint64_t>* bits() { return reinterpret_cast<std::atomic<uint64_t>*>(this + 1); }
