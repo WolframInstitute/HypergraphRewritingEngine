@@ -33,7 +33,7 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: 4
           # The Linux wheels build in a container; the commit for their build stamp is passed in.
-          CIBW_ENVIRONMENT_LINUX: CMAKE_BUILD_PARALLEL_LEVEL=4 SKBUILD_CMAKE_DEFINE=HG_BUILD_COMMIT=${{ github.sha }}
+          CIBW_ENVIRONMENT_LINUX: CMAKE_BUILD_PARALLEL_LEVEL=4 SKBUILD_CMAKE_DEFINE="HG_BUILD_COMMIT=${{ github.sha }}"
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
@@ -69,7 +69,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p out/${{ matrix.platform }}
-          f=$(find build/LibraryResources -name 'hg_evolve' -o -name 'hg_evolve.exe' | head -1)
+          # MSVC writes build/hg_evolve.exe; the other builds write build/LibraryResources/<platform>/hg_evolve.
+          f=$(find build -type f \( -name hg_evolve -o -name hg_evolve.exe \) -not -path '*CMakeFiles*' | head -1)
           cp "$f" out/${{ matrix.platform }}/
           "out/${{ matrix.platform }}/$(basename "$f")" --version
       - uses: actions/upload-artifact@v4
