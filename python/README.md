@@ -69,7 +69,7 @@ A generated initial condition is a type name or a spec dict, as in HGEvolve: `hg
 | `examples/generational_and_orderings.py` | `generational` and `event_ordering_function` |
 | `examples/undirected_edges.py` | `undirected_edges` |
 | `examples/step_statistics.py` | step statistics with measures and branchial metrics |
-| `examples/parallel_sweep.py` | a sweep across processes, each under an address-space cap |
+| `examples/parallel_sweep.py` | a sweep across processes, each evolution under the engine's memory limit (tuning `MemoryLimit`) |
 
 ## Tests
 
