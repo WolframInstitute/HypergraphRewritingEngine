@@ -352,8 +352,7 @@ if want prep || [ "$PHASE" = prep-host ]; then
   say "ncu counters: $NCU_OK"
 
 
-  # No --recurse-submodules: the only submodule is the markdown-to-notebook converter, which
-  # nothing here builds. A clone that is already present is reused and moved to the commit.
+  # A clone that is already present is reused and moved to the commit.
   if [ -d "$SRC/.git" ]; then
     say "clone present, fetching"
     git -C "$SRC" fetch --all -q >> "$LOG" 2>&1 || true

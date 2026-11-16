@@ -12,6 +12,8 @@
 /paclet/Documentation/English/.build_ok
 /paclet/Documentation/English/.doc_manifest.wl
 /paclet/Documentation/English/.doc_pages
+# The documentation converter, checked out by build_docs.sh at MTN_COMMIT.
+/tools/MarkdownToNotebook/
 __pycache__/
 *.pyc
 # The hgevolve extension module, written beside the package by a build with HG_BUILD_PYTHON.

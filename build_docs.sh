@@ -2,7 +2,7 @@
 # Build the paclet documentation notebooks from the markdown sources in docs/en/ into
 # paclet/Documentation/English/ (tools/build_docs.wls describes the mapping).
 #
-# Turnkey: vendors MarkdownToNotebook (git submodule), finds wolframscript (native, or the
+# Turnkey: fetches MarkdownToNotebook at a pinned commit, finds wolframscript (native, or the
 # Windows install from WSL), and runs the converter. No manual checkout, no paths to pass.
 #
 #   ./build_docs.sh                 generate and evaluate examples (renders the engine's output)
@@ -26,12 +26,20 @@ for a in "${ARGS[@]}"; do
 done
 SCRIPT="$ROOT/tools/build_docs.wls"
 
-# 1. Ensure the MarkdownToNotebook submodule is present.
-if [[ ! -f tools/MarkdownToNotebook/MarkdownToNotebook.wl ]]; then
-    echo "==> fetching MarkdownToNotebook submodule"
-    # NOT --recursive: MarkdownToNotebook's own example submodules are SSH-only (sw1sh/*)
-    # and we don't need them; the converter itself is all that's required.
-    git submodule update --init tools/MarkdownToNotebook
+# 1. Check out the converter at MTN_COMMIT into tools/MarkdownToNotebook (ignored by git).
+# Its submodules are not fetched. Without examples/Paclet/WolframParser the converter loads the
+# installed Wolfram/Parser paclet (MarkdownToNotebook.wl, ensureParser).
+MTN_URL="https://github.com/WolframInstitute/MarkdownToNotebook.git"
+MTN_COMMIT="486a861689e6af29f30275a1a44088fef3d7ce41"
+MTN_DIR="tools/MarkdownToNotebook"
+if [[ ! -e "$MTN_DIR/.git" ]]; then
+    echo "==> fetching MarkdownToNotebook $MTN_COMMIT"
+    git init -q "$MTN_DIR"
+    git -C "$MTN_DIR" remote add origin "$MTN_URL"
+fi
+if [[ "$(git -C "$MTN_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)" != "$MTN_COMMIT" ]]; then
+    git -C "$MTN_DIR" fetch -q --depth 1 origin "$MTN_COMMIT"
+    git -C "$MTN_DIR" checkout -q --detach "$MTN_COMMIT"
 fi
 
 # 2. Resolve wolframscript: native on PATH, else the Windows install driven from WSL.

@@ -1,6 +1,7 @@
 #!/usr/bin/env wolframscript
 (* Convert the documentation sources (docs/en/**/*.md) into the paclet's documentation
-   notebooks with WolframInstitute/MarkdownToNotebook (the tools/MarkdownToNotebook submodule).
+   notebooks with WolframInstitute/MarkdownToNotebook, checked out into tools/MarkdownToNotebook
+   by build_docs.sh.
 
    Each source's Template frontmatter selects the directory under paclet/Documentation/English,
    and the notebook is named after the page's Name, which must equal the source's file name:
@@ -39,7 +40,7 @@ srcDir  = FileNameJoin[{repo, "docs", "en"}];
 mtnPath = FileNameJoin[{repo, "tools", "MarkdownToNotebook", "MarkdownToNotebook.wl"}];
 If[!FileExistsQ[mtnPath],
   Print["MarkdownToNotebook.wl not found: ", mtnPath,
-        "\n  run: git submodule update --init tools/MarkdownToNotebook"]; Exit[1]];
+        "\n  ./build_docs.sh fetches the converter at its pinned commit"]; Exit[1]];
 Get[mtnPath];
 
 (* Input-only notebooks never go where the paclet ships them. *)

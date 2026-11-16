@@ -123,9 +123,9 @@ canonicalization work.
 
 The user documentation is written in markdown under `docs/en/` and converted into the paclet's
 notebooks under `paclet/Documentation/English/` by `./build_docs.sh`, which runs
-`tools/build_docs.wls` with the converter in the `tools/MarkdownToNotebook` submodule. The
-notebooks are tracked, because the paclet ships them; edit the markdown, never a notebook. The
-quickstart for users is [docs/QUICKSTART.md](docs/QUICKSTART.md).
+`tools/build_docs.wls` with the converter checked out into `tools/MarkdownToNotebook` at the
+commit `MTN_COMMIT` in `build_docs.sh`. The notebooks are tracked, because the paclet ships
+them; edit the markdown, never a notebook. The quickstart for users is [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ### Layout
 
