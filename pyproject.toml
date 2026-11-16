@@ -1,0 +1,85 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "hgevolve"
+version = "1.0.0"
+description = "Multiway hypergraph rewriting with the HypergraphRewriting engine, in-process"
+readme = "python/README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE.md" }
+dependencies = ["numpy>=1.21"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Source = "https://github.com/WolframInstitute/HypergraphRewritingEngine"
+Documentation = "https://github.com/WolframInstitute/HypergraphRewritingEngine/blob/master/python/docs/API.md"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+wheel.packages = ["python/hgevolve"]
+build-dir = "build_python/{wheel_tag}"
+# The module alone: the rest of the tree (tools, tests) is not part of the package.
+build.targets = ["_core"]
+install.components = ["python"]
+# The sdist carries what the engine build reads and nothing else: everything is excluded, then the
+# engine directories, the Python package and tools/*.cpp (the top-level CMakeLists.txt defines a
+# target per tool) are included.
+sdist.exclude = ["*"]
+sdist.include = [
+    "/pyproject.toml",
+    "/CMakeLists.txt",
+    "/LICENSE.md",
+    "/README.md",
+    "/cmake/",
+    "/common/",
+    "/hypergraph/",
+    "/job_system/",
+    "/lockfree_deque/",
+    "/wxf/",
+    "/paclet_source/",
+    "/python/CMakeLists.txt",
+    "/python/README.md",
+    "/python/docs/",
+    "/python/examples/",
+    "/python/hgevolve/*.py",
+    "/python/src/",
+    "/python/tests/",
+    "/tools/*.cpp",
+]
+
+[tool.scikit-build.cmake.define]
+HG_BUILD_PYTHON = "ON"
+HG_ENGINE_STATS = "OFF"
+BUILD_TESTS = "OFF"
+BUILD_EXAMPLES = "OFF"
+BUILD_BENCHMARKS = "OFF"
+BUILD_WOLFRAM_LANGUAGE_PACLET = "OFF"
+BUILD_GPU = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *-win32 *_i686"
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+test-requires = ["pytest"]
+test-command = "pytest -q -p no:cacheprovider {project}/python/tests"
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]

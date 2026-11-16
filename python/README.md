@@ -17,12 +17,21 @@ r.causal_edges.array          # n x 4 int64 array: From, To, RawFrom, RawTo
 
 docs/API.md lists every function, option and data name with its HGEvolve name.
 
+## Installing
+
+```sh
+pip install hgevolve
+```
+
+PyPI carries wheels for CPython 3.9 to 3.14 on Linux (x86-64 and ARM64), Windows (x86-64) and macOS (x86-64 and ARM64), and an sdist for other platforms.
+
 ## Building
 
 The package is built from this repository with CMake. It needs Python 3.9 or later with its development headers, NumPy and nanobind (`pip install nanobind`).
 
 ```sh
-pip install ./python                      # scikit-build-core builds the module and installs it
+pip install .                             # in a checkout: scikit-build-core builds the module and installs it
+pip install git+https://github.com/WolframInstitute/HypergraphRewritingEngine
 ```
 
 or, for a build tree:
