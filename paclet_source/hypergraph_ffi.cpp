@@ -2373,7 +2373,7 @@ static void run_job(const Parse& parse, const HostBridge& host, Out& reply) {
         {
             wxf::WXFValueAssociation counts;
             push_counts(counts, req, hg, engine, recon_genesis_pairs.size());
-            for (auto& [key, value] : counts) reply.value(key.get<std::string>(), std::move(value));
+            for (auto& [key, value] : counts) reply.value(key.template get<std::string>(), std::move(value));
         }
 
         // StepStatistics -> per step, the population of raw states summarised from one state per
