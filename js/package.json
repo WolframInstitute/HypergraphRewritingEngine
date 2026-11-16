@@ -1,6 +1,6 @@
 {
   "name": "hgevolve",
-  "version": "1.0.0-rc.3.1",
+  "version": "1.0.0-rc.3.2",
   "description": "Multiway hypergraph rewriting with the HypergraphRewriting engine, in WebAssembly",
   "type": "module",
   "exports": {

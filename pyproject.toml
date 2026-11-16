@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "hgevolve"
-version = "1.0.0"
+version = "1.0.0rc3.post2"
 description = "Multiway hypergraph rewriting with the HypergraphRewriting engine, in-process"
 readme = "python/README.md"
 requires-python = ">=3.9"

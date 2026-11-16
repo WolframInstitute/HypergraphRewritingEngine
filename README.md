@@ -2,9 +2,13 @@
 
 A high-performance multiway hypergraph rewriting engine for the Wolfram Physics Project.
 
+The engine has five front ends: the Mathematica paclet, the Python package `hgevolve`, the
+JavaScript package `hgevolve`, the C++ API and the command-line program `hg_evolve`. All five are
+supported, and only the paclet needs a Wolfram product.
+
 ## Status
 
-v1.0.0-rc3: feature-complete, gated by CI, model checking and a brute-force oracle. APIs
+v1.0.0-rc3.2: feature-complete, gated by CI, model checking and a brute-force oracle. APIs
 are stable from this release line onward.
 
 ## Paper
@@ -62,6 +66,24 @@ Needs["HypergraphRewriting`"]
 The paclet is not in the Wolfram Paclet Repository, so `PacletInstall["WolframInstitute/HypergraphRewriteEngine"]` does not install it. `PacletFind["WolframInstitute/HypergraphRewriteEngine"]` lists the installed versions; `Needs` loads the highest.
 
 The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported context is ``HypergraphRewriting` ``.
+
+### Python
+
+```bash
+pip install hgevolve
+```
+
+[python/README.md](python/README.md) lists the wheels and the build from source.
+
+### JavaScript
+
+```bash
+npm install hgevolve
+```
+
+### Command-line program
+
+Each release carries `hg_evolve` for Linux (x86-64, ARM64), Windows (x86-64) and macOS (ARM64). It reads jobs as WXF on standard input (`hg_evolve --help`), and building it needs no Wolfram Language install.
 
 ### Building from Source
 
