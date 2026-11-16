@@ -1,6 +1,6 @@
 name: macOS
 
-# ARM64 correctness leg (macos-14 = Apple Silicon). Same OFF flags as the Linux
+# ARM64 correctness leg (macos-15 = Apple Silicon). Same OFF flags as the Linux
 # gate: no LibraryLink headers, no CUDA, no Vulkan on a bare runner. This is the
 # first macOS compile+run signal the project has; clang/libc++ and the ARM64
 # memory model are exactly what the Linux leg cannot see.
@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   macos-tests:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
