@@ -1,9 +1,9 @@
-# hgevolve for JavaScript
+# hypergraph-rewriting-engine for JavaScript
 
-hgevolve runs the CPU engine of the HypergraphRewriting paclet in WebAssembly, in Node.js and in browsers. It runs the same job code as `HGEvolve` and the Python package `hgevolve`, and it gives the same replies.
+The package hypergraph-rewriting-engine runs the CPU engine of the HypergraphRewriting paclet in WebAssembly, in Node.js and in browsers. It runs the same job code as `HGEvolve` and the Python package (`hgevolve`), and it gives the same replies.
 
 ```js
-import { load } from "hgevolve";
+import { load } from "hypergraph-rewriting-engine";
 
 const hg = await load();
 const r = hg.evolve([[[1, 2]], [[1, 2], [2, 3]]], [[1, 2]], 3);

@@ -2,13 +2,15 @@
 
 ## v1.0.0-rc3.2 (2026-11-16)
 
-- The JavaScript package hgevolve (`js/`) runs the CPU engine in WebAssembly, in Node.js and in
-  browsers. It has two modules: one runs on a single thread, and one runs the engine's workers on
-  Web Workers where `SharedArrayBuffer` is available. `evolve`, sessions, generated initial
-  conditions and the transition cost take HGEvolve's options in camelCase, and the reply is
-  HGEvolve's. `js/README.md` describes it. npm carries it as `hgevolve`.
-- The Python package hgevolve is on PyPI as hypergraph-rewriting-engine (`pip install
-  hypergraph-rewriting-engine`; the import name stays `hgevolve`), with wheels for CPython 3.9 to
+- The JavaScript package hypergraph-rewriting-engine (`js/`) runs the CPU engine in WebAssembly,
+  in Node.js and in browsers. It has two modules: one runs on a single thread, and one runs the
+  engine's workers on Web Workers where `SharedArrayBuffer` is available. `evolve`, sessions,
+  generated initial conditions and the transition cost take HGEvolve's options in camelCase, and
+  the reply is HGEvolve's. `js/README.md` describes it. npm carries it as
+  `hypergraph-rewriting-engine`, and the npm package hgevolve (1.0.0-rc.3.1) is deprecated in its
+  favour.
+- The Python package hgevolve is on PyPI as hypergraph-rewriting-engine
+  (`pip install hypergraph-rewriting-engine`; the import name stays `hgevolve`), with wheels for CPython 3.9 to
   3.14 on Linux (x86-64, ARM64), Windows (x86-64) and macOS (x86-64, ARM64), and an sdist.
   `pyproject.toml` is at the repository root, so `pip install .` in a checkout and an install from
   a git URL build it.

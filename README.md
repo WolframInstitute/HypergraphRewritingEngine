@@ -2,8 +2,9 @@
 
 A high-performance multiway hypergraph rewriting engine for the Wolfram Physics Project.
 
-The engine has five front ends: the Mathematica paclet, the Python package `hgevolve`, the
-JavaScript package `hgevolve`, the C++ API and the command-line program `hg_evolve`. All five are
+The engine has five front ends: the Mathematica paclet, the Python package
+`hypergraph-rewriting-engine` (imported as `hgevolve`), the JavaScript package
+`hypergraph-rewriting-engine`, the C++ API and the command-line program `hg_evolve`. All five are
 supported, and only the paclet needs a Wolfram product.
 
 ## Status
@@ -78,7 +79,7 @@ pip install hypergraph-rewriting-engine    # the import name is hgevolve
 ### JavaScript
 
 ```bash
-npm install hgevolve
+npm install hypergraph-rewriting-engine
 ```
 
 ### Command-line program
