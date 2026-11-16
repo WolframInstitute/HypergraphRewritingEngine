@@ -5,7 +5,13 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The child processes read their resident set from /proc/self/status and cap their address space with
+# resource.RLIMIT_AS.
+pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/self/status (Linux)")
 
 
 def test_a_job_over_its_memory_limit_returns_a_partial_result(child_env):
