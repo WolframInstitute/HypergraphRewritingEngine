@@ -600,9 +600,11 @@ if(BUILD_GPU)
     endif()
 endif()
 
-# Optional: Build Wolfram Language paclet if the Wolfram Language is found
-option(BUILD_WOLFRAM_LANGUAGE_PACLET "Build Wolfram Language paclet library" ON)
-if(BUILD_WOLFRAM_LANGUAGE_PACLET)
+# paclet_source/ builds hg_evolve in every configuration except WebAssembly, and the LibraryLink
+# library and the paclet targets with BUILD_WOLFRAM_LANGUAGE_PACLET=ON (that part needs the Wolfram
+# Language).
+option(BUILD_WOLFRAM_LANGUAGE_PACLET "Build the Wolfram Language paclet library" ON)
+if(NOT EMSCRIPTEN)
     add_subdirectory(paclet_source)
 endif()
 

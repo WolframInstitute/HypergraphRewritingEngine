@@ -71,6 +71,13 @@ cmake .. -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j32 paclet
 ```
 
+The command-line program `hg_evolve` needs no Wolfram Language install:
+
+```bash
+cmake .. -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+make -j32 hg_evolve    # LibraryResources/<platform>/hg_evolve in the build directory
+```
+
 ## Usage
 
 ### Mathematica

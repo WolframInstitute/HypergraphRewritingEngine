@@ -1,28 +1,56 @@
-# Find the Wolfram Language using our custom finder module
-# This handles Windows, Linux, macOS, and WSL automatically
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+# hg_evolve (and hg_evolve_gpu) need no Wolfram Language install: they are built in every
+# configuration. The LibraryLink library and the paclet targets below the return() need the
+# Wolfram Language and are built only with BUILD_WOLFRAM_LANGUAGE_PACLET=ON.
 
-# Allow manual override via cache variable
-set(WOLFRAM_LANGUAGE_INSTALL_DIR "" CACHE PATH "Path to Wolfram Language installation directory")
-
-find_package(WolframLanguage REQUIRED)
-
-if(NOT WolframLanguage_FOUND)
-    message(FATAL_ERROR "Wolfram Language not found. Set WOLFRAM_LANGUAGE_INSTALL_DIR or WOLFRAM_LANGUAGE_HOME environment variable.")
-    return()
+# Determine platform directory based on CMAKE_SYSTEM_NAME (set by toolchain)
+if(NOT DEFINED PLATFORM_DIR)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        # macOS. A native build picks the slice via CMAKE_OSX_ARCHITECTURES (e.g. an x86_64
+        # build on Apple silicon); a cross build keys off the target processor.
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+            set(PLATFORM_DIR "MacOSX-ARM64")
+        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+            set(PLATFORM_DIR "MacOSX-x86-64")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+            set(PLATFORM_DIR "MacOSX-ARM64")
+        else()
+            set(PLATFORM_DIR "MacOSX-x86-64")
+        endif()
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # Windows
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM|aarch64")
+            set(PLATFORM_DIR "Windows-ARM64")
+        else()
+            set(PLATFORM_DIR "Windows-x86-64")
+        endif()
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Linux
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+            set(PLATFORM_DIR "Linux-ARM64")
+        else()
+            set(PLATFORM_DIR "Linux-x86-64")
+        endif()
+    else()
+        message(WARNING "Unknown platform: ${CMAKE_SYSTEM_NAME}")
+        set(PLATFORM_DIR "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
 endif()
 
-# Source files - relative to LibraryResources directory
-set(SOURCES hypergraph_ffi.cpp paclet_support.cpp)
-
-# Create the library
-add_library(HypergraphRewriting SHARED ${SOURCES})
-
-# The build stamp (common/include/hgcommon/build_stamp.hpp). All three shipped artifacts compile
-# hypergraph_ffi.cpp, which defines it; each names itself so one scan over a platform directory
-# can tell the library from the two executables.
-target_compile_definitions(HypergraphRewriting PRIVATE
-    HG_BUILD_VARIANT="paclet-library")
+# The binaries go into the paclet's LibraryResources platform directory. A MinGW build goes
+# there only with HG_MINGW_INTO_PACLET=ON: mingw-w64 binaries corrupt the heap at worker-thread
+# exit (verification/mingw/), and the shipping Windows binaries are built with MSVC
+# (build_windows_msvc.sh). build_all_platforms.sh sets the option when a host has no Visual
+# Studio. Without it the MinGW binaries stay in the build tree.
+option(HG_MINGW_INTO_PACLET "Install MinGW-built binaries into paclet/LibraryResources" OFF)
+set(HG_PACLET_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
+if(NOT BUILD_WOLFRAM_LANGUAGE_PACLET)
+    # Without the paclet the binaries stay in the build tree.
+    set(HG_PACLET_OUTPUT_DIR "${CMAKE_BINARY_DIR}/LibraryResources/${PLATFORM_DIR}")
+elseif(MINGW AND NOT HG_MINGW_INTO_PACLET)
+    set(HG_PACLET_OUTPUT_DIR "${CMAKE_BINARY_DIR}/LibraryResources/${PLATFORM_DIR}")
+    message(STATUS "MinGW build: binaries go to ${HG_PACLET_OUTPUT_DIR}, not the paclet "
+                   "(set HG_MINGW_INTO_PACLET=ON to install them there)")
+endif()
 
 # =============================================================================
 # Standalone process-isolation binary (WXF over stdin/stdout).
@@ -115,6 +143,89 @@ if(TARGET hg_gpu)
         target_link_libraries(hg_evolve_gpu Threads::Threads)
     endif()
 endif()
+
+# The standalone binary ships alongside the DLL in the same platform directory.
+set_target_properties(hg_evolve PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
+)
+if(TARGET hg_evolve_gpu)
+    set_target_properties(hg_evolve_gpu PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
+    )
+endif()
+
+# THE TEST WORKERS: hg_evolve and hg_evolve_gpu built again with HG_WORKER_TEST_HOOKS, which the
+# shipped binaries do not carry (HG_DEBUG_OUTPUT_BYTES writes to stdout and stderr per job). They
+# go to the build directory, and all_tests' WorkerOutput tests run them (HG_TEST_CPU_WORKER,
+# HG_TEST_GPU_WORKER).
+if(BUILD_TESTS AND TARGET all_tests)
+    foreach(_hg_w hg_evolve hg_evolve_gpu)
+        if(NOT TARGET ${_hg_w})
+            continue()
+        endif()
+        if(_hg_w STREQUAL "hg_evolve_gpu")
+            set(_hg_t hg_evolve_gpu_test_worker)
+            set(_hg_key HG_TEST_GPU_WORKER)
+        else()
+            set(_hg_t hg_evolve_test_worker)
+            set(_hg_key HG_TEST_CPU_WORKER)
+        endif()
+        get_target_property(_hg_src ${_hg_w} SOURCES)
+        get_target_property(_hg_defs ${_hg_w} COMPILE_DEFINITIONS)
+        get_target_property(_hg_incs ${_hg_w} INCLUDE_DIRECTORIES)
+        get_target_property(_hg_libs ${_hg_w} LINK_LIBRARIES)
+        get_target_property(_hg_opts ${_hg_w} COMPILE_OPTIONS)
+        get_target_property(_hg_lopts ${_hg_w} LINK_OPTIONS)
+        add_executable(${_hg_t} ${_hg_src})
+        target_compile_definitions(${_hg_t} PRIVATE ${_hg_defs} HG_WORKER_TEST_HOOKS)
+        target_include_directories(${_hg_t} PRIVATE ${_hg_incs})
+        target_link_libraries(${_hg_t} ${_hg_libs})
+        if(_hg_opts)
+            target_compile_options(${_hg_t} PRIVATE ${_hg_opts})
+        endif()
+        if(_hg_lopts)
+            target_link_options(${_hg_t} PRIVATE ${_hg_lopts})
+        endif()
+        if(_hg_w STREQUAL "hg_evolve_gpu")
+            set_property(TARGET ${_hg_t} PROPERTY CUDA_RUNTIME_LIBRARY Static)
+        endif()
+        set_property(TARGET all_tests APPEND PROPERTY COMPILE_DEFINITIONS
+            ${_hg_key}="$<TARGET_FILE:${_hg_t}>")
+        add_dependencies(all_tests ${_hg_t})
+    endforeach()
+endif()
+
+
+if(NOT BUILD_WOLFRAM_LANGUAGE_PACLET)
+    return()
+endif()
+
+# Find the Wolfram Language using our custom finder module
+# This handles Windows, Linux, macOS, and WSL automatically
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+
+# Allow manual override via cache variable
+set(WOLFRAM_LANGUAGE_INSTALL_DIR "" CACHE PATH "Path to Wolfram Language installation directory")
+
+find_package(WolframLanguage REQUIRED)
+
+if(NOT WolframLanguage_FOUND)
+    message(FATAL_ERROR "Wolfram Language not found. Set WOLFRAM_LANGUAGE_INSTALL_DIR or WOLFRAM_LANGUAGE_HOME environment variable.")
+    return()
+endif()
+
+# Source files - relative to LibraryResources directory
+set(SOURCES hypergraph_ffi.cpp paclet_support.cpp)
+
+# Create the library
+add_library(HypergraphRewriting SHARED ${SOURCES})
+
+# The build stamp (common/include/hgcommon/build_stamp.hpp). All three shipped artifacts compile
+# hypergraph_ffi.cpp, which defines it; each names itself so one scan over a platform directory
+# can tell the library from the two executables.
+target_compile_definitions(HypergraphRewriting PRIVATE
+    HG_BUILD_VARIANT="paclet-library")
+
 
 # Link against our existing targets
 # Note: Wolfram Language libraries are NOT needed at link time for LibraryLink
@@ -256,108 +367,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
     )
 endif()
 
-# Determine platform directory based on CMAKE_SYSTEM_NAME (set by toolchain)
-if(NOT DEFINED PLATFORM_DIR)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        # macOS. A native build picks the slice via CMAKE_OSX_ARCHITECTURES (e.g. an x86_64
-        # build on Apple silicon); a cross build keys off the target processor.
-        if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
-            set(PLATFORM_DIR "MacOSX-ARM64")
-        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
-            set(PLATFORM_DIR "MacOSX-x86-64")
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-            set(PLATFORM_DIR "MacOSX-ARM64")
-        else()
-            set(PLATFORM_DIR "MacOSX-x86-64")
-        endif()
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        # Windows
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM|aarch64")
-            set(PLATFORM_DIR "Windows-ARM64")
-        else()
-            set(PLATFORM_DIR "Windows-x86-64")
-        endif()
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # Linux
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-            set(PLATFORM_DIR "Linux-ARM64")
-        else()
-            set(PLATFORM_DIR "Linux-x86-64")
-        endif()
-    else()
-        message(WARNING "Unknown platform: ${CMAKE_SYSTEM_NAME}")
-        set(PLATFORM_DIR "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
-    endif()
-endif()
-
-# The binaries go into the paclet's LibraryResources platform directory. A MinGW build goes
-# there only with HG_MINGW_INTO_PACLET=ON: mingw-w64 binaries corrupt the heap at worker-thread
-# exit (verification/mingw/), and the shipping Windows binaries are built with MSVC
-# (build_windows_msvc.sh). build_all_platforms.sh sets the option when a host has no Visual
-# Studio. Without it the MinGW binaries stay in the build tree.
-option(HG_MINGW_INTO_PACLET "Install MinGW-built binaries into paclet/LibraryResources" OFF)
-set(HG_PACLET_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
-if(MINGW AND NOT HG_MINGW_INTO_PACLET)
-    set(HG_PACLET_OUTPUT_DIR "${CMAKE_BINARY_DIR}/LibraryResources/${PLATFORM_DIR}")
-    message(STATUS "MinGW build: binaries go to ${HG_PACLET_OUTPUT_DIR}, not the paclet "
-                   "(set HG_MINGW_INTO_PACLET=ON to install them there)")
-endif()
-
 set_target_properties(HypergraphRewriting PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
     RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
 )
-
-# The standalone binary ships alongside the DLL in the same platform directory.
-set_target_properties(hg_evolve PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
-)
-if(TARGET hg_evolve_gpu)
-    set_target_properties(hg_evolve_gpu PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
-    )
-endif()
-
-# THE TEST WORKERS: hg_evolve and hg_evolve_gpu built again with HG_WORKER_TEST_HOOKS, which the
-# shipped binaries do not carry (HG_DEBUG_OUTPUT_BYTES writes to stdout and stderr per job). They
-# go to the build directory, and all_tests' WorkerOutput tests run them (HG_TEST_CPU_WORKER,
-# HG_TEST_GPU_WORKER).
-if(BUILD_TESTS AND TARGET all_tests)
-    foreach(_hg_w hg_evolve hg_evolve_gpu)
-        if(NOT TARGET ${_hg_w})
-            continue()
-        endif()
-        if(_hg_w STREQUAL "hg_evolve_gpu")
-            set(_hg_t hg_evolve_gpu_test_worker)
-            set(_hg_key HG_TEST_GPU_WORKER)
-        else()
-            set(_hg_t hg_evolve_test_worker)
-            set(_hg_key HG_TEST_CPU_WORKER)
-        endif()
-        get_target_property(_hg_src ${_hg_w} SOURCES)
-        get_target_property(_hg_defs ${_hg_w} COMPILE_DEFINITIONS)
-        get_target_property(_hg_incs ${_hg_w} INCLUDE_DIRECTORIES)
-        get_target_property(_hg_libs ${_hg_w} LINK_LIBRARIES)
-        get_target_property(_hg_opts ${_hg_w} COMPILE_OPTIONS)
-        get_target_property(_hg_lopts ${_hg_w} LINK_OPTIONS)
-        add_executable(${_hg_t} ${_hg_src})
-        target_compile_definitions(${_hg_t} PRIVATE ${_hg_defs} HG_WORKER_TEST_HOOKS)
-        target_include_directories(${_hg_t} PRIVATE ${_hg_incs})
-        target_link_libraries(${_hg_t} ${_hg_libs})
-        if(_hg_opts)
-            target_compile_options(${_hg_t} PRIVATE ${_hg_opts})
-        endif()
-        if(_hg_lopts)
-            target_link_options(${_hg_t} PRIVATE ${_hg_lopts})
-        endif()
-        if(_hg_w STREQUAL "hg_evolve_gpu")
-            set_property(TARGET ${_hg_t} PROPERTY CUDA_RUNTIME_LIBRARY Static)
-        endif()
-        set_property(TARGET all_tests APPEND PROPERTY COMPILE_DEFINITIONS
-            ${_hg_key}="$<TARGET_FILE:${_hg_t}>")
-        add_dependencies(all_tests ${_hg_t})
-    endforeach()
-endif()
 
 file(MAKE_DIRECTORY "${HG_PACLET_OUTPUT_DIR}")
 
