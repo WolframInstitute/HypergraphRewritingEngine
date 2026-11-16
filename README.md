@@ -70,7 +70,7 @@ The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported cont
 ### Python
 
 ```bash
-pip install hgevolve
+pip install hypergraph-rewriting-engine    # the import name is hgevolve
 ```
 
 [python/README.md](python/README.md) lists the wheels and the build from source.

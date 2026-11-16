@@ -7,7 +7,8 @@
   Web Workers where `SharedArrayBuffer` is available. `evolve`, sessions, generated initial
   conditions and the transition cost take HGEvolve's options in camelCase, and the reply is
   HGEvolve's. `js/README.md` describes it. npm carries it as `hgevolve`.
-- The Python package hgevolve is on PyPI (`pip install hgevolve`), with wheels for CPython 3.9 to
+- The Python package hgevolve is on PyPI as hypergraph-rewriting-engine (`pip install
+  hypergraph-rewriting-engine`; the import name stays `hgevolve`), with wheels for CPython 3.9 to
   3.14 on Linux (x86-64, ARM64), Windows (x86-64) and macOS (x86-64, ARM64), and an sdist.
   `pyproject.toml` is at the repository root, so `pip install .` in a checkout and an install from
   a git URL build it.

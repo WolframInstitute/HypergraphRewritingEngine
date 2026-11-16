@@ -20,7 +20,7 @@ docs/API.md lists every function, option and data name with its HGEvolve name.
 ## Installing
 
 ```sh
-pip install hgevolve
+pip install hypergraph-rewriting-engine    # the import name is hgevolve
 ```
 
 PyPI carries wheels for CPython 3.9 to 3.14 on Linux (x86-64 and ARM64), Windows (x86-64) and macOS (x86-64 and ARM64), and an sdist for other platforms.
